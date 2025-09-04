@@ -244,9 +244,6 @@ This script demonstrates:
 
 ## Security Notes
 
-- **Never commit API keys to version control**
-- Use the provided `config_example.toml` as a template
-- Implement proper key rotation practices
 - Enable 2FA on your Binance account
 - Use IP whitelisting when possible
 
