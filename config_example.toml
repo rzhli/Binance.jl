@@ -1,0 +1,34 @@
+# Binance API Configuration File - Example Template
+
+[api]
+# Your Binance API Key - Replace with your actual API key
+api_key = "YOUR_API_KEY_HERE"
+# Your Binance Secret Key - Replace with your actual secret key
+secret_key = "YOUR_SECRET_KEY_HERE"
+signature_method = "ED25519"
+# For ED25519, this path should point to your PRIVATE key file
+private_key_path = "key/ed25519-private.pem"
+# Private key password - Replace with your actual password
+private_key_pass = "YOUR_PRIVATE_KEY_PASS_HERE"
+
+[connection]
+# Use testnet for testing (true/false)
+testnet = false
+# Request timeout in seconds
+timeout = 30
+# Receive window for signed requests (milliseconds)
+recv_window = 5000
+# Proxy for requests (e.g., "http://127.0.0.1:7890")
+proxy = "http://127.0.0.1:7890"
+
+[rate_limiting]
+# Maximum requests per minute for general endpoints
+max_requests_per_minute = 1200
+# Maximum orders per second
+max_orders_per_second = 10
+
+[logging]
+# Enable debug logging (true/false)
+debug = false
+# Log file path (leave empty to log to console)
+log_file = ""

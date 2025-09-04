@@ -1,0 +1,51 @@
+# Personal configuration files (contain API keys)
+config.toml
+
+# Private key files
+key/
+*.pem
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Julia temporary files
+*.ji
+*.jll
+Manifest.toml
+deps.jl
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Build artifacts
+build/
+dist/
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Test files with sensitive data
+# Uncomment if test.jl contains sensitive information
+test.jl
+
+# Personal trading strategies
+# Uncomment if Strategy.jl is proprietary
+Strategy.jl
+
+# Other files that might contain sensitive data
+# Uncommend as needed
+# examples.jl
