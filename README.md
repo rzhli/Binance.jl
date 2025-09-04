@@ -222,11 +222,8 @@ Binance.jl/
 │   ├── Filters.jl          # Order validation filters
 │   ├── Account.jl          # Account-related utilities
 │   └── RateLimiter.jl      # API rate limiting logic
-├── config.toml             # User configuration
 ├── config_example.toml     # Configuration template
 ├── examples.jl             # Usage examples
-├── test.jl                 # Test script with strategies
-├── Strategy.jl             # Trading strategy module
 ├── README.md               # This file
 └── Project.toml            # Julia project dependencies
 ```
