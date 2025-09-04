@@ -276,4 +276,4 @@ This software is for educational and informational purposes only. Use at your ow
 
 ## Contact
 
-For issues, questions, or contributions, please file an issue on GitHub.
+For issues, questions, or contributions, please file an issue.
