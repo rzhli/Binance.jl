@@ -249,13 +249,13 @@ module WebSocketAPI
         end
     end
 
-    function send_request(client::WebSocketClient, method::String, params::Dict{String,Any}; return_rate_limits::Union{Bool,Nothing}=nothing)
+    function send_request(client::WebSocketClient, method::String, params::Dict{String,Any}; return_rate_limits::Union{Bool,Nothing}=nothing, return_full_response::Bool=false)
         if isnothing(client.ws_connection)
             error("WebSocket is not connected. Call connect! first.")
         end
 
         # Proactively check rate limits
-        check_and_wait(client.rate_limiter, false) # Assuming false for is_order for now
+        check_and_wait(client.rate_limiter, "REQUEST_WEIGHT")
 
         request_id = client.request_id
         client.request_id += 1
@@ -282,6 +282,9 @@ module WebSocketAPI
             response = take!(response_channel) # This will block until a response is received
 
             if response.status == 200
+                if return_full_response
+                    return response
+                end
                 return haskey(response, :result) ? response.result : nothing
             else
                 handle_ws_error(client, response)
@@ -296,7 +299,7 @@ module WebSocketAPI
         end
     end
 
-    function send_signed_request(client::WebSocketClient, method::String, params::Dict{String,Any})
+    function send_signed_request(client::WebSocketClient, method::String, params::Dict{String,Any}; return_full_response::Bool=false)
         # Session management methods have special parameter handling.
         if method == "session.logon"
             params_to_sign = Dict{String,Any}(
@@ -311,11 +314,11 @@ module WebSocketAPI
             request_params = params_to_sign
             request_params["signature"] = signature
 
-            return send_request(client, method, request_params)
+            return send_request(client, method, request_params; return_full_response=return_full_response)
         elseif method in ["session.logout", "session.status"]
             # For authenticated sessions, these methods do not require parameters
             if client.is_authenticated
-                return send_request(client, method, Dict{String,Any}())
+                return send_request(client, method, Dict{String,Any}(); return_full_response=return_full_response)
             else
                 # If not authenticated, require full authentication parameters
                 params_to_sign = Dict{String,Any}(
@@ -329,7 +332,7 @@ module WebSocketAPI
                 request_params = params_to_sign
                 request_params["signature"] = signature
 
-                return send_request(client, method, request_params)
+                return send_request(client, method, request_params; return_full_response=return_full_response)
             end
         end
 
@@ -342,7 +345,7 @@ module WebSocketAPI
         query_string = RESTAPI.build_query_string(params)
         params["signature"] = Signature.sign_message(client.signer, query_string)
 
-        return send_request(client, method, params)
+        return send_request(client, method, params; return_full_response=return_full_response)
     end
 
     # --- Session Management ---
@@ -1097,13 +1100,19 @@ module WebSocketAPI
     # --- Account Functions ---
 
     """
-        account_status(client)
+        account_status(client; omitZeroBalances)
 
     Query account information.
     """
-    function account_status(client::WebSocketClient)
-        response = send_signed_request(client, "account.status", Dict{String,Any}())
-        return JSON3.read(JSON3.write(response), AccountInfo)
+    function account_status(client::WebSocketClient; omitZeroBalances::Union{Bool,Nothing}=nothing)
+        params = Dict{String,Any}()
+        if !isnothing(omitZeroBalances)
+            params["omitZeroBalances"] = omitZeroBalances
+        end
+        full_response = send_signed_request(client, "account.status", params; return_full_response=true)
+        account_info = JSON3.read(JSON3.write(full_response.result), AccountInfo)
+        rate_limits = JSON3.read(JSON3.write(full_response.rateLimits), Vector{Account.RateLimit})
+        return AccountStatusResponse(account_info, rate_limits)
     end
 
     """

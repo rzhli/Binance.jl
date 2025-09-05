@@ -30,13 +30,17 @@ module RateLimiter
 
     function BinanceRateLimit(config::BinanceConfig)
         limits = APILimit[]
-        # Add request weight limit (Binance uses a 1-minute window)
-        if config.max_requests_per_minute > 0
-            push!(limits, APILimit("REQUESTS", Minute(1), config.max_requests_per_minute))
+        if config.max_request_weight_per_minute > 0
+            push!(limits, APILimit("REQUEST_WEIGHT", Minute(1), config.max_request_weight_per_minute))
         end
-        # Add order limit (Binance uses a 1-second window)
-        if config.max_orders_per_second > 0
-            push!(limits, APILimit("ORDERS", Second(1), config.max_orders_per_second))
+        if config.max_orders_per_10s > 0
+            push!(limits, APILimit("ORDERS", Second(10), config.max_orders_per_10s))
+        end
+        if config.max_orders_per_day > 0
+            push!(limits, APILimit("ORDERS", Day(1), config.max_orders_per_day))
+        end
+        if config.max_connections_per_5m > 0
+            push!(limits, APILimit("CONNECTIONS", Minute(5), config.max_connections_per_5m))
         end
         return BinanceRateLimit(limits, nothing, ReentrantLock())
     end
@@ -55,7 +59,7 @@ module RateLimiter
     Proactively checks if a request would violate a rate limit and waits if necessary.
     Also handles the reactive backoff set by `set_backoff`.
     """
-    function check_and_wait(rate_limiter::BinanceRateLimit, is_order::Bool)
+    function check_and_wait(rate_limiter::BinanceRateLimit, request_type::String)
         # 1. Handle reactive backoff from 429/418 errors
         lock(rate_limiter.lock) do
             if !isnothing(rate_limiter.backoff_until) && now(UTC) < rate_limiter.backoff_until
@@ -70,8 +74,7 @@ module RateLimiter
 
         # 2. Handle proactive rate limiting
         for limit in rate_limiter.limits
-            # Skip the order limit check if this is not an order request
-            if limit.limit_type == "ORDERS" && !is_order
+            if limit.limit_type != request_type
                 continue
             end
 

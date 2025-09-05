@@ -209,8 +209,8 @@ module RESTAPI
         client::RESTClient, method::String, endpoint::String;
         params::Dict{String,Any}=Dict{String,Any}(), signed::Bool=false
     )
-        is_order = occursin("/api/v3/order", endpoint)
-        check_and_wait(client.rate_limiter, is_order)
+        request_type = occursin("/api/v3/order", endpoint) ? "ORDERS" : "REQUEST_WEIGHT"
+        check_and_wait(client.rate_limiter, request_type)
 
         url = get_base_url(client) * endpoint
         body = ""

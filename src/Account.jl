@@ -10,7 +10,7 @@ module Account
         get_my_trades, get_rate_limit_order, get_my_prevented_matches,
         get_my_allocations, get_account_commission_rates, get_order_amendments,
         Trade, RateLimit, PreventedMatch, Allocation, CommissionRatesDetails,
-        Discount, OrderAmendment
+        Discount, OrderAmendment, AccountStatusResponse
 
     # Existing Structs
     struct CommissionRates
@@ -49,6 +49,11 @@ module Account
         uid::Int64
     end
     StructTypes.StructType(::Type{AccountInfo}) = StructTypes.Struct()
+
+    struct AccountStatusResponse
+        info::AccountInfo
+        rateLimits::Vector{RateLimit}
+    end
 
     # New Structs
     struct Trade
@@ -144,6 +149,8 @@ module Account
         println(io, "  Account Type: ", info.accountType)
         println(io, "  Update Time: ", unix2datetime(info.updateTime / 1000) + Hour(8))
         println(io, "  Brokered: ", info.brokered)
+        println(io, "  Require Self Trade Prevention: ", info.requireSelfTradePrevention)
+        println(io, "  Prevent SOR: ", info.preventSor)
         println(io, "\nPermissions: ", join(info.permissions, ", "))
 
         println(io, "\nTrading Status:")
@@ -168,9 +175,21 @@ module Account
         end
     end
 
+    function Base.show(io::IO, ::MIME"text/plain", status::AccountStatusResponse)
+        show(io, MIME"text/plain"(), status.info)
+        println(io)
+        println(io, "\nRate Limits:")
+        rate_limits_df = DataFrame(status.rateLimits)
+        show(io, rate_limits_df)
+    end
+
     # Existing Functions
-    function get_account_info(client::RESTClient)
-        response = make_request(client, "GET", "/api/v3/account"; signed=true)
+    function get_account_info(client::RESTClient; omitZeroBalances::Union{Bool,Nothing}=nothing)
+        params = Dict{String,Any}()
+        if !isnothing(omitZeroBalances)
+            params["omitZeroBalances"] = omitZeroBalances
+        end
+        response = make_request(client, "GET", "/api/v3/account"; params=params, signed=true)
         return JSON3.read(JSON3.write(response), AccountInfo)
     end
 

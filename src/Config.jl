@@ -20,8 +20,10 @@ module Config
         reconnect_delay::Int
 
         # Rate limiting
-        max_requests_per_minute::Int
-        max_orders_per_second::Int
+        max_request_weight_per_minute::Int
+        max_orders_per_10s::Int
+        max_orders_per_day::Int
+        max_connections_per_5m::Int
         ws_return_rate_limits::Bool
 
         # Logging
@@ -56,8 +58,10 @@ module Config
 
             # Extract rate limiting settings
             rate_limiting = get(config_data, "rate_limiting", Dict())
-            max_requests_per_minute = get(rate_limiting, "max_requests_per_minute", 1200)
-            max_orders_per_second = get(rate_limiting, "max_orders_per_second", 10)
+            max_request_weight_per_minute = get(rate_limiting, "max_request_weight_per_minute", 6000)
+            max_orders_per_10s = get(rate_limiting, "max_orders_per_10s", 50)
+            max_orders_per_day = get(rate_limiting, "max_orders_per_day", 160000)
+            max_connections_per_5m = get(rate_limiting, "max_connections_per_5m", 300)
             ws_return_rate_limits = get(rate_limiting, "ws_return_rate_limits", true)
 
             # Extract logging settings
@@ -79,7 +83,7 @@ module Config
             return BinanceConfig(
                 api_key, signature_method, api_secret, private_key_path, private_key_pass,
                 testnet, timeout, recv_window, proxy, max_reconnect_attempts, reconnect_delay,
-                max_requests_per_minute, max_orders_per_second, ws_return_rate_limits, debug, log_file
+                max_request_weight_per_minute, max_orders_per_10s, max_orders_per_day, max_connections_per_5m, ws_return_rate_limits, debug, log_file
             )
 
         catch e
