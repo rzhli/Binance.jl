@@ -59,6 +59,8 @@ module WebSocketAPI
         exchange_info::Union{ExchangeInfo,Nothing}
         should_reconnect::Bool
         reconnect_task::Union{Task,Nothing}
+        reconnect_lock::ReentrantLock
+        connection_status::Channel{Bool}
 
         function WebSocketClient(config_path::String="config.toml")
             config = from_toml(config_path)
@@ -79,7 +81,7 @@ module WebSocketAPI
             end
 
             rate_limiter = BinanceRateLimit(config)
-            client = new(config, signer, base_url, nothing, 1, rate_limiter, Dict{Int64,Channel}(), Dict{String,Function}(), 0, false, nothing, true, nothing)
+            client = new(config, signer, base_url, nothing, 1, rate_limiter, Dict{Int64,Channel}(), Dict{String,Function}(), 0, false, nothing, true, nothing, ReentrantLock(), Channel{Bool}(1))
 
             # Set a temporary time offset assuming local time is UTC+8, as requested.
             # This will be synchronized with the server after the WebSocket connection is established.
@@ -95,6 +97,10 @@ module WebSocketAPI
 
     function connect!(client::WebSocketClient)
         client.should_reconnect = true
+        # Clear any stale status from the channel before starting a new connection attempt.
+        if isready(client.connection_status)
+            take!(client.connection_status)
+        end
         client.reconnect_task = @async begin
             for attempt in 1:(client.config.max_reconnect_attempts+1)
                 if !client.should_reconnect
@@ -104,6 +110,7 @@ module WebSocketAPI
                 try
                     HTTP.WebSockets.open(client.base_url; connect_timeout=30, proxy=client.config.proxy) do ws
                         client.ws_connection = ws
+                        put!(client.connection_status, true) # Signal success
                         @info "Successfully connected to WebSocket API."
 
                         # Spawn a setup task that runs in the background, allowing the main loop to listen immediately
@@ -181,6 +188,7 @@ module WebSocketAPI
                     elseif client.should_reconnect
                         @error "Maximum reconnect attempts reached. Giving up."
                         client.should_reconnect = false
+                        put!(client.connection_status, false) # Signal failure
                     end
                 end
             end
@@ -211,6 +219,20 @@ module WebSocketAPI
             client.reconnect_task = nothing
         end
         @info "WebSocket API connection closed."
+    end
+
+    function ensure_connected!(client::WebSocketClient)
+        lock(client.reconnect_lock) do
+            # If connection is good or a reconnect task is already running, do nothing.
+            if !isnothing(client.ws_connection) || (!isnothing(client.reconnect_task) && !istaskdone(client.reconnect_task))
+                return
+            end
+            connect!(client)
+            connection_successful = take!(client.connection_status)
+            if !connection_successful
+                error("Failed to establish WebSocket connection after multiple attempts.")
+            end
+        end
     end
 
     function handle_ws_error(client::WebSocketClient, response)
@@ -250,9 +272,7 @@ module WebSocketAPI
     end
 
     function send_request(client::WebSocketClient, method::String, params::Dict{String,Any}; return_rate_limits::Union{Bool,Nothing}=nothing, return_full_response::Bool=false)
-        if isnothing(client.ws_connection)
-            error("WebSocket is not connected. Call connect! first.")
-        end
+        ensure_connected!(client)
 
         # Proactively check rate limits
         check_and_wait(client.rate_limiter, "REQUEST_WEIGHT")

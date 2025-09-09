@@ -50,6 +50,15 @@ module Account
     end
     StructTypes.StructType(::Type{AccountInfo}) = StructTypes.Struct()
 
+    struct RateLimit
+        rateLimitType::String
+        interval::String
+        intervalNum::Int
+        limit::Int
+        count::Int
+    end
+    StructTypes.StructType(::Type{RateLimit}) = StructTypes.Struct()
+
     struct AccountStatusResponse
         info::AccountInfo
         rateLimits::Vector{RateLimit}
@@ -72,15 +81,6 @@ module Account
         isBestMatch::Bool
     end
     StructTypes.StructType(::Type{Trade}) = StructTypes.Struct()
-
-    struct RateLimit
-        rateLimitType::String
-        interval::String
-        intervalNum::Int
-        limit::Int
-        count::Int
-    end
-    StructTypes.StructType(::Type{RateLimit}) = StructTypes.Struct()
 
     struct PreventedMatch
         symbol::String

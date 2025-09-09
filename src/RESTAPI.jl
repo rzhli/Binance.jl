@@ -148,13 +148,6 @@ module RESTAPI
         params["timestamp"] = get_timestamp(client)
         params["recvWindow"] = client.config.recv_window
 
-        if client.config.signature_method == ED25519
-            if isempty(client.signer.public_key)
-                error("Ed25519 public key is missing from the signer configuration")
-            end
-            params["pubKey"] = bytes2hex(client.signer.public_key)
-        end
-
         query_string = build_query_string(params)
         signature = generate_signature(client, query_string)
         encoded_signature = URIs.escapeuri(signature)
