@@ -43,7 +43,7 @@ A comprehensive Julia SDK for interacting with Binance's Spot Trading APIs, incl
 
 ```julia
 using Pkg
-Pkg.add("https://github.com/your-username/Binance.jl.git")
+Pkg.add("https://github.com/rzhli/Binance.jl.git")
 ```
 
 ### Dependencies
