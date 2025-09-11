@@ -74,10 +74,26 @@ module Config
                 error("API key is required in configuration")
             end
 
-            if signature_method == "HMAC_SHA256" && isempty(api_secret)
-                error("API secret is required for HMAC signature")
-            elseif signature_method == "ED25519" && isempty(private_key_path)
-                error("Private key path is required for ED25519 signature")
+            if signature_method == "HMAC_SHA256"
+                if isempty(api_secret)
+                    error("API secret is required for HMAC_SHA256 signature")
+                end
+            elseif signature_method == "ED25519"
+                if isempty(private_key_path)
+                    error("Private key path is required for ED25519 signature")
+                end
+                if !isempty(private_key_path) && !isfile(private_key_path)
+                    error("ED25519 private key file not found: $private_key_path")
+                end
+            elseif signature_method == "RSA"
+                if isempty(private_key_path)
+                    error("Private key path is required for RSA signature")
+                end
+                if !isempty(private_key_path) && !isfile(private_key_path)
+                    error("RSA private key file not found: $private_key_path")
+                end
+            elseif signature_method != "NONE"
+                error("Unsupported signature method: $signature_method. Supported methods: HMAC_SHA256, ED25519, RSA")
             end
 
             return BinanceConfig(

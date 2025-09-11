@@ -9,7 +9,7 @@ module RESTAPI
     using ..Filters
 
     export RESTClient, make_request, get_server_time, get_exchange_info, ping,
-        BinanceException, BinanceError, MalformedRequestError, WAFViolationError,
+        BinanceException, BinanceError, MalformedRequestError, WAFViolationError, UnauthorizedError,
         CancelReplacePartialSuccess, RateLimitError, IPAutoBannedError, BinanceServerError,
         place_order, cancel_order, cancel_all_orders, get_order,
         get_open_orders, get_all_orders, get_orderbook,
@@ -37,6 +37,12 @@ module RESTAPI
         msg::String
     end
     Base.show(io::IO, e::MalformedRequestError) = print(io, "MalformedRequestError(code=$(e.code), msg=\"$(e.msg)\")")
+    
+    struct UnauthorizedError <: BinanceException
+        code::Int
+        msg::String
+    end
+    Base.show(io::IO, e::UnauthorizedError) = print(io, "UnauthorizedError(401): code=$(e.code), msg=\"$(e.msg)\")")
 
     struct WAFViolationError <: BinanceException end
     Base.show(io::IO, e::WAFViolationError) = print(io, "WAF Limit Violated (403)")
@@ -201,7 +207,7 @@ module RESTAPI
     function make_request(
         client::RESTClient, method::String, endpoint::String;
         params::Dict{String,Any}=Dict{String,Any}(), signed::Bool=false
-    )
+        )
         request_type = occursin("/api/v3/order", endpoint) ? "ORDERS" : "REQUEST_WEIGHT"
         check_and_wait(client.rate_limiter, request_type)
 

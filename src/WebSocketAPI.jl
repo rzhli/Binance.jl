@@ -1,18 +1,20 @@
 module WebSocketAPI
 
-    using HTTP, JSON3, Dates, SHA, URIs, StructTypes, DataFrames
+    using HTTP, JSON3, Dates, SHA, URIs, StructTypes, DataFrames, UUIDs
+    import HTTP.WebSockets
     using ..Config
     using ..Signature
     using ..Types
     using ..RESTAPI
     using ..RateLimiter
-    using ..Filters
     using ..Account
 
     # --- Exports ---
 
     # Client and Connection
-    export WebSocketClient, connect!, disconnect!, on_event
+    export WebSocketClient, connect!, disconnect!, on_event, ensure_connected!,
+           remove_event_handler, clear_event_handlers, get_rate_limit_status, 
+           get_order_rate_limits
 
     # Session Management
     export session_logon, session_status, session_logout
@@ -50,17 +52,16 @@ module WebSocketAPI
         signer::CryptoSigner
         base_url::String
         ws_connection::Any # Will hold the WebSocket connection
-        request_id::Int64
         rate_limiter::BinanceRateLimit
-        responses::Dict{Int64,Channel}
+        responses::Dict{String,Channel} # Changed from Int64 to String for UUID keys
         ws_callbacks::Dict{String,Function} # For user data stream events
         time_offset::Int64
         is_authenticated::Bool
-        exchange_info::Union{ExchangeInfo,Nothing}
         should_reconnect::Bool
         reconnect_task::Union{Task,Nothing}
         reconnect_lock::ReentrantLock
-        connection_status::Channel{Bool}
+        heartbeat_task::Union{Task,Nothing}
+        heartbeat_interval::Int # Interval in seconds for heartbeat pings
 
         function WebSocketClient(config_path::String="config.toml")
             config = from_toml(config_path)
@@ -81,7 +82,7 @@ module WebSocketAPI
             end
 
             rate_limiter = BinanceRateLimit(config)
-            client = new(config, signer, base_url, nothing, 1, rate_limiter, Dict{Int64,Channel}(), Dict{String,Function}(), 0, false, nothing, true, nothing, ReentrantLock(), Channel{Bool}(1))
+            client = new(config, signer, base_url, nothing, rate_limiter, Dict{String,Channel}(), Dict{String,Function}(), 0, false, true, nothing, ReentrantLock(), nothing, 60)
 
             # Set a temporary time offset assuming local time is UTC+8, as requested.
             # This will be synchronized with the server after the WebSocket connection is established.
@@ -91,16 +92,52 @@ module WebSocketAPI
         end
     end
 
+    """
+        get_rate_limit_status(client::WebSocketClient)
+    
+    Get current rate limit status from the exchange.
+    
+    Returns the current usage for all rate limit types.
+    """
+    function get_rate_limit_status(client::WebSocketClient)
+        # Use exchangeInfo to get current limits
+        response = send_request(client, "exchangeInfo", Dict{String,Any}(); 
+                               return_full_response=true)
+        
+        if haskey(response, :rateLimits)
+            return response.rateLimits
+        else
+            @warn "No rate limit information in response"
+            return nothing
+        end
+    end
+    
+    """
+        get_order_rate_limits(client::WebSocketClient)
+    
+    Query current order count usage for all rate limiters.
+    This is an alias for account_rate_limits_orders for consistency.
+    """
+    function get_order_rate_limits(client::WebSocketClient)
+        return account_rate_limits_orders(client)
+    end
+    
+    # --- Helper Functions ---
+    
+    """
+        get_timestamp(client::WebSocketClient)
+    
+    Get current timestamp in milliseconds, adjusted for time offset.
+    """
     function get_timestamp(client::WebSocketClient)
         return Int(round(datetime2unix(now()) * 1000)) + client.time_offset
     end
 
     function connect!(client::WebSocketClient)
+        # Check connection rate limit (300 connections per 5 minutes per IP)
+        check_and_wait(client.rate_limiter, "CONNECTIONS")
+        
         client.should_reconnect = true
-        # Clear any stale status from the channel before starting a new connection attempt.
-        if isready(client.connection_status)
-            take!(client.connection_status)
-        end
         client.reconnect_task = @async begin
             for attempt in 1:(client.config.max_reconnect_attempts+1)
                 if !client.should_reconnect
@@ -110,8 +147,27 @@ module WebSocketAPI
                 try
                     HTTP.WebSockets.open(client.base_url; connect_timeout=30, proxy=client.config.proxy) do ws
                         client.ws_connection = ws
-                        put!(client.connection_status, true) # Signal success
                         @info "Successfully connected to WebSocket API."
+                        
+                        # Start heartbeat task using WebSocket ping frames
+                        client.heartbeat_task = @async begin
+                            @info "Starting heartbeat task with $(client.heartbeat_interval) second interval"
+                            while !isnothing(client.ws_connection) && !WebSockets.isclosed(client.ws_connection)
+                                try
+                                    sleep(client.heartbeat_interval)
+                                    if !isnothing(client.ws_connection) && !WebSockets.isclosed(client.ws_connection)
+                                        # Send WebSocket ping frame (not API ping method)
+                                        HTTP.WebSockets.ping(client.ws_connection)
+                                        @debug "WebSocket ping frame sent successfully"
+                                    end
+                                catch e
+                                    @warn "WebSocket ping failed: $e"
+                                    # Connection might be broken, the main loop will handle reconnection
+                                    break
+                                end
+                            end
+                            @info "Heartbeat task stopped"
+                        end
 
                         # Spawn a setup task that runs in the background, allowing the main loop to listen immediately
                         @async begin
@@ -150,23 +206,33 @@ module WebSocketAPI
                         # The main connection task immediately starts listening for messages
                         for msg in ws
                             try
+                                # Check if this is a binary frame (SBE format - future support)
+                                if isa(msg, Vector{UInt8})
+                                    @warn "Received binary frame (SBE format). SBE support not yet implemented."
+                                    continue
+                                end
+                                
+                                # Parse JSON message
                                 data = JSON3.read(String(msg))
 
-                                if haskey(data, :rateLimits)
-                                    update_limits!(client.rate_limiter, data.rateLimits)
-                                end
-
-                                if haskey(data, :id) && haskey(client.responses, data.id)
-                                    put!(client.responses[data.id], data)
+                                # Check if this is a response to a request
+                                if haskey(data, :id) && haskey(client.responses, string(data.id))
+                                    put!(client.responses[string(data.id)], data)
+                                # Check if this is a user data stream event
                                 elseif haskey(data, :event) && haskey(data.event, :e)
                                     event_type = data.event.e
                                     if haskey(client.ws_callbacks, event_type)
-                                        client.ws_callbacks[event_type](data.event)
+                                        # Call the callback with the event payload
+                                        try
+                                            client.ws_callbacks[event_type](data.event)
+                                        catch callback_error
+                                            @error "Error in event callback for '$event_type': $callback_error"
+                                        end
                                     else
-                                        @info "Received unhandled event of type '$(event_type)': $(data.event)"
+                                        @debug "Received unhandled event of type '$(event_type)'"
                                     end
                                 else
-                                    @info "Received unsolicited message: $data"
+                                    @debug "Received message without handler: $data"
                                 end
                             catch e
                                 if e isa HTTP.WebSockets.WebSocketError || e isa EOFError
@@ -181,6 +247,11 @@ module WebSocketAPI
                 catch e
                     @error "WebSocket connection error: $e"
                 finally
+                    # Stop heartbeat task if running
+                    if !isnothing(client.heartbeat_task) && !istaskdone(client.heartbeat_task)
+                        @debug "Stopping heartbeat task"
+                    end
+                    client.heartbeat_task = nothing
                     client.ws_connection = nothing
                     if client.should_reconnect && attempt <= client.config.max_reconnect_attempts
                         @info "Attempting to reconnect in $(client.config.reconnect_delay) seconds... (Attempt $attempt of $(client.config.max_reconnect_attempts))"
@@ -188,7 +259,6 @@ module WebSocketAPI
                     elseif client.should_reconnect
                         @error "Maximum reconnect attempts reached. Giving up."
                         client.should_reconnect = false
-                        put!(client.connection_status, false) # Signal failure
                     end
                 end
             end
@@ -196,11 +266,71 @@ module WebSocketAPI
     end
 
     """
-    Registers a callback function for a specific user data stream event type.
+        on_event(client::WebSocketClient, event_type::String, callback::Function)
+    
+    Register a callback function for a specific user data stream event type.
+    
+    # Arguments
+    - `client`: WebSocket client instance
+    - `event_type`: Event type string (e.g., "outboundAccountPosition", "executionReport")
+    - `callback`: Function to call when event is received. Will receive the event payload.
+    
+    # Event Format
+    Events are sent as JSON with structure:
+    ```json
+    {
+        "event": {
+            "e": "eventType",
+            "E": eventTime,
+            // ... event-specific fields
+        }
+    }
+    ```
+    
+    The callback receives only the inner event object (data.event).
+    
+    # Example
+    ```julia
+    on_event(client, "executionReport") do event
+        println("Order update: ", event)
+    end
+    ```
+    
+    # Common Event Types
+    - "outboundAccountPosition": Account balance update
+    - "balanceUpdate": Balance change from deposits/withdrawals
+    - "executionReport": Order update
+    - "listStatus": Order list update
+    
+    See Binance documentation for complete list of event types.
     """
     function on_event(client::WebSocketClient, event_type::String, callback::Function)
         client.ws_callbacks[event_type] = callback
         @info "Registered callback for event type '$event_type'."
+    end
+    
+    """
+        remove_event_handler(client::WebSocketClient, event_type::String)
+    
+    Remove a previously registered event handler.
+    """
+    function remove_event_handler(client::WebSocketClient, event_type::String)
+        if haskey(client.ws_callbacks, event_type)
+            delete!(client.ws_callbacks, event_type)
+            @info "Removed callback for event type '$event_type'."
+        else
+            @warn "No callback registered for event type '$event_type'."
+        end
+    end
+    
+    """
+        clear_event_handlers(client::WebSocketClient)
+    
+    Remove all registered event handlers.
+    """
+    function clear_event_handlers(client::WebSocketClient)
+        empty!(client.ws_callbacks)
+        @info "Cleared all event callbacks."
     end
 
     function disconnect!(client::WebSocketClient)
@@ -223,62 +353,117 @@ module WebSocketAPI
 
     function ensure_connected!(client::WebSocketClient)
         lock(client.reconnect_lock) do
-            # If connection is good or a reconnect task is already running, do nothing.
-            if !isnothing(client.ws_connection) || (!isnothing(client.reconnect_task) && !istaskdone(client.reconnect_task))
+            # If connection is already established, do nothing.
+            if !isnothing(client.ws_connection) && !WebSockets.isclosed(client.ws_connection)
                 return
             end
-            connect!(client)
-            connection_successful = take!(client.connection_status)
-            if !connection_successful
-                error("Failed to establish WebSocket connection after multiple attempts.")
+
+            # If no connection task is running, start one.
+            if isnothing(client.reconnect_task) || istaskdone(client.reconnect_task)
+                connect!(client)
+                # Wait for connection to establish
+                wait_time = 0
+                while isnothing(client.ws_connection) && wait_time < 30
+                    sleep(0.5)
+                    wait_time += 0.5
+                end
+                if isnothing(client.ws_connection)
+                    error("Failed to establish WebSocket connection after 30 seconds")
+                end
             end
         end
     end
 
     function handle_ws_error(client::WebSocketClient, response)
         status = response.status
+        
+        # Check if error field exists (it should for all error responses)
+        if !haskey(response, :error)
+            @error "Invalid error response format: missing 'error' field"
+            throw(BinanceError(status, -1, "Invalid error response format"))
+        end
+        
         error_data = response.error
-        code = error_data.code
-        msg = error_data.msg
+        code = haskey(error_data, :code) ? error_data.code : -1
+        msg = haskey(error_data, :msg) ? error_data.msg : "Unknown error"
 
-        if status == 401 # Unauthorized, session is invalid
+        # Handle specific status codes according to Binance spec
+        if status == 401 # Unauthorized
             client.is_authenticated = false
             @warn "WebSocket session authentication failed or was revoked (status 401)."
-        end
-
-        if status == 429 || status == 418
+            throw(RESTAPI.UnauthorizedError(code, msg))
+        elseif status == 403
+            # Web Application Firewall block
+            throw(RESTAPI.WAFViolationError())
+        elseif status == 409
+            # Partial success/failure
+            throw(RESTAPI.CancelReplacePartialSuccess(code, msg))
+        elseif status == 418
+            # Auto-banned for rate limit violations
             if haskey(error_data, :data) && haskey(error_data.data, :retryAfter)
                 retry_after = error_data.data.retryAfter
-                set_backoff_until!(client.rate_limiter, retry_after)
+                set_backoff!(client.rate_limiter, retry_after)
             end
-        end
-
-        if status == 403
-            throw(WAFViolationError())
-        elseif status == 409
-            throw(CancelReplacePartialSuccess(code, msg))
+            throw(RESTAPI.IPAutoBannedError())
         elseif status == 429
-            throw(RateLimitError(code, msg))
-        elseif status == 418
-            throw(IPAutoBannedError())
+            # Rate limit exceeded
+            if haskey(error_data, :data) && haskey(error_data.data, :retryAfter)
+                retry_after = error_data.data.retryAfter
+                set_backoff!(client.rate_limiter, retry_after)
+            end
+            throw(RESTAPI.RateLimitError(code, msg))
         elseif 400 <= status < 500
-            throw(MalformedRequestError(code, msg))
+            # Client error
+            throw(RESTAPI.MalformedRequestError(code, msg))
         elseif 500 <= status < 600
-            @warn "Binance Server Error via WebSocket (status=$(status), code=$(code), msg=\"$(msg)\"). Execution status is UNKNOWN."
-            throw(BinanceServerError(status, code, msg))
+            # Server error - execution status unknown!
+            @warn "Binance Server Error (status=$status, code=$code, msg=\"$msg\"). Execution status is UNKNOWN - request might have succeeded!"
+            throw(RESTAPI.BinanceServerError(status, code, msg))
         else
-            throw(BinanceError(status, code, msg))
+            # Unknown status
+            throw(RESTAPI.BinanceError(status, code, msg))
         end
     end
 
-    function send_request(client::WebSocketClient, method::String, params::Dict{String,Any}; return_rate_limits::Union{Bool,Nothing}=nothing, return_full_response::Bool=false)
+    """
+        send_request(client, method, params; kwargs...)
+    
+    Send a request to Binance WebSocket API.
+    
+    # Arguments
+    - `client`: WebSocket client instance
+    - `method`: API method name (e.g., "order.place", "ping")
+    - `params`: Request parameters (will be omitted if empty)
+    
+    # Keyword Arguments
+    - `return_rate_limits`: Include rate limit info in response
+    - `return_full_response`: Return full response instead of just result
+    - `api_version`: API version prefix (e.g., "v3")
+    - `request_id_type`: Type of request ID (:uuid, :timestamp, :sequential)
+    """
+    function send_request(client::WebSocketClient, method::String, params::Dict{String,Any}; 
+                         return_rate_limits::Union{Bool,Nothing}=nothing, 
+                         return_full_response::Bool=false,
+                         api_version::String="",
+                         request_id_type::Symbol=:uuid)
         ensure_connected!(client)
 
         # Proactively check rate limits
         check_and_wait(client.rate_limiter, "REQUEST_WEIGHT")
 
-        request_id = client.request_id
-        client.request_id += 1
+        # Generate request ID based on specified type
+        request_id = if request_id_type == :uuid
+            string(uuid4())
+        elseif request_id_type == :timestamp
+            string(Int(round(datetime2unix(now()) * 1000)))
+        elseif request_id_type == :sequential
+            string(Int(round(time() * 1000000)))  # Microsecond precision for uniqueness
+        else
+            throw(ArgumentError("Invalid request_id_type: $request_id_type"))
+        end
+        
+        # Add version prefix if specified
+        full_method = isempty(api_version) ? method : "$api_version/$method"
 
         # Create a channel to wait for the response
         response_channel = Channel(1)
@@ -289,24 +474,39 @@ module WebSocketAPI
             params["returnRateLimits"] = return_rate_limits
         end
 
-        request = Dict(
-            "id" => request_id,
-            "method" => method,
-            "params" => params
-        )
+        # Build request - omit params if empty (as per Binance spec)
+        request = if isempty(params)
+            Dict(
+                "id" => request_id,
+                "method" => full_method
+            )
+        else
+            Dict(
+                "id" => request_id,
+                "method" => full_method,
+                "params" => params
+            )
+        end
 
         try
             HTTP.WebSockets.send(client.ws_connection, JSON3.write(request))
 
             # Wait for the response
             response = take!(response_channel) # This will block until a response is received
+            
+            # Always update rate limits if present
+            if haskey(response, :rateLimits)
+                update_limits!(client.rate_limiter, response.rateLimits)
+            end
 
             if response.status == 200
+                # Success - result field is mandatory according to spec
                 if return_full_response
                     return response
                 end
-                return haskey(response, :result) ? response.result : nothing
+                return response.result
             else
+                # Error response - handle accordingly
                 handle_ws_error(client, response)
             end
 
@@ -319,7 +519,36 @@ module WebSocketAPI
         end
     end
 
-    function send_signed_request(client::WebSocketClient, method::String, params::Dict{String,Any}; return_full_response::Bool=false)
+    """
+        send_signed_request(client, method, params; kwargs...)
+    
+    Send a signed request to Binance WebSocket API.
+    
+    If the session is authenticated (via session.logon), only timestamp is required.
+    Otherwise, full signature with apiKey and signature parameters is needed.
+    
+    # Security Types
+    - NONE: Public market data (no signature required)
+    - TRADE: Trading operations (requires signature)
+    - USER_DATA: Account information (requires signature)
+    - USER_STREAM: User data stream management (requires API key but no signature for listen key operations)
+    
+    # Arguments
+    - `client`: WebSocket client instance
+    - `method`: API method name
+    - `params`: Request parameters
+    
+    # Keyword Arguments
+    - `return_full_response`: Return full response instead of just result
+    - `api_version`: API version prefix
+    - `override_api_key`: Override the authenticated API key for this request
+    - `override_signature`: Use explicit signature for this request
+    """
+    function send_signed_request(
+        client::WebSocketClient, method::String, params::Dict{String,Any}; 
+        return_full_response::Bool=false, api_version::String="",
+        override_api_key::String="", override_signature::Bool=false
+        )
         # Session management methods have special parameter handling.
         if method == "session.logon"
             params_to_sign = Dict{String,Any}(
@@ -334,11 +563,11 @@ module WebSocketAPI
             request_params = params_to_sign
             request_params["signature"] = signature
 
-            return send_request(client, method, request_params; return_full_response=return_full_response)
+            return send_request(client, method, request_params; return_full_response=return_full_response, api_version=api_version)
         elseif method in ["session.logout", "session.status"]
             # For authenticated sessions, these methods do not require parameters
             if client.is_authenticated
-                return send_request(client, method, Dict{String,Any}(); return_full_response=return_full_response)
+                return send_request(client, method, Dict{String,Any}(); return_full_response=return_full_response, api_version=api_version)
             else
                 # If not authenticated, require full authentication parameters
                 params_to_sign = Dict{String,Any}(
@@ -352,20 +581,29 @@ module WebSocketAPI
                 request_params = params_to_sign
                 request_params["signature"] = signature
 
-                return send_request(client, method, request_params; return_full_response=return_full_response)
+                return send_request(client, method, request_params; return_full_response=return_full_response, api_version=api_version)
             end
         end
-
-        # Logic for all other signed requests
-        params["apiKey"] = client.config.api_key
+        
+        # Always add timestamp and recvWindow
         params["timestamp"] = get_timestamp(client)
         params["recvWindow"] = client.config.recv_window
+        
+        # Check if we need to add apiKey and signature
+        if client.is_authenticated && !override_signature && isempty(override_api_key)
+            # Session is authenticated, only timestamp is needed. No need to add apiKey and signature
+            @debug "Using authenticated session, skipping apiKey and signature"
+        else
+            # Not authenticated or explicit override requested. Add apiKey (use override if provided)
+            api_key = isempty(override_api_key) ? client.config.api_key : override_api_key
+            params["apiKey"] = api_key
+            
+            # Add signature
+            query_string = RESTAPI.build_query_string(params)
+            params["signature"] = Signature.sign_message(client.signer, query_string)
+        end
 
-        # Add signature
-        query_string = RESTAPI.build_query_string(params)
-        params["signature"] = Signature.sign_message(client.signer, query_string)
-
-        return send_request(client, method, params; return_full_response=return_full_response)
+        return send_request(client, method, params; return_full_response=return_full_response, api_version=api_version)
     end
 
     # --- Session Management ---
@@ -384,11 +622,21 @@ module WebSocketAPI
         return JSON3.read(JSON3.write(response), WebSocketConnection)
     end
 
-    function session_logout(client::WebSocketClient)
-        response = send_signed_request(client, "session.logout", Dict{String,Any}())
-        client.is_authenticated = false
-        return response
+function session_logout(client::WebSocketClient)
+    if !isnothing(client.ws_connection) && !WebSockets.isclosed(client.ws_connection)
+        try
+            response = send_signed_request(client, "session.logout", Dict{String,Any}())
+            client.is_authenticated = false
+            return response
+        catch e
+            @warn "Failed to send session.logout, likely because the connection was already closed. Proceeding with disconnection. Error: $e"
+        end
+    else
+        @info "WebSocket connection already closed. Skipping session.logout."
     end
+    client.is_authenticated = false
+    return nothing # Or some other indicator of a skipped logout
+end
 
     # --- General Methods ---
 
@@ -616,25 +864,6 @@ module WebSocketAPI
         return single_symbol ? JSON3.read(JSON3.write(response), BookTicker) : JSON3.read(JSON3.write(response), Vector{BookTicker})
     end
 
-    # --- Caching and Validation ---
-
-    """
-        get_cached_exchange_info!(client::WebSocketClient)
-
-    Fetches and caches the exchange information if it hasn't been already.
-    """
-    function get_cached_exchange_info!(client::WebSocketClient)
-        if isnothing(client.exchange_info)
-            # The WebSocket API's exchangeInfo response needs to be converted to the ExchangeInfo struct
-            raw_info = exchangeInfo(client)
-            # A bit of a hack: convert the NamedTuple to a JSON string and then parse it
-            json_str = JSON3.write(raw_info)
-            client.exchange_info = JSON3.read(json_str, ExchangeInfo)
-        end
-        return client.exchange_info
-    end
-
-
     # --- Trading Functions ---
 
     """
@@ -673,19 +902,6 @@ module WebSocketAPI
         pegPriceType::String="", pegOffsetValue::Union{Int,Nothing}=nothing, pegOffsetType::String=""
     )
 
-        # --- Validation ---
-        exchange_info = get_cached_exchange_info!(client)
-        symbol_info = nothing
-        for s in exchange_info.symbols
-            if s.symbol == symbol
-                symbol_info = s
-                break
-            end
-        end
-        if isnothing(symbol_info)
-            throw(ArgumentError("Symbol $symbol not found in exchange info."))
-        end
-
         # --- Parameter Preparation ---
         params = Dict{String,Any}(
             "symbol" => symbol,
@@ -709,9 +925,6 @@ module WebSocketAPI
         !isempty(pegPriceType) && (params["pegPriceType"] = pegPriceType)
         !isnothing(pegOffsetValue) && (params["pegOffsetValue"] = pegOffsetValue)
         !isempty(pegOffsetType) && (params["pegOffsetType"] = pegOffsetType)
-
-        # --- Perform Validation ---
-        validate_order(params, symbol_info.filters)
 
         return send_signed_request(client, "order.place", params)
     end
@@ -1415,9 +1628,18 @@ module WebSocketAPI
     When called with subscriptionId, this will attempt to close that specific subscription.
     """
     function userdata_stream_unsubscribe(client::WebSocketClient; subscriptionId::Union{Int,Nothing}=nothing)
-        params = Dict{String,Any}()
-        !isnothing(subscriptionId) && (params["subscriptionId"] = subscriptionId)
-        return send_request(client, "userDataStream.unsubscribe", params)
+        if !isnothing(client.ws_connection) && !isclosed(client.ws_connection)
+            try
+                params = Dict{String,Any}()
+                !isnothing(subscriptionId) && (params["subscriptionId"] = subscriptionId)
+                return send_request(client, "userDataStream.unsubscribe", params)
+            catch e
+                @warn "Failed to send userDataStream.unsubscribe, likely because the connection was already closed. Error: $e"
+            end
+        else
+            @info "WebSocket connection already closed. Skipping userDataStream.unsubscribe."
+        end
+        return nothing # Or some other indicator of a skipped action
     end
 
     """

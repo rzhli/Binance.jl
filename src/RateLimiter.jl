@@ -3,7 +3,7 @@ module RateLimiter
     using Dates
     using ..Config
 
-    export BinanceRateLimit, check_and_wait, set_backoff, update_limits!
+    export BinanceRateLimit, check_and_wait, set_backoff!, update_limits!
 
     # Struct to hold the state of a single rate limit
     mutable struct APILimit
@@ -46,12 +46,22 @@ module RateLimiter
     end
 
     """
-    Sets a backoff period, typically after receiving a 429 or 418 response.
+        set_backoff!(rate_limiter::BinanceRateLimit, retry_after::Int)
+    
+    Sets a backoff period after receiving a 429 or 418 response.
+    
+    # Arguments
+    - `retry_after`: Either seconds to wait (if < 1000000000) or epoch timestamp in milliseconds
     """
-    function set_backoff(rate_limiter::BinanceRateLimit, retry_after_seconds::Int)
+    function set_backoff!(rate_limiter::BinanceRateLimit, retry_after::Int)
         lock(rate_limiter.lock) do
-            rate_limiter.backoff_until = now(UTC) + Second(retry_after_seconds)
-            @warn "Rate limit exceeded. Backing off until $(rate_limiter.backoff_until)."
+            # Determine if retry_after is seconds or epoch timestamp
+            if retry_after < 1000000000  # Likely seconds
+                rate_limiter.backoff_until = now(UTC) + Second(retry_after)
+            else  # Likely epoch timestamp in milliseconds
+                rate_limiter.backoff_until = unix2datetime(retry_after / 1000)
+            end
+            @warn "Rate limit exceeded. Backing off until $(rate_limiter.backoff_until) UTC."
         end
     end
 
@@ -130,14 +140,16 @@ end
 """
     update_limits!(rate_limiter::BinanceRateLimit, new_limits)
 
-Updates the rate limiter's limits based on the `rateLimits` array
+Updates the rate limiter's state based on the `rateLimits` array
 received from a WebSocket or REST API response.
+
+This function updates the current count based on server feedback,
+helping to keep the client in sync with server-side rate limit tracking.
 """
 function update_limits!(rate_limiter::BinanceRateLimit, new_limits)
     lock(rate_limiter.lock) do
         for new_limit in new_limits
-            # The WebSocket API uses "REQUEST_WEIGHT", while the config uses "REQUESTS".
-            # We align them here for consistency.
+            # Map WebSocket API names to internal names
             limit_type = new_limit.rateLimitType
             if limit_type == "REQUEST_WEIGHT"
                 limit_type = "REQUESTS"
@@ -148,23 +160,51 @@ function update_limits!(rate_limiter::BinanceRateLimit, new_limits)
                 continue # Skip if the interval was unknown
             end
 
-            # Check if a limit with the same type and interval already exists
-            found_limit = findfirst(l -> l.limit_type == limit_type && l.interval == period, rate_limiter.limits)
-
-            if !isnothing(found_limit)
-                # Update existing limit
-                existing_limit = rate_limiter.limits[found_limit]
-                lock(existing_limit.lock) do
-                    if existing_limit.limit != new_limit.limit
-                        @info "Updating rate limit for $(limit_type) ($(period)): $(existing_limit.limit) -> $(new_limit.limit)"
-                        existing_limit.limit = new_limit.limit
-                    end
+            # Find the corresponding limit in our rate_limiter
+            matching_limit = nothing
+            for limit in rate_limiter.limits
+                if limit.limit_type == limit_type && limit.interval == period
+                    matching_limit = limit
+                    break
                 end
-            else
-                # Add new limit
-                @info "Adding new rate limit for $(limit_type) ($(period)) with limit $(new_limit.limit)"
-                new_api_limit = APILimit(limit_type, period, new_limit.limit)
-                push!(rate_limiter.limits, new_api_limit)
+            end
+
+            # If we don't have this limit tracked, create it
+            if isnothing(matching_limit)
+                matching_limit = APILimit(limit_type, period, new_limit.limit)
+                push!(rate_limiter.limits, matching_limit)
+            end
+
+            # Update the limit value if it changed
+            if matching_limit.limit != new_limit.limit
+                @debug "Rate limit for $limit_type/$period updated: $(matching_limit.limit) -> $(new_limit.limit)"
+                matching_limit.limit = new_limit.limit
+            end
+            
+            # Sync request count with server's count
+            # This helps maintain accuracy even if there's drift
+            lock(matching_limit.lock) do
+                current_time = now(UTC)
+                window_start = current_time - matching_limit.interval
+                
+                # Clear old requests
+                filter!(t -> t > window_start, matching_limit.requests)
+                
+                # Adjust our count to match server's count
+                local_count = length(matching_limit.requests)
+                server_count = new_limit.count
+                
+                if server_count > local_count
+                    # Server has more requests than we tracked - add dummy timestamps
+                    for _ in 1:(server_count - local_count)
+                        push!(matching_limit.requests, current_time)
+                    end
+                    @debug "Adjusted $limit_type count up: $local_count -> $server_count"
+                elseif server_count < local_count && server_count == 0
+                    # Server reset, we should reset too
+                    empty!(matching_limit.requests)
+                    @debug "Reset $limit_type count to 0"
+                end
             end
         end
     end
