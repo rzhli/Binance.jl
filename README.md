@@ -2,15 +2,24 @@
 
 A comprehensive Julia SDK for interacting with Binance's Spot Trading APIs, including REST API, WebSocket Market Data Streams, and WebSocket API for real-time trading.
 
+## 🎉 Recent Updates (v0.3.0)
+
+### WebSocket API Optimizations
+- **Heartbeat Mechanism**: Added 60-second WebSocket ping frames to prevent connection drops
+- **UUID Request IDs**: Switched from integer to UUID-based request IDs for better uniqueness
+- **Enhanced Validation**: Comprehensive parameter validation for all market data and trading requests
+- **Improved Rate Limiting**: Better handling of connection limits and backoff mechanisms
+- **Full Compliance**: All functions now comply with latest Binance WebSocket API documentation
+
 ## Features
 
 ### 🚀 Core Capabilities
 
 - **Complete REST API Support**: All Spot Account and Trading endpoints
 - **WebSocket Market Data**: Real-time ticker, kline, depth, and trade data
-- **Interactive WebSocket API**: Authenticated real-time trading operations
+- **Interactive WebSocket API**: Authenticated real-time trading operations with heartbeat
 - **Session Management**: Secure connection handling with Ed25519, RSA, and HMAC signatures
-- **Rate Limiting**: Built-in compliance with Binance API rate limits
+- **Rate Limiting**: Built-in compliance with Binance API rate limits (REQUEST_WEIGHT, ORDERS, CONNECTIONS)
 - **Error Handling**: Comprehensive error types and recovery mechanisms
 
 ### ✅ Currently Implemented
@@ -23,14 +32,14 @@ A comprehensive Julia SDK for interacting with Binance's Spot Trading APIs, incl
 #### WebSocket Market Streams
 - **Real-time Data**: Tickers, Klines, Depth, Aggregate Trades
 - **All Market Symbols**: Support for individual and array streams
-- **Connection Management**: Auto-reconnect, ping/pong handling
+- **Connection Management**: Auto-reconnect with heartbeat, ping/pong handling
 
-#### WebSocket API (95% Complete)
-- **Session Management**: Logon, Status, Logout
-- **Trading Operations**: Place/Cancel/Modify orders, Order Lists (OCO/OTO/OTOCO)
-- **Account Queries**: Balances, Orders, Execution Reports
+#### WebSocket API (100% Complete)
+- **Session Management**: Logon, Status, Logout (no auth required for status/logout)
+- **Trading Operations**: Place/Cancel/Modify orders with full validation, Order Lists (OCO/OTO/OTOCO)
+- **Account Queries**: Balances, Orders, Execution Reports, Commission Rates, Prevented Matches
 - **Smart Order Routing**: SOR orders for optimized execution
-- **User Data Streams**: Real-time account updates
+- **User Data Streams**: Real-time account updates with signature subscriptions
 
 ### 🔄 In Development
 - Margin Account and Trading
@@ -55,6 +64,7 @@ Pkg.add("https://github.com/rzhli/Binance.jl.git")
 - SHA.jl
 - URIs.jl
 - DataFrames.jl (for klines data)
+- UUIDs.jl (for WebSocket request IDs)
 
 ## Quick Start
 
@@ -178,21 +188,22 @@ disconnect!(ws_client)
 - HTTP client with timeout, proxy support
 - Modular architecture (RESTClient, MarketDataStreams, WebSocketAPI)
 - HMAC SHA256, RSA, and Ed25519 signature methods
-- Unified error handling and rate limiting
+- Unified error handling and rate limiting with connection tracking
 
 #### ✅ REST API (Spot Complete)
 - Market data endpoints (100%)
 - Spot account and trading (100%)
-- Basic error handling (90%)
+- Comprehensive error handling (100%)
 
 #### ✅ WebSocket Streams
-- Market data streams implementation (80%)
-- Connection management and auto-reconnect (80%)
+- Market data streams implementation (100%)
+- Connection management with heartbeat and auto-reconnect (100%)
 
 #### ✅ WebSocket API
-- Interactive trading endpoints (100%)
-- Session management (100%)
-- User data stream subscriptions (100%)
+- Interactive trading endpoints with full validation (100%)
+- Session management with proper authentication flow (100%)
+- User data stream subscriptions with signature support (100%)
+- Account queries with proper weight tracking (100%)
 
 ### Remaining Tasks
 

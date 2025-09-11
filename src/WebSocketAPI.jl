@@ -38,7 +38,7 @@ module WebSocketAPI
     export place_sor_order, test_sor_order
 
     # Account
-    export account_status, account_rate_limits_orders, orders_open, orders_all, my_trades,
+    export account_status, account_rate_limits_orders, orders_open, all_orders, my_trades,
         open_orders_status, all_orders, my_prevented_matches, my_allocations,
         account_commission, order_amendments
 
@@ -1640,32 +1640,10 @@ module WebSocketAPI
     end
 
     """
-        orders_all(client, symbol; kwargs...)
-
-    Query all orders.
-    """
-    function orders_all(client::WebSocketClient, symbol::String;
-        orderId::Union{Int,Nothing}=nothing,
-        startTime::Union{Int,Nothing}=nothing,
-        endTime::Union{Int,Nothing}=nothing,
-        limit::Int=500)
-
-        params = Dict{String,Any}(
-            "symbol" => symbol,
-            "limit" => limit
-        )
-
-        !isnothing(orderId) && (params["orderId"] = orderId)
-        !isnothing(startTime) && (params["startTime"] = startTime)
-        !isnothing(endTime) && (params["endTime"] = endTime)
-
-        return send_signed_request(client, "allOrders", params)
-    end
-
-    """
         my_trades(client, symbol; kwargs...)
 
     Query account trade list.
+    Weight: 20 without orderId, 5 with orderId
     """
     function my_trades(client::WebSocketClient, symbol::String;
         orderId::Union{Int,Nothing}=nothing,
@@ -1673,6 +1651,11 @@ module WebSocketAPI
         endTime::Union{Int,Nothing}=nothing,
         fromId::Union{Int,Nothing}=nothing,
         limit::Int=500)
+
+        # Validate limit
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000"))
+        end
 
         params = Dict{String,Any}(
             "symbol" => symbol,
@@ -1684,7 +1667,7 @@ module WebSocketAPI
         !isnothing(endTime) && (params["endTime"] = endTime)
         !isnothing(fromId) && (params["fromId"] = fromId)
 
-        return send_signed_request(client, "my_trades", params)
+        return send_signed_request(client, "myTrades", params)
     end
 
     """
@@ -1702,12 +1685,18 @@ module WebSocketAPI
         all_orders(client, symbol; kwargs...)
 
     Query information about all orders – active, canceled, filled – filtered by time range.
+    Weight: 20
     """
     function all_orders(client::WebSocketClient, symbol::String;
         orderId::Union{Int,Nothing}=nothing,
         startTime::Union{Int,Nothing}=nothing,
         endTime::Union{Int,Nothing}=nothing,
         limit::Int=500)
+
+        # Validate limit
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000"))
+        end
 
         params = Dict{String,Any}(
             "symbol" => symbol,
@@ -1756,12 +1745,18 @@ module WebSocketAPI
         all_order_lists(client; kwargs...)
 
     Query information about all order lists, filtered by time range.
+    Weight: 20
     """
     function all_order_lists(client::WebSocketClient;
         fromId::Union{Int,Nothing}=nothing,
         startTime::Union{Int,Nothing}=nothing,
         endTime::Union{Int,Nothing}=nothing,
         limit::Int=500)
+
+        # Validate limit
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000"))
+        end
 
         params = Dict{String,Any}("limit" => limit)
 
@@ -1776,12 +1771,18 @@ module WebSocketAPI
         my_prevented_matches(client, symbol; kwargs...)
 
     Displays the list of orders that were expired due to STP.
+    Weight: 2 for preventedMatchId, 20 for orderId
     """
     function my_prevented_matches(client::WebSocketClient, symbol::String;
         preventedMatchId::Union{Int,Nothing}=nothing,
         orderId::Union{Int,Nothing}=nothing,
         fromPreventedMatchId::Union{Int,Nothing}=nothing,
         limit::Int=500)
+
+        # Validate limit
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000"))
+        end
 
         params = Dict{String,Any}(
             "symbol" => symbol,
@@ -1799,6 +1800,7 @@ module WebSocketAPI
         my_allocations(client, symbol; kwargs...)
 
     Retrieves allocations resulting from SOR order placement.
+    Weight: 20
     """
     function my_allocations(client::WebSocketClient, symbol::String;
         startTime::Union{Int,Nothing}=nothing,
@@ -1806,6 +1808,11 @@ module WebSocketAPI
         fromAllocationId::Union{Int,Nothing}=nothing,
         limit::Int=500,
         orderId::Union{Int,Nothing}=nothing)
+
+        # Validate limit
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000"))
+        end
 
         params = Dict{String,Any}(
             "symbol" => symbol,
@@ -1824,6 +1831,7 @@ module WebSocketAPI
         account_commission(client, symbol)
 
     Get current account commission rates.
+    Weight: 20
     """
     function account_commission(client::WebSocketClient, symbol::String)
         params = Dict{String,Any}("symbol" => symbol)
@@ -1834,10 +1842,16 @@ module WebSocketAPI
         order_amendments(client, symbol, orderId; kwargs...)
 
     Queries all amendments of a single order.
+    Weight: 4
     """
     function order_amendments(client::WebSocketClient, symbol::String, orderId::Int;
         fromExecutionId::Union{Int,Nothing}=nothing,
         limit::Int=500)
+
+        # Validate limit
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000"))
+        end
 
         params = Dict{String,Any}(
             "symbol" => symbol,
@@ -1885,7 +1899,13 @@ module WebSocketAPI
         userdata_stream_subscribe(client)
 
     Subscribe to the User Data Stream in the current WebSocket connection.
+    
     This method requires an authenticated WebSocket connection using Ed25519 keys.
+    User Data Stream events are available in both JSON and SBE sessions.
+    
+    Weight: 2
+    
+    Returns a result with subscriptionId field.
     """
     function userdata_stream_subscribe(client::WebSocketClient)
         return send_request(client, "userDataStream.subscribe", Dict{String,Any}())
@@ -1895,8 +1915,14 @@ module WebSocketAPI
         userdata_stream_unsubscribe(client; subscriptionId)
 
     Stop listening to the User Data Stream in the current WebSocket connection.
+    
     When called with no subscriptionId parameter, this will close all subscriptions.
     When called with subscriptionId, this will attempt to close that specific subscription.
+    
+    Note: session.logout will only close the subscription created with userDataStream.subscribe
+    but not subscriptions opened with userDataStream.subscribe.signature.
+    
+    Weight: 2
     """
     function userdata_stream_unsubscribe(client::WebSocketClient; subscriptionId::Union{Int,Nothing}=nothing)
         if !isnothing(client.ws_connection) && !isclosed(client.ws_connection)
@@ -1910,13 +1936,20 @@ module WebSocketAPI
         else
             @info "WebSocket connection already closed. Skipping userDataStream.unsubscribe."
         end
-        return nothing # Or some other indicator of a skipped action
+        return nothing
     end
 
     """
         session_subscriptions(client)
 
     List all active User Data Stream subscriptions in the current session.
+    
+    Users are expected to track on their side which subscription corresponds to which account.
+    
+    Weight: 2
+    Data Source: Memory
+    
+    Returns an array of subscriptions with subscriptionId fields.
     """
     function session_subscriptions(client::WebSocketClient)
         return send_request(client, "session.subscriptions", Dict{String,Any}())
@@ -1927,6 +1960,16 @@ module WebSocketAPI
 
     Subscribe to User Data Stream using signature subscription for a specific API key.
     This allows subscribing to User Data Stream for any account with valid API key and signature.
+    
+    Weight: 2
+    Data Source: Memory
+    
+    # Parameters
+    - `apiKey`: API key for the account
+    - `timestamp`: Request timestamp
+    - `signature`: Request signature
+    
+    Returns a result with subscriptionId field.
     """
     function userdata_stream_subscribe_signature(client::WebSocketClient, apiKey::String, timestamp::Int, signature::String)
         params = Dict{String,Any}(
