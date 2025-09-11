@@ -132,6 +132,33 @@ module WebSocketAPI
     function get_timestamp(client::WebSocketClient)
         return Int(round(datetime2unix(now()) * 1000)) + client.time_offset
     end
+    
+    """
+        add_optional_params!(params::Dict{String,Any}, args::Pair...)
+    
+    Helper function to add optional parameters to a request dictionary.
+    Automatically converts numeric values to strings for price/quantity fields.
+    """
+    function add_optional_params!(params::Dict{String,Any}, args::Pair...)
+        for (key, value) in args
+            key_str = string(key)
+            if !isnothing(value)
+                if isa(value, String) && !isempty(value)
+                    params[key_str] = value
+                elseif isa(value, Number)
+                    # Convert price/quantity related fields to strings
+                    if occursin(r"(?i)(price|qty|quantity)", key_str)
+                        params[key_str] = string(value)
+                    else
+                        params[key_str] = value
+                    end
+                elseif !isa(value, String)  # For non-string, non-number types
+                    params[key_str] = value
+                end
+            end
+        end
+        return params
+    end
 
     function connect!(client::WebSocketClient)
         # Check connection rate limit (300 connections per 5 minutes per IP)
@@ -549,7 +576,7 @@ module WebSocketAPI
         return_full_response::Bool=false, api_version::String="",
         override_api_key::String="", override_signature::Bool=false
         )
-        # Session management methods have special parameter handling.
+        # Session.logon has special parameter handling
         if method == "session.logon"
             params_to_sign = Dict{String,Any}(
                 "apiKey" => client.config.api_key,
@@ -559,30 +586,11 @@ module WebSocketAPI
             query_string = RESTAPI.build_query_string(params_to_sign)
             signature = Signature.sign_message(client.signer, query_string)
 
-            # Logon requires the full set of parameters.
+            # Logon requires the full set of parameters
             request_params = params_to_sign
             request_params["signature"] = signature
 
             return send_request(client, method, request_params; return_full_response=return_full_response, api_version=api_version)
-        elseif method in ["session.logout", "session.status"]
-            # For authenticated sessions, these methods do not require parameters
-            if client.is_authenticated
-                return send_request(client, method, Dict{String,Any}(); return_full_response=return_full_response, api_version=api_version)
-            else
-                # If not authenticated, require full authentication parameters
-                params_to_sign = Dict{String,Any}(
-                    "apiKey" => client.config.api_key,
-                    "timestamp" => get_timestamp(client),
-                    "recvWindow" => client.config.recv_window,
-                )
-                query_string = RESTAPI.build_query_string(params_to_sign)
-                signature = Signature.sign_message(client.signer, query_string)
-
-                request_params = params_to_sign
-                request_params["signature"] = signature
-
-                return send_request(client, method, request_params; return_full_response=return_full_response, api_version=api_version)
-            end
         end
         
         # Always add timestamp and recvWindow
@@ -618,25 +626,27 @@ module WebSocketAPI
     end
 
     function session_status(client::WebSocketClient)
-        response = send_signed_request(client, "session.status", Dict{String,Any}())
+        # No authentication required - works on any connection
+        response = send_request(client, "session.status", Dict{String,Any}())
         return JSON3.read(JSON3.write(response), WebSocketConnection)
     end
 
-function session_logout(client::WebSocketClient)
-    if !isnothing(client.ws_connection) && !WebSockets.isclosed(client.ws_connection)
-        try
-            response = send_signed_request(client, "session.logout", Dict{String,Any}())
-            client.is_authenticated = false
-            return response
-        catch e
-            @warn "Failed to send session.logout, likely because the connection was already closed. Proceeding with disconnection. Error: $e"
+    function session_logout(client::WebSocketClient)
+        if !isnothing(client.ws_connection) && !WebSockets.isclosed(client.ws_connection)
+            try
+                # No authentication required - works on any connection
+                response = send_request(client, "session.logout", Dict{String,Any}())
+                client.is_authenticated = false
+                return JSON3.read(JSON3.write(response), WebSocketConnection)
+            catch e
+                @warn "Failed to send session.logout, likely because the connection was already closed. Proceeding with disconnection. Error: $e"
+            end
+        else
+            @info "WebSocket connection already closed. Skipping session.logout."
         end
-    else
-        @info "WebSocket connection already closed. Skipping session.logout."
+        client.is_authenticated = false
+        return nothing # Or some other indicator of a skipped logout
     end
-    client.is_authenticated = false
-    return nothing # Or some other indicator of a skipped logout
-end
 
     # --- General Methods ---
 
@@ -648,20 +658,60 @@ end
         return send_request(client, "time", Dict{String,Any}())
     end
 
-    function exchangeInfo(client::WebSocketClient; symbols::Union{Vector{String},Nothing}=nothing, permissions::Union{Vector{String},Nothing}=nothing)
+    function exchangeInfo(client::WebSocketClient; 
+        symbol::String="",
+        symbols::Union{Vector{String},Nothing}=nothing, 
+        permissions::Union{Vector{String},Nothing}=nothing,
+        showPermissionSets::Union{Bool,Nothing}=nothing,
+        symbolStatus::String=""
+    )
         params = Dict{String,Any}()
+        
+        # Only one of symbol, symbols, permissions can be specified
+        param_count = 0
+        if !isempty(symbol)
+            params["symbol"] = symbol
+            param_count += 1
+        end
         if !isnothing(symbols)
             params["symbols"] = symbols
+            param_count += 1
         end
         if !isnothing(permissions)
             params["permissions"] = permissions
+            param_count += 1
         end
+        
+        if param_count > 1
+            throw(ArgumentError("Only one of symbol, symbols, or permissions parameters can be specified"))
+        end
+        
+        if !isnothing(showPermissionSets)
+            params["showPermissionSets"] = showPermissionSets
+        end
+        
+        if !isempty(symbolStatus)
+            if !isempty(symbol) || !isnothing(symbols)
+                throw(ArgumentError("symbolStatus cannot be used in combination with symbol or symbols"))
+            end
+            if !(symbolStatus in ["TRADING", "HALT", "BREAK"])
+                throw(ArgumentError("Invalid symbolStatus. Valid values: TRADING, HALT, BREAK"))
+            end
+            params["symbolStatus"] = symbolStatus
+        end
+        
         return send_request(client, "exchangeInfo", params)
     end
 
     # --- Market Data Requests ---
 
     function depth(client::WebSocketClient, symbol::String; limit::Int=100)
+        # Validate limit values
+        valid_limits = [5, 10, 20, 50, 100, 500, 1000, 5000]
+        if !(limit in valid_limits)
+            throw(ArgumentError("Invalid limit for depth. Valid values: $(join(valid_limits, ", "))"))
+        end
+        
         params = Dict{String,Any}("symbol" => symbol)
         if limit != 100
             params["limit"] = limit
@@ -671,6 +721,11 @@ end
     end
 
     function trades_recent(client::WebSocketClient, symbol::String; limit::Int=500)
+        # Validate limit
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000 for recent trades"))
+        end
+        
         params = Dict{String,Any}("symbol" => symbol)
         if limit != 500
             params["limit"] = limit
@@ -680,6 +735,11 @@ end
     end
 
     function trades_historical(client::WebSocketClient, symbol::String; from_id::Union{Int,Nothing}=nothing, limit::Int=500)
+        # Validate limit
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000 for historical trades"))
+        end
+        
         params = Dict{String,Any}("symbol" => symbol)
         if !isnothing(from_id)
             params["fromId"] = from_id
@@ -693,6 +753,16 @@ end
 
     function trades_aggregate(client::WebSocketClient, symbol::String; from_id::Union{Int,Nothing}=nothing,
         start_time::Union{Int,Nothing}=nothing, end_time::Union{Int,Nothing}=nothing, limit::Int=500)
+        # Validate limit
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000 for aggregate trades"))
+        end
+        
+        # Validate that fromId cannot be used with time parameters
+        if !isnothing(from_id) && (!isnothing(start_time) || !isnothing(end_time))
+            throw(ArgumentError("fromId cannot be used together with startTime or endTime"))
+        end
+        
         params = Dict{String,Any}("symbol" => symbol)
         if !isnothing(from_id)
             params["fromId"] = from_id
@@ -713,6 +783,23 @@ end
     function klines(client::WebSocketClient, symbol::String, interval::String;
         start_time::Union{Int,Nothing}=nothing, end_time::Union{Int,Nothing}=nothing,
         time_zone::String="0", limit::Int=500)
+        
+        # Validate interval
+        valid_intervals = ["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
+        if !(interval in valid_intervals)
+            throw(ArgumentError("Invalid interval. Valid values: $(join(valid_intervals, ", "))"))
+        end
+        
+        # Validate limit
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000 for klines"))
+        end
+        
+        # Validate timezone
+        if time_zone != "0" && !occursin(r"^[+-]?\d{1,2}(:\d{2})?$", time_zone)
+            throw(ArgumentError("Invalid timezone format. Use hours:minutes (e.g., -1:00, 05:45) or hours only (e.g., 0, 8, 4)"))
+        end
+        
         params = Dict{String,Any}(
             "symbol" => symbol,
             "interval" => interval
@@ -740,6 +827,23 @@ end
     function ui_klines(client::WebSocketClient, symbol::String, interval::String;
         start_time::Union{Int,Nothing}=nothing, end_time::Union{Int,Nothing}=nothing,
         time_zone::String="0", limit::Int=500)
+        
+        # Validate interval (same as klines)
+        valid_intervals = ["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
+        if !(interval in valid_intervals)
+            throw(ArgumentError("Invalid interval. Valid values: $(join(valid_intervals, ", "))"))
+        end
+        
+        # Validate limit
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000 for uiKlines"))
+        end
+        
+        # Validate timezone
+        if time_zone != "0" && !occursin(r"^[+-]?\d{1,2}(:\d{2})?$", time_zone)
+            throw(ArgumentError("Invalid timezone format. Use hours:minutes (e.g., -1:00, 05:45) or hours only (e.g., 0, 8, 4)"))
+        end
+        
         params = Dict{String,Any}(
             "symbol" => symbol,
             "interval" => interval
@@ -771,6 +875,16 @@ end
     end
 
     function ticker_24hr(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], type::String="FULL")
+        # Validate type
+        if !(type in ["FULL", "MINI"])
+            throw(ArgumentError("Invalid type. Valid values: FULL, MINI"))
+        end
+        
+        # symbol and symbols cannot be used together
+        if !isempty(symbol) && !isempty(symbols)
+            throw(ArgumentError("symbol and symbols cannot be used together"))
+        end
+        
         params = Dict{String,Any}()
         single_symbol = false
         if !isempty(symbol)
@@ -792,6 +906,22 @@ end
 
     function ticker_trading_day(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[],
         time_zone::String="0", type::String="FULL")
+        
+        # Validate timezone
+        if time_zone != "0" && !occursin(r"^[+-]?\d{1,2}(:\d{2})?$", time_zone)
+            throw(ArgumentError("Invalid timezone format. Use hours:minutes (e.g., -1:00, 05:45) or hours only (e.g., 0, 8, 4)"))
+        end
+        
+        # Validate type
+        if !(type in ["FULL", "MINI"])
+            throw(ArgumentError("Invalid type. Valid values: FULL, MINI"))
+        end
+        
+        # Either symbol or symbols must be specified (or neither for all symbols)
+        if !isempty(symbol) && !isempty(symbols)
+            throw(ArgumentError("symbol and symbols cannot be used together"))
+        end
+        
         params = Dict{String,Any}()
         single_symbol = false
         if !isempty(symbol)
@@ -814,8 +944,41 @@ end
         end
     end
 
-    function ticker(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[],
-        window_size::String="1d", type::String="FULL")
+    function ticker(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], window_size::String="1d", type::String="FULL")
+        
+        # Validate window size
+        valid_window_sizes = [
+            # Minutes: 1m to 59m
+            ["$(i)m" for i in 1:59]...,
+            # Hours: 1h to 23h
+            ["$(i)h" for i in 1:23]...,
+            # Days: 1d to 7d
+            ["$(i)d" for i in 1:7]...
+        ]
+        if !(window_size in valid_window_sizes)
+            throw(ArgumentError("Invalid window size. Valid formats: 1m-59m, 1h-23h, 1d-7d"))
+        end
+        
+        # Validate type
+        if !(type in ["FULL", "MINI"])
+            throw(ArgumentError("Invalid type. Valid values: FULL, MINI"))
+        end
+        
+        # Either symbol or symbols must be specified
+        if isempty(symbol) && isempty(symbols)
+            throw(ArgumentError("Either symbol or symbols must be specified"))
+        end
+        
+        # symbol and symbols cannot be used together
+        if !isempty(symbol) && !isempty(symbols)
+            throw(ArgumentError("symbol and symbols cannot be used together"))
+        end
+        
+        # Maximum 200 symbols
+        if length(symbols) > 200
+            throw(ArgumentError("Maximum 200 symbols allowed in one request"))
+        end
+        
         params = Dict{String,Any}()
         single_symbol = false
         if !isempty(symbol)
@@ -839,6 +1002,11 @@ end
     end
 
     function ticker_price(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[])
+        # symbol and symbols cannot be used together
+        if !isempty(symbol) && !isempty(symbols)
+            throw(ArgumentError("symbol and symbols cannot be used together"))
+        end
+        
         params = Dict{String,Any}()
         single_symbol = false
         if !isempty(symbol)
@@ -852,6 +1020,11 @@ end
     end
 
     function ticker_book(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[])
+        # symbol and symbols cannot be used together
+        if !isempty(symbol) && !isempty(symbols)
+            throw(ArgumentError("symbol and symbols cannot be used together"))
+        end
+        
         params = Dict{String,Any}()
         single_symbol = false
         if !isempty(symbol)
@@ -897,10 +1070,80 @@ end
         quantity::Union{Float64,String,Nothing}=nothing, quoteOrderQty::Union{Float64,String,Nothing}=nothing,
         newClientOrderId::String="", stopPrice::Union{Float64,String,Nothing}=nothing,
         trailingDelta::Union{Int,Nothing}=nothing, icebergQty::Union{Float64,String,Nothing}=nothing,
-        newOrderRespType::String="FULL", strategyId::Union{Int,Nothing}=nothing,
+        newOrderRespType::String="", strategyId::Union{Int,Nothing}=nothing,
         strategyType::Union{Int,Nothing}=nothing, selfTradePreventionMode::String="",
         pegPriceType::String="", pegOffsetValue::Union{Int,Nothing}=nothing, pegOffsetType::String=""
     )
+        # Validate order type
+        valid_types = ["LIMIT", "MARKET", "STOP_LOSS", "STOP_LOSS_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT", "LIMIT_MAKER"]
+        if !(type in valid_types)
+            throw(ArgumentError("Invalid order type. Valid types: $(join(valid_types, ", "))"))
+        end
+        
+        # Validate side
+        if !(side in ["BUY", "SELL"])
+            throw(ArgumentError("Invalid side. Must be BUY or SELL"))
+        end
+        
+        # Validate mandatory parameters based on order type
+        if type == "LIMIT" || type == "LIMIT_MAKER"
+            if isnothing(price)
+                throw(ArgumentError("price is required for $type orders"))
+            end
+            if isnothing(quantity)
+                throw(ArgumentError("quantity is required for $type orders"))
+            end
+            if type == "LIMIT" && isempty(timeInForce)
+                timeInForce = "GTC"  # Default value
+            end
+        elseif type == "MARKET"
+            if isnothing(quantity) && isnothing(quoteOrderQty)
+                throw(ArgumentError("Either quantity or quoteOrderQty is required for MARKET orders"))
+            end
+            if !isnothing(quantity) && !isnothing(quoteOrderQty)
+                throw(ArgumentError("Cannot specify both quantity and quoteOrderQty for MARKET orders"))
+            end
+        elseif type in ["STOP_LOSS", "TAKE_PROFIT"]
+            if isnothing(quantity)
+                throw(ArgumentError("quantity is required for $type orders"))
+            end
+            if isnothing(stopPrice) && isnothing(trailingDelta)
+                throw(ArgumentError("Either stopPrice or trailingDelta is required for $type orders"))
+            end
+        elseif type in ["STOP_LOSS_LIMIT", "TAKE_PROFIT_LIMIT"]
+            if isnothing(price)
+                throw(ArgumentError("price is required for $type orders"))
+            end
+            if isnothing(quantity)
+                throw(ArgumentError("quantity is required for $type orders"))
+            end
+            if isnothing(stopPrice) && isnothing(trailingDelta)
+                throw(ArgumentError("Either stopPrice or trailingDelta is required for $type orders"))
+            end
+            if isempty(timeInForce)
+                timeInForce = "GTC"  # Default value
+            end
+        end
+        
+        # Validate pegged order parameters
+        if !isempty(pegPriceType)
+            if !(pegPriceType in ["PRIMARY_PEG", "MARKET_PEG"])
+                throw(ArgumentError("Invalid pegPriceType. Valid values: PRIMARY_PEG, MARKET_PEG"))
+            end
+            if !isnothing(pegOffsetValue) && isempty(pegOffsetType)
+                pegOffsetType = "PRICE_LEVEL"  # Only supported value
+            end
+        end
+        
+        # Validate newOrderRespType
+        if !isempty(newOrderRespType) && !(newOrderRespType in ["ACK", "RESULT", "FULL"])
+            throw(ArgumentError("Invalid newOrderRespType. Valid values: ACK, RESULT, FULL"))
+        end
+        
+        # Set default response type based on order type
+        if isempty(newOrderRespType)
+            newOrderRespType = (type in ["MARKET", "LIMIT"]) ? "FULL" : "ACK"
+        end
 
         # --- Parameter Preparation ---
         params = Dict{String,Any}(
@@ -1013,8 +1256,28 @@ end
         client::WebSocketClient, symbol::String, cancelReplaceMode::String, side::String, type::String;
         cancelOrderId::Union{Int,Nothing}=nothing, cancelOrigClientOrderId::String="",
         cancelNewClientOrderId::String="", cancelRestrictions::String="", orderRateLimitExceededMode::String="DO_NOTHING",
-        pegPriceType::String="", pegOffsetValue::Union{Int,Nothing}=nothing, pegOffsetType::String="", kwargs...
-    )
+        price::Union{Float64,String,Nothing}=nothing, quantity::Union{Float64,String,Nothing}=nothing,
+        quoteOrderQty::Union{Float64,String,Nothing}=nothing, timeInForce::String="",
+        newClientOrderId::String="", newOrderRespType::String="",
+        stopPrice::Union{Float64,String,Nothing}=nothing, trailingDelta::Union{Int,Nothing}=nothing,
+        icebergQty::Union{Float64,String,Nothing}=nothing, strategyId::Union{Int,Nothing}=nothing,
+        strategyType::Union{Int,Nothing}=nothing, selfTradePreventionMode::String="",
+        pegPriceType::String="", pegOffsetValue::Union{Int,Nothing}=nothing, pegOffsetType::String=""
+        )
+        # Validate cancelReplaceMode
+        if !(cancelReplaceMode in ["STOP_ON_FAILURE", "ALLOW_FAILURE"])
+            throw(ArgumentError("Invalid cancelReplaceMode. Valid values: STOP_ON_FAILURE, ALLOW_FAILURE"))
+        end
+        
+        # Validate cancelRestrictions if provided
+        if !isempty(cancelRestrictions) && !(cancelRestrictions in ["ONLY_NEW", "ONLY_PARTIALLY_FILLED"])
+            throw(ArgumentError("Invalid cancelRestrictions. Valid values: ONLY_NEW, ONLY_PARTIALLY_FILLED"))
+        end
+        
+        # Validate orderRateLimitExceededMode
+        if !(orderRateLimitExceededMode in ["DO_NOTHING", "CANCEL_ONLY"])
+            throw(ArgumentError("Invalid orderRateLimitExceededMode. Valid values: DO_NOTHING, CANCEL_ONLY"))
+        end
 
         params = Dict{String,Any}(
             "symbol" => symbol,
@@ -1029,22 +1292,29 @@ end
         elseif !isempty(cancelOrigClientOrderId)
             params["cancelOrigClientOrderId"] = cancelOrigClientOrderId
         else
-            error("Either cancelOrderId or cancelOrigClientOrderId must be provided")
+            throw(ArgumentError("Either cancelOrderId or cancelOrigClientOrderId must be provided"))
         end
 
         !isempty(cancelNewClientOrderId) && (params["cancelNewClientOrderId"] = cancelNewClientOrderId)
         !isempty(cancelRestrictions) && (params["cancelRestrictions"] = cancelRestrictions)
         !isempty(orderRateLimitExceededMode) && (params["orderRateLimitExceededMode"] = orderRateLimitExceededMode)
+        
+        # New order parameters
+        !isnothing(price) && (params["price"] = string(price))
+        !isnothing(quantity) && (params["quantity"] = string(quantity))
+        !isnothing(quoteOrderQty) && (params["quoteOrderQty"] = string(quoteOrderQty))
+        !isempty(timeInForce) && (params["timeInForce"] = timeInForce)
+        !isempty(newClientOrderId) && (params["newClientOrderId"] = newClientOrderId)
+        !isempty(newOrderRespType) && (params["newOrderRespType"] = newOrderRespType)
+        !isnothing(stopPrice) && (params["stopPrice"] = string(stopPrice))
+        !isnothing(trailingDelta) && (params["trailingDelta"] = trailingDelta)
+        !isnothing(icebergQty) && (params["icebergQty"] = string(icebergQty))
+        !isnothing(strategyId) && (params["strategyId"] = strategyId)
+        !isnothing(strategyType) && (params["strategyType"] = strategyType)
+        !isempty(selfTradePreventionMode) && (params["selfTradePreventionMode"] = selfTradePreventionMode)
         !isempty(pegPriceType) && (params["pegPriceType"] = pegPriceType)
         !isnothing(pegOffsetValue) && (params["pegOffsetValue"] = pegOffsetValue)
         !isempty(pegOffsetType) && (params["pegOffsetType"] = pegOffsetType)
-
-        # Add new order parameters from kwargs
-        for (key, value) in kwargs
-            if !isnothing(value) && !isempty(string(value))
-                params[string(key)] = isa(value, Number) ? value : string(value)
-            end
-        end
 
         return send_signed_request(client, "order.cancelReplace", params)
     end
@@ -1057,7 +1327,7 @@ end
     function amend_order(
         client::WebSocketClient, symbol::String; orderId::Union{Int,Nothing}=nothing,
         origClientOrderId::String="", newClientOrderId::String="", newQty::Union{Float64,String,Nothing}=nothing
-    )
+        )
 
         params = Dict{String,Any}("symbol" => symbol)
 
@@ -1105,7 +1375,8 @@ end
         belowIcebergQty::Union{Float64,Nothing}=nothing, belowPrice::Union{Float64,Nothing}=nothing, belowStopPrice::Union{Float64,Nothing}=nothing,
         belowTrailingDelta::Union{Int,Nothing}=nothing, belowTimeInForce::String="", belowStrategyId::Union{Int,Nothing}=nothing,
         belowStrategyType::Union{Int,Nothing}=nothing, belowPegPriceType::String="", belowPegOffsetType::String="",
-        belowPegOffsetValue::Union{Int,Nothing}=nothing, newOrderRespType::String="FULL", selfTradePreventionMode::String="")
+        belowPegOffsetValue::Union{Int,Nothing}=nothing, newOrderRespType::String="FULL", selfTradePreventionMode::String=""
+        )
 
         params = Dict{String,Any}(
             "symbol" => symbol,
