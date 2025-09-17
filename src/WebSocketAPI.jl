@@ -101,8 +101,7 @@ module WebSocketAPI
     """
     function get_rate_limit_status(client::WebSocketClient)
         # Use exchangeInfo to get current limits
-        response = send_request(client, "exchangeInfo", Dict{String,Any}(); 
-                               return_full_response=true)
+        response = send_request(client, "exchangeInfo", Dict{String,Any}(); return_full_response=true)
         
         if haskey(response, :rateLimits)
             return response.rateLimits
@@ -468,11 +467,11 @@ module WebSocketAPI
     - `api_version`: API version prefix (e.g., "v3")
     - `request_id_type`: Type of request ID (:uuid, :timestamp, :sequential)
     """
-    function send_request(client::WebSocketClient, method::String, params::Dict{String,Any}; 
-                         return_rate_limits::Union{Bool,Nothing}=nothing, 
-                         return_full_response::Bool=false,
-                         api_version::String="",
-                         request_id_type::Symbol=:uuid)
+    function send_request(
+        client::WebSocketClient, method::String, params::Dict{String,Any}; 
+        return_rate_limits::Union{Bool,Nothing}=nothing, return_full_response::Bool=false, 
+        api_version::String="", request_id_type::Symbol=:uuid
+        )
         ensure_connected!(client)
 
         # Proactively check rate limits
@@ -516,6 +515,11 @@ module WebSocketAPI
         end
 
         try
+            # Check connection before sending
+            if isnothing(client.ws_connection) || WebSockets.isclosed(client.ws_connection)
+                error("WebSocket connection is not available")
+            end
+            
             HTTP.WebSockets.send(client.ws_connection, JSON3.write(request))
 
             # Wait for the response
@@ -622,13 +626,31 @@ module WebSocketAPI
         end
         response = send_signed_request(client, "session.logon", Dict{String,Any}())
         client.is_authenticated = true # Assume success if no exception is thrown
-        return JSON3.read(JSON3.write(response), WebSocketConnection)
+        # Response is already parsed, just convert to WebSocketConnection type
+        # Handle potential nothing values from response
+        return WebSocketConnection(
+            something(get(response, "apiKey", nothing), ""),
+            something(get(response, "authorizedSince", nothing), 0),
+            something(get(response, "connectedSince", nothing), 0),
+            something(get(response, "returnRateLimits", nothing), false),
+            something(get(response, "serverTime", nothing), 0),
+            something(get(response, "userDataStream", nothing), false)
+        )
     end
 
     function session_status(client::WebSocketClient)
         # No authentication required - works on any connection
         response = send_request(client, "session.status", Dict{String,Any}())
-        return JSON3.read(JSON3.write(response), WebSocketConnection)
+        # Response is already parsed, just convert to WebSocketConnection type
+        # Handle potential nothing values from response
+        return WebSocketConnection(
+            something(get(response, "apiKey", nothing), ""),
+            something(get(response, "authorizedSince", nothing), 0),
+            something(get(response, "connectedSince", nothing), 0),
+            something(get(response, "returnRateLimits", nothing), false),
+            something(get(response, "serverTime", nothing), 0),
+            something(get(response, "userDataStream", nothing), false)
+        )
     end
 
     function session_logout(client::WebSocketClient)
@@ -637,7 +659,16 @@ module WebSocketAPI
                 # No authentication required - works on any connection
                 response = send_request(client, "session.logout", Dict{String,Any}())
                 client.is_authenticated = false
-                return JSON3.read(JSON3.write(response), WebSocketConnection)
+                # Response is already parsed, just convert to WebSocketConnection type
+                # Handle potential nothing values from response
+                return WebSocketConnection(
+                    something(get(response, "apiKey", nothing), ""),
+                    something(get(response, "authorizedSince", nothing), 0),
+                    something(get(response, "connectedSince", nothing), 0),
+                    something(get(response, "returnRateLimits", nothing), false),
+                    something(get(response, "serverTime", nothing), 0),
+                    something(get(response, "userDataStream", nothing), false)
+                )
             catch e
                 @warn "Failed to send session.logout, likely because the connection was already closed. Proceeding with disconnection. Error: $e"
             end
@@ -664,7 +695,8 @@ module WebSocketAPI
         permissions::Union{Vector{String},Nothing}=nothing,
         showPermissionSets::Union{Bool,Nothing}=nothing,
         symbolStatus::String=""
-    )
+        )
+
         params = Dict{String,Any}()
         
         # Only one of symbol, symbols, permissions can be specified
@@ -700,7 +732,10 @@ module WebSocketAPI
             params["symbolStatus"] = symbolStatus
         end
         
-        return send_request(client, "exchangeInfo", params)
+        response = send_request(client, "exchangeInfo", params)
+
+        # Convert JSON3.Object to ExchangeInfo type
+        return JSON3.read(JSON3.write(response), ExchangeInfo)
     end
 
     # --- Market Data Requests ---
@@ -1072,87 +1107,28 @@ module WebSocketAPI
         trailingDelta::Union{Int,Nothing}=nothing, icebergQty::Union{Float64,String,Nothing}=nothing,
         newOrderRespType::String="", strategyId::Union{Int,Nothing}=nothing,
         strategyType::Union{Int,Nothing}=nothing, selfTradePreventionMode::String="",
-        pegPriceType::String="", pegOffsetValue::Union{Int,Nothing}=nothing, pegOffsetType::String=""
+        kwargs...  # Accept any additional parameters
     )
-        # Validate order type
-        valid_types = ["LIMIT", "MARKET", "STOP_LOSS", "STOP_LOSS_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT", "LIMIT_MAKER"]
-        if !(type in valid_types)
-            throw(ArgumentError("Invalid order type. Valid types: $(join(valid_types, ", "))"))
+        # Basic validation only
+        side in ["BUY", "SELL"] || throw(ArgumentError("Invalid side: $side"))
+
+        # Set defaults
+        if type in ["LIMIT", "LIMIT_MAKER"] && isempty(timeInForce)
+            timeInForce = "GTC"
         end
-        
-        # Validate side
-        if !(side in ["BUY", "SELL"])
-            throw(ArgumentError("Invalid side. Must be BUY or SELL"))
-        end
-        
-        # Validate mandatory parameters based on order type
-        if type == "LIMIT" || type == "LIMIT_MAKER"
-            if isnothing(price)
-                throw(ArgumentError("price is required for $type orders"))
-            end
-            if isnothing(quantity)
-                throw(ArgumentError("quantity is required for $type orders"))
-            end
-            if type == "LIMIT" && isempty(timeInForce)
-                timeInForce = "GTC"  # Default value
-            end
-        elseif type == "MARKET"
-            if isnothing(quantity) && isnothing(quoteOrderQty)
-                throw(ArgumentError("Either quantity or quoteOrderQty is required for MARKET orders"))
-            end
-            if !isnothing(quantity) && !isnothing(quoteOrderQty)
-                throw(ArgumentError("Cannot specify both quantity and quoteOrderQty for MARKET orders"))
-            end
-        elseif type in ["STOP_LOSS", "TAKE_PROFIT"]
-            if isnothing(quantity)
-                throw(ArgumentError("quantity is required for $type orders"))
-            end
-            if isnothing(stopPrice) && isnothing(trailingDelta)
-                throw(ArgumentError("Either stopPrice or trailingDelta is required for $type orders"))
-            end
-        elseif type in ["STOP_LOSS_LIMIT", "TAKE_PROFIT_LIMIT"]
-            if isnothing(price)
-                throw(ArgumentError("price is required for $type orders"))
-            end
-            if isnothing(quantity)
-                throw(ArgumentError("quantity is required for $type orders"))
-            end
-            if isnothing(stopPrice) && isnothing(trailingDelta)
-                throw(ArgumentError("Either stopPrice or trailingDelta is required for $type orders"))
-            end
-            if isempty(timeInForce)
-                timeInForce = "GTC"  # Default value
-            end
-        end
-        
-        # Validate pegged order parameters
-        if !isempty(pegPriceType)
-            if !(pegPriceType in ["PRIMARY_PEG", "MARKET_PEG"])
-                throw(ArgumentError("Invalid pegPriceType. Valid values: PRIMARY_PEG, MARKET_PEG"))
-            end
-            if !isnothing(pegOffsetValue) && isempty(pegOffsetType)
-                pegOffsetType = "PRICE_LEVEL"  # Only supported value
-            end
-        end
-        
-        # Validate newOrderRespType
-        if !isempty(newOrderRespType) && !(newOrderRespType in ["ACK", "RESULT", "FULL"])
-            throw(ArgumentError("Invalid newOrderRespType. Valid values: ACK, RESULT, FULL"))
-        end
-        
-        # Set default response type based on order type
+
         if isempty(newOrderRespType)
             newOrderRespType = (type in ["MARKET", "LIMIT"]) ? "FULL" : "ACK"
         end
 
-        # --- Parameter Preparation ---
+        # Build parameters
         params = Dict{String,Any}(
             "symbol" => symbol,
             "side" => side,
             "type" => type
         )
 
-        # Add optional parameters
+        # Add parameters if provided (simplified)
         !isempty(timeInForce) && (params["timeInForce"] = timeInForce)
         !isnothing(price) && (params["price"] = string(price))
         !isnothing(quantity) && (params["quantity"] = string(quantity))
@@ -1165,9 +1141,13 @@ module WebSocketAPI
         !isnothing(strategyId) && (params["strategyId"] = strategyId)
         !isnothing(strategyType) && (params["strategyType"] = strategyType)
         !isempty(selfTradePreventionMode) && (params["selfTradePreventionMode"] = selfTradePreventionMode)
-        !isempty(pegPriceType) && (params["pegPriceType"] = pegPriceType)
-        !isnothing(pegOffsetValue) && (params["pegOffsetValue"] = pegOffsetValue)
-        !isempty(pegOffsetType) && (params["pegOffsetType"] = pegOffsetType)
+
+        # Add any additional kwargs
+        for (key, value) in kwargs
+            if !isnothing(value)
+                params[string(key)] = isa(value, Number) ? value : string(value)
+            end
+        end
 
         return send_signed_request(client, "order.place", params)
     end
@@ -1925,7 +1905,7 @@ module WebSocketAPI
     Weight: 2
     """
     function userdata_stream_unsubscribe(client::WebSocketClient; subscriptionId::Union{Int,Nothing}=nothing)
-        if !isnothing(client.ws_connection) && !isclosed(client.ws_connection)
+        if !isnothing(client.ws_connection) && !WebSockets.isclosed(client.ws_connection)
             try
                 params = Dict{String,Any}()
                 !isnothing(subscriptionId) && (params["subscriptionId"] = subscriptionId)

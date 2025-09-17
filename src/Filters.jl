@@ -3,7 +3,7 @@ module Filters
     using ..Types
 
     export validate_order, validate_symbol, validate_interval, validate_order_type,
-           validate_side, validate_time_in_force
+           validate_side, validate_time_in_force, get_filters
 
     # --- Generic Validation Dispatch ---
 
@@ -117,6 +117,114 @@ module Filters
     end
 
     # --- Utility Functions (from former Utils.jl) ---
+
+    """
+        get_filters(symbol_info::SymbolInfo)
+
+    从交易对信息中提取并准备过滤器数组。
+
+    # 参数
+    - `symbol_info::SymbolInfo`: 交易对信息对象，包含过滤器配置
+
+    # 返回
+    - `filters::Vector{AbstractFilter}`: AbstractFilter 类型数组
+
+    # 示例
+    ```julia
+    exchangeinfo = exchangeInfo(ws_client, symbols = ["BTCUSDT"])
+    filters = get_filters(exchangeinfo.symbols[1])
+    ```
+    """
+    function get_filters(symbol_info::SymbolInfo)
+        filters = AbstractFilter[]
+
+        for filter in symbol_info.filters
+            filter_type = get(filter, :filterType, "")
+
+            if filter_type == "PRICE_FILTER"
+                push!(filters, PriceFilter(
+                    filter_type,
+                    get(filter, :minPrice, "0"),
+                    get(filter, :maxPrice, "0"),
+                    get(filter, :tickSize, "0")
+                ))
+            elseif filter_type == "LOT_SIZE"
+                push!(filters, LotSizeFilter(
+                    filter_type,
+                    get(filter, :minQty, "0"),
+                    get(filter, :maxQty, "0"),
+                    get(filter, :stepSize, "0")
+                ))
+            elseif filter_type == "MIN_NOTIONAL"
+                push!(filters, MinNotionalFilter(
+                    filter_type,
+                    get(filter, :minNotional, "0"),
+                    get(filter, :applyToMarket, true),
+                    get(filter, :avgPriceMins, 5)
+                ))
+            elseif filter_type == "NOTIONAL"
+                push!(filters, NotionalFilter(
+                    filter_type,
+                    get(filter, :minNotional, "0"),
+                    get(filter, :applyMinToMarket, true),
+                    get(filter, :maxNotional, "0"),
+                    get(filter, :applyMaxToMarket, true),
+                    get(filter, :avgPriceMins, 5)
+                ))
+            elseif filter_type == "ICEBERG_PARTS"
+                push!(filters, IcebergPartsFilter(
+                    filter_type,
+                    get(filter, :limit, 10)
+                ))
+            elseif filter_type == "MARKET_LOT_SIZE"
+                push!(filters, MarketLotSizeFilter(
+                    filter_type,
+                    get(filter, :minQty, "0"),
+                    get(filter, :maxQty, "0"),
+                    get(filter, :stepSize, "0")
+                ))
+            elseif filter_type == "PERCENT_PRICE_BY_SIDE"
+                push!(filters, PercentPriceBySideFilter(
+                    filter_type,
+                    get(filter, :bidMultiplierUp, "0"),
+                    get(filter, :bidMultiplierDown, "0"),
+                    get(filter, :askMultiplierUp, "0"),
+                    get(filter, :askMultiplierDown, "0"),
+                    get(filter, :avgPriceMins, 5)
+                ))
+            elseif filter_type == "MAX_NUM_ORDERS"
+                push!(filters, MaxNumOrdersFilter(
+                    filter_type,
+                    get(filter, :maxNumOrders, 200)
+                ))
+            elseif filter_type == "MAX_NUM_ALGO_ORDERS"
+                push!(filters, MaxNumAlgoOrdersFilter(
+                    filter_type,
+                    get(filter, :maxNumAlgoOrders, 5)
+                ))
+            elseif filter_type == "TRAILING_DELTA"
+                push!(filters, TrailingDeltaFilter(
+                    filter_type,
+                    get(filter, :minTrailingAboveDelta, 0),
+                    get(filter, :maxTrailingAboveDelta, 0),
+                    get(filter, :minTrailingBelowDelta, 0),
+                    get(filter, :maxTrailingBelowDelta, 0)
+                ))
+            elseif filter_type == "MAX_NUM_ORDER_LISTS"
+                push!(filters, MaxNumOrderListsFilter(
+                    filter_type,
+                    get(filter, :maxNumOrderLists, 20)
+                ))
+            elseif filter_type == "MAX_NUM_ORDER_AMENDS"
+                push!(filters, MaxNumOrderAmendsFilter(
+                    filter_type,
+                    get(filter, :maxNumOrderAmends, 10)
+                ))
+            end
+        end
+
+        return filters
+    end
 
     function validate_symbol(symbol::String)
         if isempty(symbol)

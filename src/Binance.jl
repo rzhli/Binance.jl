@@ -45,7 +45,7 @@ export subscribe_book_ticker, subscribe_all_book_tickers, subscribe_diff_depth
 export subscribe_rolling_ticker, subscribe_combined, subscribe_avg_price
 
 # Export WebSocket API functions - Authentication
-export connect!, session_logon, session_status, session_logout, disconnect!
+export connect!, session_logon, session_status, exchangeInfo, session_logout, disconnect!
 
 # Export WebSocket API functions - Market Data
 export depth, trades_recent, trades_historical, trades_aggregate

@@ -45,7 +45,7 @@ test.jl
 # Personal trading strategies
 # Uncomment if Strategy.jl is proprietary
 Strategy.jl
-
+Strategy backup.jl
 # Other files that might contain sensitive data
 # Uncommend as needed
 # examples.jl

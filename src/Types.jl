@@ -47,7 +47,7 @@ export OrderBook, PriceLevel, MarketTrade, AggregateTrade, AveragePrice, Ticker2
 # @enum WorkingFloor EXCHANGE SOR
 @enum OrderSide BUY SELL
 @enum TimeInForce GTC IOC FOK
-@enum RateLimiters REQUEST_WEIGHT ORDERS RAW_REQUESTS
+@enum RateLimiters REQUEST_WEIGHT ORDERS RAW_REQUESTS CONNECTIONS
 @enum RateLimitIntervals SECOND MINUTE DAY
 @enum STPModes NONE EXPIRE_MAKER EXPIRE_TAKER EXPIRE_BOTH DECREMENT
 
@@ -89,6 +89,10 @@ struct PriceFilter <: AbstractFilter
 end
 StructTypes.StructType(::Type{PriceFilter}) = StructTypes.Struct()
 
+function Base.show(io::IO, f::PriceFilter)
+    print(io, "Price: min: $(f.minPrice), max: $(f.maxPrice), tick: $(f.tickSize)")
+end
+
 struct PercentPriceFilter <: AbstractFilter
     filterType::String
     multiplierUp::String
@@ -96,6 +100,10 @@ struct PercentPriceFilter <: AbstractFilter
     avgPriceMins::Int
 end
 StructTypes.StructType(::Type{PercentPriceFilter}) = StructTypes.Struct()
+
+function Base.show(io::IO, f::PercentPriceFilter)
+    print(io, "PercentPrice: up: × $(f.multiplierUp), down: × $(f.multiplierDown), avg: $(f.avgPriceMins) min")
+end
 
 struct PercentPriceBySideFilter <: AbstractFilter
     filterType::String
@@ -107,6 +115,10 @@ struct PercentPriceBySideFilter <: AbstractFilter
 end
 StructTypes.StructType(::Type{PercentPriceBySideFilter}) = StructTypes.Struct()
 
+function Base.show(io::IO, f::PercentPriceBySideFilter)
+    print(io, "PercentPriceBySide: bid: × $(f.bidMultiplierDown) - $(f.bidMultiplierUp), ask: × $(f.askMultiplierDown) - $(f.askMultiplierUp)")
+end
+
 struct LotSizeFilter <: AbstractFilter
     filterType::String
     minQty::String
@@ -115,6 +127,10 @@ struct LotSizeFilter <: AbstractFilter
 end
 StructTypes.StructType(::Type{LotSizeFilter}) = StructTypes.Struct()
 
+function Base.show(io::IO, f::LotSizeFilter)
+    print(io, "LotSize: min: $(f.minQty), max: $(f.maxQty), step: $(f.stepSize)")
+end
+
 struct MinNotionalFilter <: AbstractFilter
     filterType::String
     minNotional::String
@@ -122,6 +138,10 @@ struct MinNotionalFilter <: AbstractFilter
     avgPriceMins::Int
 end
 StructTypes.StructType(::Type{MinNotionalFilter}) = StructTypes.Struct()
+
+function Base.show(io::IO, f::MinNotionalFilter)
+    print(io, "minNotional min: $(f.minNotional), market: $(f.applyToMarket)")
+end
 
 struct NotionalFilter <: AbstractFilter
     filterType::String
@@ -133,11 +153,19 @@ struct NotionalFilter <: AbstractFilter
 end
 StructTypes.StructType(::Type{NotionalFilter}) = StructTypes.Struct()
 
+function Base.show(io::IO, f::NotionalFilter)
+    print(io, "Notional: min: $(f.minNotional), max: $(f.maxNotional)")
+end
+
 struct IcebergPartsFilter <: AbstractFilter
     filterType::String
     limit::Int
 end
 StructTypes.StructType(::Type{IcebergPartsFilter}) = StructTypes.Struct()
+
+function Base.show(io::IO, f::IcebergPartsFilter)
+    print(io, "IcebergParts: limit: $(f.limit)")
+end
 
 struct MarketLotSizeFilter <: AbstractFilter
     filterType::String
@@ -147,11 +175,19 @@ struct MarketLotSizeFilter <: AbstractFilter
 end
 StructTypes.StructType(::Type{MarketLotSizeFilter}) = StructTypes.Struct()
 
+function Base.show(io::IO, f::MarketLotSizeFilter)
+    print(io, "MarketLotSize: min: $(f.minQty), max: $(f.maxQty), step: $(f.stepSize)")
+end
+
 struct MaxNumOrdersFilter <: AbstractFilter
     filterType::String
     maxNumOrders::Int
 end
 StructTypes.StructType(::Type{MaxNumOrdersFilter}) = StructTypes.Struct()
+
+function Base.show(io::IO, f::MaxNumOrdersFilter)
+    print(io, "MaxNumOrders: $(f.maxNumOrders)")
+end
 
 struct MaxNumAlgoOrdersFilter <: AbstractFilter
     filterType::String
@@ -159,17 +195,29 @@ struct MaxNumAlgoOrdersFilter <: AbstractFilter
 end
 StructTypes.StructType(::Type{MaxNumAlgoOrdersFilter}) = StructTypes.Struct()
 
+function Base.show(io::IO, f::MaxNumAlgoOrdersFilter)
+    print(io, "MaxNumAlgoOrders: $(f.maxNumAlgoOrders)")
+end
+
 struct MaxNumIcebergOrdersFilter <: AbstractFilter
     filterType::String
     maxNumIcebergOrders::Int
 end
 StructTypes.StructType(::Type{MaxNumIcebergOrdersFilter}) = StructTypes.Struct()
 
+function Base.show(io::IO, f::MaxNumIcebergOrdersFilter)
+    print(io, "MaxNumIcebergOrders: $(f.maxNumIcebergOrders)")
+end
+
 struct MaxPositionFilter <: AbstractFilter
     filterType::String
     maxPosition::String
 end
 StructTypes.StructType(::Type{MaxPositionFilter}) = StructTypes.Struct()
+
+function Base.show(io::IO, f::MaxPositionFilter)
+    print(io, "MaxPosition: $(f.maxPosition)")
+end
 
 struct TrailingDeltaFilter <: AbstractFilter
     filterType::String
@@ -180,17 +228,31 @@ struct TrailingDeltaFilter <: AbstractFilter
 end
 StructTypes.StructType(::Type{TrailingDeltaFilter}) = StructTypes.Struct()
 
+function Base.show(io::IO, f::TrailingDeltaFilter)
+    print(
+        io, "TrailingDelta: min-AboveDelta: $(f.minTrailingAboveDelta), max-AboveDelta:$(f.maxTrailingAboveDelta), min-BelowDelta: $(f.minTrailingBelowDelta), max-BelowDelta: $(f.maxTrailingBelowDelta)"
+    )
+end
+
 struct MaxNumOrderAmendsFilter <: AbstractFilter
     filterType::String
     maxNumOrderAmends::Int
 end
 StructTypes.StructType(::Type{MaxNumOrderAmendsFilter}) = StructTypes.Struct()
 
+function Base.show(io::IO, f::MaxNumOrderAmendsFilter)
+    print(io, "MaxNumOrderAmends: $(f.maxNumOrderAmends)")
+end
+
 struct MaxNumOrderListsFilter <: AbstractFilter
     filterType::String
     maxNumOrderLists::Int
 end
 StructTypes.StructType(::Type{MaxNumOrderListsFilter}) = StructTypes.Struct()
+
+function Base.show(io::IO, f::MaxNumOrderListsFilter)
+    print(io, "MaxNumOrderLists: $(f.maxNumOrderLists)")
+end
 
 # --- Exchange Filters ---
 struct ExchangeMaxNumOrdersFilter <: AbstractFilter
@@ -218,7 +280,6 @@ end
 StructTypes.StructType(::Type{ExchangeMaxNumOrderListsFilter}) = StructTypes.Struct()
 
 # --- Symbol and Exchange Info Structs ---
-
 const SymbolFilter = Union{
     PriceFilter,PercentPriceFilter,PercentPriceBySideFilter,LotSizeFilter,MinNotionalFilter,
     NotionalFilter,IcebergPartsFilter,MarketLotSizeFilter,MaxNumOrdersFilter,MaxNumAlgoOrdersFilter,
@@ -257,6 +318,24 @@ struct SymbolInfo
 end
 StructTypes.StructType(::Type{SymbolInfo}) = StructTypes.Struct()
 
+function Base.show(io::IO, ::MIME"text/plain", s::SymbolInfo)
+    println(io, "SymbolInfo for ", s.symbol, ":")
+    println(io, "  Status: ", s.status)
+    println(io, "  Base Asset: ", s.baseAsset, " (Precision: ", s.baseAssetPrecision, ")")
+    println(io, "  Quote Asset: ", s.quoteAsset, " (Precision: ", s.quoteAssetPrecision, ")")
+    println(io, "  Trading: Spot=", s.isSpotTradingAllowed, ", Margin=", s.isMarginTradingAllowed)
+    println(io, "  Order Types: ", join(s.orderTypes, ", "))
+
+    println(io, "\n  Filters:")
+    if isempty(s.filters)
+        println(io, "    (No filters)")
+    else
+        for filter in s.filters
+            println(io, "    • ", filter)
+        end
+    end
+end
+
 struct ExchangeInfo
     timezone::String
     serverTime::DateTime
@@ -288,6 +367,8 @@ function Base.show(io::IO, ::MIME"text/plain", info::ExchangeInfo)
     println(io, "\n  Rate Limits:")
     rate_limits_df = DataFrame(info.rateLimits)
     show(io, rate_limits_df)
+
+    # exchangeFilters为空，filters在symbols字段里
 
     println(io, "\n\n  Symbols (showing first 10 of ", length(info.symbols), "):")
     symbols_df = DataFrame(
