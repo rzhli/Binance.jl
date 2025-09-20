@@ -1,6 +1,7 @@
 module Binance
 # Include all submodule files
 include("Config.jl")
+include("Errors.jl")
 include("Types.jl")
 include("Filters.jl")
 include("Signature.jl")
@@ -12,6 +13,7 @@ include("WebSocketAPI.jl")
 
 # Import from submodules
 using .Config
+using .Errors
 using .Types
 using .Filters
 using .RESTAPI
@@ -23,6 +25,11 @@ using .Signature
 
 # Export client types and configuration
 export RESTClient, MarketDataStreamClient, WebSocketClient, BinanceConfig, BinanceRateLimit
+
+# Export exception types
+export BinanceException, BinanceError, MalformedRequestError, UnauthorizedError,
+       WAFViolationError, CancelReplacePartialSuccess, RateLimitError,
+       IPAutoBannedError, BinanceServerError
 
 # Export data types
 export ExchangeInfo, RateLimit, SymbolInfo, Order, Trade, Kline, Ticker24hr

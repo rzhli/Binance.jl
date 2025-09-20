@@ -7,10 +7,9 @@ module RESTAPI
     using ..Signature: HMAC_SHA256, ED25519, RSA
     using ..Types
     using ..Filters
+    using ..Errors
 
     export RESTClient, make_request, get_server_time, get_exchange_info, ping,
-        BinanceException, BinanceError, MalformedRequestError, WAFViolationError, UnauthorizedError,
-        CancelReplacePartialSuccess, RateLimitError, IPAutoBannedError, BinanceServerError,
         place_order, cancel_order, cancel_all_orders, get_order,
         get_open_orders, get_all_orders, get_orderbook,
         get_order_list, get_all_order_lists, get_open_order_lists,
@@ -20,55 +19,6 @@ module RESTAPI
         test_order, cancel_replace_order, amend_order, place_oco_order,
         place_oto_order, place_otoco_order, cancel_order_list,
         place_sor_order, test_sor_order
-
-    # --- Custom Exception Types ---
-
-    abstract type BinanceException <: Exception end
-
-    struct BinanceError <: BinanceException
-        http_status::Int
-        code::Int
-        msg::String
-    end
-    Base.show(io::IO, e::BinanceError) = print(io, "BinanceError(http_status=$(e.http_status), code=$(e.code), msg=\"$(e.msg)\")")
-
-    struct MalformedRequestError <: BinanceException
-        code::Int
-        msg::String
-    end
-    Base.show(io::IO, e::MalformedRequestError) = print(io, "MalformedRequestError(code=$(e.code), msg=\"$(e.msg)\")")
-    
-    struct UnauthorizedError <: BinanceException
-        code::Int
-        msg::String
-    end
-    Base.show(io::IO, e::UnauthorizedError) = print(io, "UnauthorizedError(401): code=$(e.code), msg=\"$(e.msg)\")")
-
-    struct WAFViolationError <: BinanceException end
-    Base.show(io::IO, e::WAFViolationError) = print(io, "WAF Limit Violated (403)")
-
-    struct CancelReplacePartialSuccess <: BinanceException
-        code::Int
-        msg::String
-    end
-    Base.show(io::IO, e::CancelReplacePartialSuccess) = print(io, "Cancel/Replace Partially Succeeded (409): code=$(e.code), msg=\"$(e.msg)\"")
-
-    struct RateLimitError <: BinanceException
-        code::Int
-        msg::String
-    end
-    Base.show(io::IO, e::RateLimitError) = print(io, "Rate Limit Exceeded (429): code=$(e.code), msg=\"$(e.msg)\"")
-
-    struct IPAutoBannedError <: BinanceException end
-    Base.show(io::IO, e::IPAutoBannedError) = print(io, "IP Auto-banned (418)")
-
-    struct BinanceServerError <: BinanceException
-        http_status::Int
-        code::Int
-        msg::String
-    end
-    Base.show(io::IO, e::BinanceServerError) = print(io, "Binance Server Error (http_status=$(e.http_status), code=$(e.code), msg=\"$(e.msg)\"). Execution status is UNKNOWN.")
-
 
     """
     A client for interacting with the Binance REST API.

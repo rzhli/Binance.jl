@@ -25,7 +25,7 @@ module MarketDataStreams
 
         function MarketDataStreamClient(config_path::String="config.toml")
             config = from_toml(config_path)
-            ws_base_url = config.testnet ? "wss://testnet.binance.vision/ws/" : "wss://stream.binance.com:9443/ws/"
+            ws_base_url = config.testnet ? "wss://stream.testnet.binance.vision/ws/" : "wss://stream.binance.com:9443/ws/"
             new(config, ws_base_url, Dict{String,Task}(), Dict{String,Function}(), Dict{String,Bool}())
         end
     end

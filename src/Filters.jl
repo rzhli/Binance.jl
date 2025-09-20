@@ -3,7 +3,7 @@ module Filters
     using ..Types
 
     export validate_order, validate_symbol, validate_interval, validate_order_type,
-           validate_side, validate_time_in_force, get_filters
+           validate_side, validate_time_in_force
 
     # --- Generic Validation Dispatch ---
 
@@ -49,9 +49,9 @@ module Filters
         end
 
         if tick_size > 0
-            # Check if (price - minPrice) is a multiple of tickSize
-            # Use rem for floating point modulo, handle potential precision issues with a small epsilon
-            if rem(price_val - min_price, tick_size) > 1e-9
+            precision = max(0, -Int(floor(log10(tick_size))))
+            val_to_check = round(price_val - min_price, digits=precision)
+            if rem(val_to_check, tick_size) > 1e-9
                 throw(ArgumentError("Price ($price_val) does not meet the tick size ($tick_size) requirement."))
             end
         end
@@ -82,8 +82,13 @@ module Filters
         end
 
         if step_size > 0
-            # Check if (quantity - minQty) is a multiple of stepSize
-            if rem(qty_val - min_qty, step_size) > 1e-9
+            # Calculate how many steps from min_qty
+            steps_from_min = (qty_val - min_qty) / step_size
+            rounded_steps = round(steps_from_min)
+
+            # Check if the quantity is within tolerance of a valid step
+            tolerance = step_size * 1e-9
+            if abs(steps_from_min - rounded_steps) * step_size > tolerance
                 throw(ArgumentError("Quantity ($qty_val) does not meet the step size ($step_size) requirement."))
             end
         end
@@ -99,16 +104,23 @@ module Filters
     function validate_filter(params::Dict, filter::MinNotionalFilter)
         price = get(params, "price", nothing)
         quantity = get(params, "quantity", nothing)
-
-        # This filter applies to MARKET orders as well, but we don't have avg price here.
-        # For now, we only validate for orders with a specified price.
-        (isnothing(price) || isnothing(quantity)) && return true
-
-        price_val = parse(Float64, string(price))
-        qty_val = parse(Float64, string(quantity))
+        quoteOrderQty = get(params, "quoteOrderQty", nothing)
         min_notional = parse(Float64, filter.minNotional)
 
-        notional_value = price_val * qty_val
+        notional_value = 0.0
+
+        if !isnothing(quoteOrderQty)
+            notional_value = parse(Float64, string(quoteOrderQty))
+        elseif !isnothing(price) && !isnothing(quantity)
+            price_val = parse(Float64, string(price))
+            qty_val = parse(Float64, string(quantity))
+            notional_value = price_val * qty_val
+        else
+            # Cannot determine notional value for client-side validation (e.g., MARKET order with base quantity).
+            # The server will have to validate this.
+            return true
+        end
+
         if notional_value < min_notional
             throw(ArgumentError("Notional value ($notional_value) is below the minimum required ($min_notional)."))
         end
@@ -116,115 +128,45 @@ module Filters
         return true
     end
 
-    # --- Utility Functions (from former Utils.jl) ---
-
     """
-        get_filters(symbol_info::SymbolInfo)
+        validate_filter(params::Dict, filter::NotionalFilter)
 
-    从交易对信息中提取并准备过滤器数组。
-
-    # 参数
-    - `symbol_info::SymbolInfo`: 交易对信息对象，包含过滤器配置
-
-    # 返回
-    - `filters::Vector{AbstractFilter}`: AbstractFilter 类型数组
-
-    # 示例
-    ```julia
-    exchangeinfo = exchangeInfo(ws_client, symbols = ["BTCUSDT"])
-    filters = get_filters(exchangeinfo.symbols[1])
-    ```
+    Validates an order's notional value against the NOTIONAL filter rules.
     """
-    function get_filters(symbol_info::SymbolInfo)
-        filters = AbstractFilter[]
+    function validate_filter(params::Dict, filter::NotionalFilter)
+        price = get(params, "price", nothing)
+        quantity = get(params, "quantity", nothing)
+        quoteOrderQty = get(params, "quoteOrderQty", nothing)
+        
+        min_notional = parse(Float64, filter.minNotional)
+        max_notional = parse(Float64, filter.maxNotional)
 
-        for filter in symbol_info.filters
-            filter_type = get(filter, :filterType, "")
+        notional_value = 0.0
 
-            if filter_type == "PRICE_FILTER"
-                push!(filters, PriceFilter(
-                    filter_type,
-                    get(filter, :minPrice, "0"),
-                    get(filter, :maxPrice, "0"),
-                    get(filter, :tickSize, "0")
-                ))
-            elseif filter_type == "LOT_SIZE"
-                push!(filters, LotSizeFilter(
-                    filter_type,
-                    get(filter, :minQty, "0"),
-                    get(filter, :maxQty, "0"),
-                    get(filter, :stepSize, "0")
-                ))
-            elseif filter_type == "MIN_NOTIONAL"
-                push!(filters, MinNotionalFilter(
-                    filter_type,
-                    get(filter, :minNotional, "0"),
-                    get(filter, :applyToMarket, true),
-                    get(filter, :avgPriceMins, 5)
-                ))
-            elseif filter_type == "NOTIONAL"
-                push!(filters, NotionalFilter(
-                    filter_type,
-                    get(filter, :minNotional, "0"),
-                    get(filter, :applyMinToMarket, true),
-                    get(filter, :maxNotional, "0"),
-                    get(filter, :applyMaxToMarket, true),
-                    get(filter, :avgPriceMins, 5)
-                ))
-            elseif filter_type == "ICEBERG_PARTS"
-                push!(filters, IcebergPartsFilter(
-                    filter_type,
-                    get(filter, :limit, 10)
-                ))
-            elseif filter_type == "MARKET_LOT_SIZE"
-                push!(filters, MarketLotSizeFilter(
-                    filter_type,
-                    get(filter, :minQty, "0"),
-                    get(filter, :maxQty, "0"),
-                    get(filter, :stepSize, "0")
-                ))
-            elseif filter_type == "PERCENT_PRICE_BY_SIDE"
-                push!(filters, PercentPriceBySideFilter(
-                    filter_type,
-                    get(filter, :bidMultiplierUp, "0"),
-                    get(filter, :bidMultiplierDown, "0"),
-                    get(filter, :askMultiplierUp, "0"),
-                    get(filter, :askMultiplierDown, "0"),
-                    get(filter, :avgPriceMins, 5)
-                ))
-            elseif filter_type == "MAX_NUM_ORDERS"
-                push!(filters, MaxNumOrdersFilter(
-                    filter_type,
-                    get(filter, :maxNumOrders, 200)
-                ))
-            elseif filter_type == "MAX_NUM_ALGO_ORDERS"
-                push!(filters, MaxNumAlgoOrdersFilter(
-                    filter_type,
-                    get(filter, :maxNumAlgoOrders, 5)
-                ))
-            elseif filter_type == "TRAILING_DELTA"
-                push!(filters, TrailingDeltaFilter(
-                    filter_type,
-                    get(filter, :minTrailingAboveDelta, 0),
-                    get(filter, :maxTrailingAboveDelta, 0),
-                    get(filter, :minTrailingBelowDelta, 0),
-                    get(filter, :maxTrailingBelowDelta, 0)
-                ))
-            elseif filter_type == "MAX_NUM_ORDER_LISTS"
-                push!(filters, MaxNumOrderListsFilter(
-                    filter_type,
-                    get(filter, :maxNumOrderLists, 20)
-                ))
-            elseif filter_type == "MAX_NUM_ORDER_AMENDS"
-                push!(filters, MaxNumOrderAmendsFilter(
-                    filter_type,
-                    get(filter, :maxNumOrderAmends, 10)
-                ))
-            end
+        if !isnothing(quoteOrderQty)
+            notional_value = parse(Float64, string(quoteOrderQty))
+        elseif !isnothing(price) && !isnothing(quantity)
+            price_val = parse(Float64, string(price))
+            qty_val = parse(Float64, string(quantity))
+            notional_value = price_val * qty_val
+        else
+            # Cannot determine notional value for client-side validation (e.g., MARKET order with base quantity).
+            # The server will have to validate this.
+            return true
         end
 
-        return filters
+        if notional_value < min_notional
+            throw(ArgumentError("Notional value ($notional_value) is below the minimum required ($min_notional)."))
+        end
+
+        if notional_value > max_notional
+            throw(ArgumentError("Notional value ($notional_value) is above the maximum allowed ($max_notional)."))
+        end
+
+        return true
     end
+
+    # --- Utility Functions (from former Utils.jl) ---
 
     function validate_symbol(symbol::String)
         if isempty(symbol)

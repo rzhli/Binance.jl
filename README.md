@@ -2,20 +2,21 @@
 
 A comprehensive Julia SDK for interacting with Binance's Spot Trading APIs, including REST API, WebSocket Market Data Streams, and WebSocket API for real-time trading.
 
-## 🎉 Recent Updates (v0.3.0)
+## 🎉 Recent Updates (v0.4.0)
 
-### WebSocket API Optimizations
-- **Heartbeat Mechanism**: Added 60-second WebSocket ping frames to prevent connection drops
-- **UUID Request IDs**: Switched from integer to UUID-based request IDs for better uniqueness
-- **Enhanced Validation**: Comprehensive parameter validation for all market data and trading requests
-- **Improved Rate Limiting**: Better handling of connection limits and backoff mechanisms
-- **Full Compliance**: All functions now comply with latest Binance WebSocket API documentation
+### Error Handling Refactoring
+- **Centralized Error Module**: All custom exception types have been moved to a new `Errors.jl` module to improve modularity and reusability.
+- **Consistent Error Handling**: Both REST and WebSocket APIs now use the same set of error types, providing a more consistent experience.
+
+### v0.3.0
+- **WebSocket API Optimizations**: Heartbeat mechanism, UUID request IDs, enhanced validation, and improved rate limiting.
+- **Full Compliance**: All functions now comply with the latest Binance WebSocket API documentation.
 
 ## Features
 
-### 🚀 Core Capabilities
+### Core Capabilities
 
-- **Complete REST API Support**: All Spot Account and Trading endpoints
+- **REST API**: All Spot Account and Trading endpoints
 - **WebSocket Market Data**: Real-time ticker, kline, depth, and trade data
 - **Interactive WebSocket API**: Authenticated real-time trading operations with heartbeat
 - **Session Management**: Secure connection handling with Ed25519, RSA, and HMAC signatures
@@ -232,6 +233,8 @@ Binance.jl/
 │   ├── Types.jl            # Data models and structs
 │   ├── Filters.jl          # Order validation filters
 │   ├── Account.jl          # Account-related utilities
+│   ├── Errors.jl           # Custom error types
+│   ├── Events.jl           # WebSocket event types
 │   └── RateLimiter.jl      # API rate limiting logic
 ├── config_example.toml     # Configuration template
 ├── examples.jl             # Usage examples

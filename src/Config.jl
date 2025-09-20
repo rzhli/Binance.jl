@@ -39,17 +39,27 @@ module Config
         try
             config_data = TOML.parsefile(config_path)
 
+            # Extract connection settings first to determine which keys to use
+            connection = get(config_data, "connection", Dict())
+            testnet = get(connection, "testnet", false)
+
             # Extract API settings
             api = get(config_data, "api", Dict())
-            api_key = get(api, "api_key", "")
             signature_method = get(api, "signature_method", "HMAC_SHA256")
-            api_secret = get(api, "secret_key", "")
             private_key_path = get(api, "private_key_path", "")
             private_key_pass = get(api, "private_key_pass", "")
 
-            # Extract connection settings
-            connection = get(config_data, "connection", Dict())
-            testnet = get(connection, "testnet", false)
+            api_key = ""
+            api_secret = ""
+            if testnet
+                api_key = get(api, "testnet_api_key", "")
+                private_key_path = get(api, "testnet_private_key_path", "")
+                private_key_pass = get(api, "testnet_private_key_pass", "")
+            else
+                api_key = get(api, "api_key", "")
+                api_secret = get(api, "secret_key", "")
+            end
+
             timeout = get(connection, "timeout", 30)
             recv_window = get(connection, "recv_window", 60000)
             proxy = get(connection, "proxy", "")

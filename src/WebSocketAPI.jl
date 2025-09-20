@@ -2,12 +2,21 @@ module WebSocketAPI
 
     using HTTP, JSON3, Dates, SHA, URIs, StructTypes, DataFrames, UUIDs
     import HTTP.WebSockets
-    using ..Config
-    using ..Signature
-    using ..Types
-    using ..RESTAPI
-    using ..RateLimiter
-    using ..Account
+    
+    using ..Config, ..Signature, ..Types, ..RESTAPI, ..RateLimiter, ..Account, ..Events, ..Errors
+
+    # ✨✨ 关键步骤 ✨✨
+    # 使用 import 关键字，将 RESTAPI.place_order 函数本身引入当前作用域, 为它添加新方法，
+    # 而不是创建一个新函数, 只导出自己的类型，不要导出 place_order，因为它不属于这里
+    import ..RESTAPI: place_order
+
+    const EVENT_TYPE_MAP = Dict{String,Type}(
+        "outboundAccountPosition" => OutboundAccountPosition,
+        "executionReport" => ExecutionReport,
+        "balanceUpdate" => BalanceUpdate,
+        "listStatus" => ListStatus
+        # Add other event types here as they are implemented
+    )
 
     # --- Exports ---
 
@@ -27,7 +36,7 @@ module WebSocketAPI
         avg_price, ticker_24hr, ticker_trading_day, ticker, ticker_price, ticker_book
 
     # Trading
-    export place_order, test_order, order_status, cancel_order, cancel_replace_order,
+    export test_order, order_status, cancel_order, cancel_replace_order,
         amend_order, cancel_all_orders
 
     # Order Lists
@@ -171,7 +180,7 @@ module WebSocketAPI
                 end
 
                 try
-                    HTTP.WebSockets.open(client.base_url; connect_timeout=30, proxy=client.config.proxy) do ws
+                    WebSockets.open(client.base_url; connect_timeout=30, proxy=client.config.proxy) do ws
                         client.ws_connection = ws
                         @info "Successfully connected to WebSocket API."
                         
@@ -183,7 +192,7 @@ module WebSocketAPI
                                     sleep(client.heartbeat_interval)
                                     if !isnothing(client.ws_connection) && !WebSockets.isclosed(client.ws_connection)
                                         # Send WebSocket ping frame (not API ping method)
-                                        HTTP.WebSockets.ping(client.ws_connection)
+                                        WebSockets.ping(client.ws_connection)
                                         @debug "WebSocket ping frame sent successfully"
                                     end
                                 catch e
@@ -250,7 +259,14 @@ module WebSocketAPI
                                     if haskey(client.ws_callbacks, event_type)
                                         # Call the callback with the event payload
                                         try
-                                            client.ws_callbacks[event_type](data.event)
+                                            if haskey(EVENT_TYPE_MAP, event_type)
+                                                struct_type = EVENT_TYPE_MAP[event_type]
+                                                event_data = JSON3.read(JSON3.write(data.event), struct_type)
+                                                client.ws_callbacks[event_type](event_data)
+                                            else
+                                                # Fallback for unmapped event types
+                                                client.ws_callbacks[event_type](data.event)
+                                            end
                                         catch callback_error
                                             @error "Error in event callback for '$event_type': $callback_error"
                                         end
@@ -261,7 +277,7 @@ module WebSocketAPI
                                     @debug "Received message without handler: $data"
                                 end
                             catch e
-                                if e isa HTTP.WebSockets.WebSocketError || e isa EOFError
+                                if e isa WebSockets.WebSocketError || e isa EOFError
                                     @info "WebSocket connection closed."
                                     break
                                 else
@@ -417,37 +433,37 @@ module WebSocketAPI
         if status == 401 # Unauthorized
             client.is_authenticated = false
             @warn "WebSocket session authentication failed or was revoked (status 401)."
-            throw(RESTAPI.UnauthorizedError(code, msg))
+            throw(UnauthorizedError(code, msg))
         elseif status == 403
             # Web Application Firewall block
-            throw(RESTAPI.WAFViolationError())
+            throw(WAFViolationError())
         elseif status == 409
             # Partial success/failure
-            throw(RESTAPI.CancelReplacePartialSuccess(code, msg))
+            throw(CancelReplacePartialSuccess(code, msg))
         elseif status == 418
             # Auto-banned for rate limit violations
             if haskey(error_data, :data) && haskey(error_data.data, :retryAfter)
                 retry_after = error_data.data.retryAfter
                 set_backoff!(client.rate_limiter, retry_after)
             end
-            throw(RESTAPI.IPAutoBannedError())
+            throw(IPAutoBannedError())
         elseif status == 429
             # Rate limit exceeded
             if haskey(error_data, :data) && haskey(error_data.data, :retryAfter)
                 retry_after = error_data.data.retryAfter
                 set_backoff!(client.rate_limiter, retry_after)
             end
-            throw(RESTAPI.RateLimitError(code, msg))
+            throw(RateLimitError(code, msg))
         elseif 400 <= status < 500
             # Client error
-            throw(RESTAPI.MalformedRequestError(code, msg))
+            throw(MalformedRequestError(code, msg))
         elseif 500 <= status < 600
             # Server error - execution status unknown!
             @warn "Binance Server Error (status=$status, code=$code, msg=\"$msg\"). Execution status is UNKNOWN - request might have succeeded!"
-            throw(RESTAPI.BinanceServerError(status, code, msg))
+            throw(BinanceServerError(status, code, msg))
         else
             # Unknown status
-            throw(RESTAPI.BinanceError(status, code, msg))
+            throw(BinanceError(status, code, msg))
         end
     end
 
@@ -520,7 +536,7 @@ module WebSocketAPI
                 error("WebSocket connection is not available")
             end
             
-            HTTP.WebSockets.send(client.ws_connection, JSON3.write(request))
+            WebSockets.send(client.ws_connection, JSON3.write(request))
 
             # Wait for the response
             response = take!(response_channel) # This will block until a response is received
@@ -1108,7 +1124,7 @@ module WebSocketAPI
         newOrderRespType::String="", strategyId::Union{Int,Nothing}=nothing,
         strategyType::Union{Int,Nothing}=nothing, selfTradePreventionMode::String="",
         kwargs...  # Accept any additional parameters
-    )
+        )
         # Basic validation only
         side in ["BUY", "SELL"] || throw(ArgumentError("Invalid side: $side"))
 
