@@ -9,6 +9,7 @@ include("RateLimiter.jl")
 include("RESTAPI.jl")
 include("MarketDataStreams.jl")
 include("Account.jl")
+include("Events.jl")
 include("WebSocketAPI.jl")
 
 # Import from submodules
@@ -22,6 +23,7 @@ using .WebSocketAPI
 using .RateLimiter
 using .Account
 using .Signature
+using .Events
 
 # Export client types and configuration
 export RESTClient, MarketDataStreamClient, WebSocketClient, BinanceConfig, BinanceRateLimit

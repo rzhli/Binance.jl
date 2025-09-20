@@ -93,9 +93,9 @@ module WebSocketAPI
             rate_limiter = BinanceRateLimit(config)
             client = new(config, signer, base_url, nothing, rate_limiter, Dict{String,Channel}(), Dict{String,Function}(), 0, false, true, nothing, ReentrantLock(), nothing, 60)
 
-            # Set a temporary time offset assuming local time is UTC+8, as requested.
-            # This will be synchronized with the server after the WebSocket connection is established.
-            client.time_offset = -8 * 3600 * 1000
+            # Initialize time offset to 0. This will be synchronized with the server after the WebSocket connection is established.
+            # We don't assume any timezone offset, letting the synchronization handle the actual difference
+            client.time_offset = 0
 
             return client
         end
@@ -138,7 +138,9 @@ module WebSocketAPI
     Get current timestamp in milliseconds, adjusted for time offset.
     """
     function get_timestamp(client::WebSocketClient)
-        return Int(round(datetime2unix(now()) * 1000)) + client.time_offset
+        # Use UTC time directly
+        timestamp = Int(round(datetime2unix(now(Dates.UTC)) * 1000)) + client.time_offset
+        return timestamp
     end
     
     """
@@ -206,15 +208,28 @@ module WebSocketAPI
 
                         # Spawn a setup task that runs in the background, allowing the main loop to listen immediately
                         @async begin
-                            # Synchronize time with server
-                            try
-                                server_time_response = time(client)
-                                server_time = server_time_response.serverTime
-                                local_time = Int(round(datetime2unix(now()) * 1000))
-                                client.time_offset = server_time - local_time
-                                @info "Time synchronized with server. Offset: $(client.time_offset)ms"
-                            catch e
-                                @warn "Could not synchronize time with Binance server via WebSocket. Using initial offset. Error: $e"
+                            # Synchronize time with server with retries
+                            max_retries = 3
+                            retry_count = 0
+                            synchronized = false
+
+                            while retry_count < max_retries && !synchronized
+                                try
+                                    server_time_response = time(client)
+                                    server_time = server_time_response.serverTime
+                                    local_time = Int(round(datetime2unix(now(Dates.UTC)) * 1000))
+                                    client.time_offset = server_time - local_time
+                                    @info "Time synchronized with server. Offset: $(client.time_offset)ms"
+                                    synchronized = true
+                                catch e
+                                    retry_count += 1
+                                    if retry_count < max_retries
+                                        @warn "Failed to synchronize time (attempt $retry_count/$max_retries): $e. Retrying in 2 seconds..."
+                                        sleep(2)
+                                    else
+                                        @error "Could not synchronize time with Binance server after $max_retries attempts. Using offset: $(client.time_offset)ms. Error: $e"
+                                    end
+                                end
                             end
 
                             if client.is_authenticated
@@ -592,10 +607,25 @@ module WebSocketAPI
     - `override_signature`: Use explicit signature for this request
     """
     function send_signed_request(
-        client::WebSocketClient, method::String, params::Dict{String,Any}; 
+        client::WebSocketClient, method::String, params::Dict{String,Any};
         return_full_response::Bool=false, api_version::String="",
         override_api_key::String="", override_signature::Bool=false
         )
+        # Ensure time is synchronized before signed requests
+        # If time offset is 0 (not yet synchronized), try to sync now
+        if client.time_offset == 0
+            try
+                # Attempt quick time sync
+                server_time_response = time(client)
+                server_time = server_time_response.serverTime
+                local_time = Int(round(datetime2unix(now(Dates.UTC)) * 1000))
+                client.time_offset = server_time - local_time
+                @debug "Quick time sync performed. Offset: $(client.time_offset)ms"
+            catch e
+                @debug "Quick time sync failed, proceeding with offset=0: $e"
+            end
+        end
+
         # Session.logon has special parameter handling
         if method == "session.logon"
             params_to_sign = Dict{String,Any}(
