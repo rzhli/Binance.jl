@@ -263,33 +263,37 @@ module WebSocketAPI
                                 end
                                 
                                 # Parse JSON message
-                                data = JSON3.read(String(msg))
+                                @show data = JSON3.read(String(msg))
 
                                 # Check if this is a response to a request
                                 if haskey(data, :id) && haskey(client.responses, string(data.id))
                                     put!(client.responses[string(data.id)], data)
                                 # Check if this is a user data stream event
-                                elseif haskey(data, :event) && haskey(data.event, :e)
-                                    event_type = data.event.e
-                                    if haskey(client.ws_callbacks, event_type)
-                                        # Call the callback with the event payload
-                                        try
-                                            if haskey(EVENT_TYPE_MAP, event_type)
-                                                struct_type = EVENT_TYPE_MAP[event_type]
-                                                event_data = JSON3.read(JSON3.write(data.event), struct_type)
-                                                client.ws_callbacks[event_type](event_data)
-                                            else
-                                                # Fallback for unmapped event types
-                                                client.ws_callbacks[event_type](data.event)
+                                else
+                                    event_payload = nothing
+                                    # Check for wrapped event format first
+                                    if haskey(data, :event) && data.event isa JSON3.Object && haskey(data.event, :e)
+                                        event_payload = data.event
+                                    # Then check for unwrapped event format (like in user data streams)
+                                    elseif haskey(data, :e)
+                                        event_payload = data
+                                    end
+
+                                    if !isnothing(event_payload)
+                                        event_type = string(event_payload[:e])
+                                        if haskey(client.ws_callbacks, event_type)
+                                            try
+                                                event_struct = JSON3.read(JSON3.write(event_payload), EVENT_TYPE_MAP[event_type])
+                                                client.ws_callbacks[event_type](event_struct)
+                                            catch e
+                                                @error "Error in event callback for '$event_type': $e"
                                             end
-                                        catch callback_error
-                                            @error "Error in event callback for '$event_type': $callback_error"
+                                        else
+                                            @warn "Received unhandled event of type '$(event_type)'"
                                         end
                                     else
-                                        @debug "Received unhandled event of type '$(event_type)'"
+                                        @debug "Received message without handler: $data"
                                     end
-                                else
-                                    @debug "Received message without handler: $data"
                                 end
                             catch e
                                 if e isa WebSockets.WebSocketError || e isa EOFError
@@ -1925,15 +1929,27 @@ module WebSocketAPI
         userdata_stream_subscribe(client)
 
     Subscribe to the User Data Stream in the current WebSocket connection.
-    
+
     This method requires an authenticated WebSocket connection using Ed25519 keys.
     User Data Stream events are available in both JSON and SBE sessions.
-    
+
     Weight: 2
-    
+
     Returns a result with subscriptionId field.
     """
     function userdata_stream_subscribe(client::WebSocketClient)
+        # Check if there's already an active user data stream subscription
+        try
+            subs_response = session_subscriptions(client)
+            if subs_response !== nothing
+                @info "User data stream already has $(length(subs_response)) active subscription(s), skipping new subscription"
+                return subs_response[1]  # Return the existing subscription
+            end
+        catch e
+            # If checking subscriptions fails, proceed with subscription attempt
+            @debug "Could not check existing subscriptions: $e"
+        end
+
         return send_request(client, "userDataStream.subscribe", Dict{String,Any}())
     end
 

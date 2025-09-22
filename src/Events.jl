@@ -1,25 +1,23 @@
 module Events
 
 using StructTypes
-using ..Account
 
-export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus
+export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus, Balance
+
+struct Balance
+    a::String           # Asset
+    f::String           # Free
+    l::String           # Locked
+end
+StructTypes.StructType(::Type{Balance}) = StructTypes.Struct()
 
 struct OutboundAccountPosition
     e::String             # Event type
     E::Int64              # Event time
     u::Int64              # Time of last account update
-    B::Vector{Account.Balance} # Balances
+    B::Vector{Balance}    # Balances
 end
-StructTypes.StructType(::Type{OutboundAccountPosition}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{OutboundAccountPosition}, obj) = OutboundAccountPosition(
-    obj.e,
-    obj.E,
-    obj.u,
-    # Manually construct Account.Balance from the event's format {a, f, l}
-    # by creating a temporary Dict that matches the Account.Balance constructor's expectations.
-    [StructTypes.construct(Account.Balance, Dict("asset" => item.a, "free" => item.f, "locked" => item.l)) for item in obj.B]
-)
+StructTypes.StructType(::Type{OutboundAccountPosition}) = StructTypes.Struct()
 
 struct BalanceUpdate
     e::String           # Event Type

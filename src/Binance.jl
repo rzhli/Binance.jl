@@ -36,6 +36,9 @@ export BinanceException, BinanceError, MalformedRequestError, UnauthorizedError,
 # Export data types
 export ExchangeInfo, RateLimit, SymbolInfo, Order, Trade, Kline, Ticker24hr
 
+# Export Event types
+export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus
+
 # Export RESTAPI functions
 export get_server_time, get_exchange_info, ping
 export get_symbol_ticker, get_orderbook, get_recent_trades, get_historical_trades
