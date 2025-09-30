@@ -166,6 +166,16 @@ module Filters
         return true
     end
 
+    """
+        validate_filter(params::Dict, filter::MaxAssetsFilter)
+
+    The MAX_ASSET filter defines the maximum amount of an asset that an account can hold.
+    This filter is not checked when placing an order.
+    """
+    function validate_filter(params::Dict, filter::MaxAssetsFilter)
+        return true
+    end
+
     # --- Utility Functions (from former Utils.jl) ---
 
     function validate_symbol(symbol::String)

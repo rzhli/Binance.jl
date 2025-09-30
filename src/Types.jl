@@ -14,7 +14,7 @@ export AbstractFilter, PriceFilter, PercentPriceFilter, PercentPriceBySideFilter
     MaxPositionFilter, TrailingDeltaFilter, MaxNumOrderAmendsFilter,
     MaxNumOrderListsFilter, ExchangeMaxNumOrdersFilter,
     ExchangeMaxNumAlgoOrdersFilter, ExchangeMaxNumIcebergOrdersFilter,
-    ExchangeMaxNumOrderListsFilter
+    ExchangeMaxNumOrderListsFilter, MaxAssetsFilter
 
 # Exchange Information
 export RateLimit, SymbolInfo, ExchangeInfo
@@ -78,7 +78,8 @@ StructTypes.subtypes(::Type{AbstractFilter}) = (
     EXCHANGE_MAX_NUM_ORDERS = ExchangeMaxNumOrdersFilter,
     EXCHANGE_MAX_NUM_ALGO_ORDERS = ExchangeMaxNumAlgoOrdersFilter,
     EXCHANGE_MAX_NUM_ICEBERG_ORDERS = ExchangeMaxNumIcebergOrdersFilter,
-    EXCHANGE_MAX_NUM_ORDER_LISTS = ExchangeMaxNumOrderListsFilter
+    EXCHANGE_MAX_NUM_ORDER_LISTS = ExchangeMaxNumOrderListsFilter,
+    MAX_ASSETS = MaxAssetsFilter
 )
 
 struct PriceFilter <: AbstractFilter
@@ -252,6 +253,16 @@ StructTypes.StructType(::Type{MaxNumOrderListsFilter}) = StructTypes.Struct()
 
 function Base.show(io::IO, f::MaxNumOrderListsFilter)
     print(io, "MaxNumOrderLists: $(f.maxNumOrderLists)")
+end
+
+struct MaxAssetsFilter <: AbstractFilter
+    filterType::String
+    maxAssets::Int
+end
+StructTypes.StructType(::Type{MaxAssetsFilter}) = StructTypes.Struct()
+
+function Base.show(io::IO, f::MaxAssetsFilter)
+    print(io, "MaxAssets: $(f.maxAssets)")
 end
 
 # --- Exchange Filters ---

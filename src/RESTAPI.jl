@@ -18,7 +18,7 @@ module RESTAPI
         get_ui_klines, get_avg_price, get_trading_day_ticker, get_ticker,
         test_order, cancel_replace_order, amend_order, place_oco_order,
         place_oto_order, place_otoco_order, cancel_order_list,
-        place_sor_order, test_sor_order
+        place_sor_order, test_sor_order, get_my_filters
 
     """
     A client for interacting with the Binance REST API.
@@ -102,6 +102,9 @@ module RESTAPI
 
     function build_signed_query_string(client::RESTClient, params::Dict{String,Any})
         params["timestamp"] = get_timestamp(client)
+        # The recvWindow parameter is used to specify the number of milliseconds after the timestamp that the request is valid for.
+        # If the request is received after recvWindow milliseconds from the timestamp, it will be rejected.
+        # The value of recvWindow can be up to 60000. It now supports microseconds.
         params["recvWindow"] = client.config.recv_window
 
         query_string = build_query_string(params)
@@ -467,6 +470,15 @@ module RESTAPI
 
         response = make_request(client, "GET", "/api/v3/allOrders"; params=params, signed=true)
         return JSON3.read(JSON3.write(response), Vector{Order})
+    end
+
+    function get_my_filters(client::RESTClient; symbol::String="")
+        params = Dict{String,Any}()
+        if !isempty(symbol)
+            params["symbol"] = validate_symbol(symbol)
+        end
+
+        return make_request(client, "GET", "/api/v3/myFilters"; params=params, signed=true)
     end
 
     function get_my_trades(

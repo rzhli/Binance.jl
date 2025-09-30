@@ -49,3 +49,4 @@ Strategy backup.jl
 # Other files that might contain sensitive data
 # Uncommend as needed
 # examples.jl
+SymbolInfo.txt

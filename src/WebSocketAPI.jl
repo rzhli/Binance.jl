@@ -49,7 +49,7 @@ module WebSocketAPI
     # Account
     export account_status, account_rate_limits_orders, orders_open, all_orders, my_trades,
         open_orders_status, all_orders, my_prevented_matches, my_allocations,
-        account_commission, order_amendments
+        account_commission, order_amendments, my_filters
 
     # User Data Stream
     export user_data_stream_start, user_data_stream_ping, user_data_stream_stop,
@@ -263,7 +263,7 @@ module WebSocketAPI
                                 end
                                 
                                 # Parse JSON message
-                                @show data = JSON3.read(String(msg))
+                                data = JSON3.read(String(msg))
 
                                 # Check if this is a response to a request
                                 if haskey(data, :id) && haskey(client.responses, string(data.id))
@@ -649,6 +649,9 @@ module WebSocketAPI
         
         # Always add timestamp and recvWindow
         params["timestamp"] = get_timestamp(client)
+        # The recvWindow parameter is used to specify the number of milliseconds after the timestamp that the request is valid for.
+        # If the request is received after recvWindow milliseconds from the timestamp, it will be rejected.
+        # The value of recvWindow can be up to 60000. It now supports microseconds.
         params["recvWindow"] = client.config.recv_window
         
         # Check if we need to add apiKey and signature
@@ -1698,6 +1701,17 @@ module WebSocketAPI
         !isnothing(fromId) && (params["fromId"] = fromId)
 
         return send_signed_request(client, "myTrades", params)
+    end
+
+    """
+        my_filters(client; symbol)
+
+    Query account filters.
+    """
+    function my_filters(client::WebSocketClient; symbol::String="")
+        params = Dict{String,Any}()
+        !isempty(symbol) && (params["symbol"] = symbol)
+        return send_signed_request(client, "myFilters", params)
     end
 
     """
