@@ -2,15 +2,14 @@
 
 A comprehensive Julia SDK for interacting with Binance's Spot Trading APIs, including REST API, WebSocket Market Data Streams, and WebSocket API for real-time trading.
 
-## 🎉 Recent Updates (v0.4.0)
+## 🎉 Recent Updates (v0.5.0)
 
-### Error Handling Refactoring
-- **Centralized Error Module**: All custom exception types have been moved to a new `Errors.jl` module to improve modularity and reusability.
-- **Consistent Error Handling**: Both REST and WebSocket APIs now use the same set of error types, providing a more consistent experience.
+### WebSocket Enhancements
+- **eventStreamTerminated Support**: Added `EventStreamTerminated` struct and automatic handling so user data stream terminations are logged cleanly with timestamps.
+- **Graceful Logging**: Default handler surfaces reconnection intent without spurious warnings.
 
-### v0.3.0
-- **WebSocket API Optimizations**: Heartbeat mechanism, UUID request IDs, enhanced validation, and improved rate limiting.
-- **Full Compliance**: All functions now comply with the latest Binance WebSocket API documentation.
+### Dependency Update
+- Added `Crayons.jl` as a project dependency for terminal color output.
 
 ## Features
 
@@ -29,6 +28,7 @@ A comprehensive Julia SDK for interacting with Binance's Spot Trading APIs, incl
 - **General**: Ping, Server Time, Exchange Info
 - **Market Data**: Order Book, Trades (Recent/Historical/Aggregate), Klines, Tickers, Prices
 - **Spot Trading**: Orders (Place/Cancel/Status), OCO Orders, Account Info, Order History, Rate Limits
+- **Strategy Helpers**: Real-time trade strategy helpers with colored order book display
 
 #### WebSocket Market Streams
 - **Real-time Data**: Tickers, Klines, Depth, Aggregate Trades
@@ -55,17 +55,6 @@ A comprehensive Julia SDK for interacting with Binance's Spot Trading APIs, incl
 using Pkg
 Pkg.add("https://github.com/rzhli/Binance.jl.git")
 ```
-
-### Dependencies
-
-- HTTP.jl
-- JSON3.jl
-- StructTypes.jl
-- Dates.jl
-- SHA.jl
-- URIs.jl
-- DataFrames.jl (for klines data)
-- UUIDs.jl (for WebSocket request IDs)
 
 ## Quick Start
 
@@ -215,10 +204,6 @@ disconnect!(ws_client)
 - **Futures/Options**: Complete implementation
 - **Portfolio Management**: Advanced risk and position management
 
-#### 📊 Detailed Progress
-
-Refer to [todolist.md](./todolist.md) for complete feature checklist with implementation status.
-
 ## Architecture
 
 ```
@@ -242,20 +227,6 @@ Binance.jl/
 └── Project.toml            # Julia project dependencies
 ```
 
-## Testing
-
-Run the provided test script:
-
-```julia
-include("test.jl")
-```
-
-This script demonstrates:
-- REST API operations
-- WebSocket market data subscriptions
-- WebSocket API trading operations
-- Real-time strategy execution with automated buy/sell logic
-
 ## Security Notes
 
 - Enable 2FA on your Binance account
@@ -269,13 +240,6 @@ Contributions are welcome! Please:
 2. Create a feature branch
 3. Add tests for new functionality
 4. Submit a pull request with clear description
-
-### Development Guidelines
-
-- Follow Julia style guidelines
-- Add documentation for public APIs
-- Include usage examples
-- Update tests and checklists
 
 ## License
 

@@ -8,17 +8,16 @@ module WebSocketAPI
     # ✨✨ 关键步骤 ✨✨
     # 使用 import 关键字，将 RESTAPI.place_order 函数本身引入当前作用域, 为它添加新方法，
     # 而不是创建一个新函数, 只导出自己的类型，不要导出 place_order，因为它不属于这里
-    import ..RESTAPI: place_order
+    import ..RESTAPI: place_order, cancel_order
 
     const EVENT_TYPE_MAP = Dict{String,Type}(
         "outboundAccountPosition" => OutboundAccountPosition,
         "executionReport" => ExecutionReport,
         "balanceUpdate" => BalanceUpdate,
-        "listStatus" => ListStatus
+        "listStatus" => ListStatus,
+        "eventStreamTerminated" => EventStreamTerminated
         # Add other event types here as they are implemented
     )
-
-    # --- Exports ---
 
     # Client and Connection
     export WebSocketClient, connect!, disconnect!, on_event, ensure_connected!,
@@ -36,7 +35,7 @@ module WebSocketAPI
         avg_price, ticker_24hr, ticker_trading_day, ticker, ticker_price, ticker_book
 
     # Trading
-    export test_order, order_status, cancel_order, cancel_replace_order,
+    export test_order, order_status, cancel_replace_order,
         amend_order, cancel_all_orders
 
     # Order Lists
@@ -288,6 +287,9 @@ module WebSocketAPI
                                             catch e
                                                 @error "Error in event callback for '$event_type': $e"
                                             end
+                                        elseif event_type == "eventStreamTerminated"
+                                            event_struct = JSON3.read(JSON3.write(event_payload), EventStreamTerminated)
+                                            handle_event_stream_terminated!(client, event_struct)
                                         else
                                             @warn "Received unhandled event of type '$(event_type)'"
                                         end
@@ -368,6 +370,12 @@ module WebSocketAPI
     function on_event(client::WebSocketClient, event_type::String, callback::Function)
         client.ws_callbacks[event_type] = callback
         @info "Registered callback for event type '$event_type'."
+    end
+    
+    function handle_event_stream_terminated!(client::WebSocketClient, event::EventStreamTerminated)
+        event_time = unix2datetime(event.E / 1000)
+        @info "User data stream terminated" event_time event_type=event.e
+        @info "Reconnect or resubscribe the user data stream as needed." reconnect_enabled=client.should_reconnect
     end
     
     """
@@ -1468,7 +1476,7 @@ module WebSocketAPI
         pendingStopPrice::Union{Float64,Nothing}=nothing, pendingTrailingDelta::Union{Int,Nothing}=nothing,
         pendingIcebergQty::Union{Float64,Nothing}=nothing, pendingTimeInForce::String="", pendingStrategyId::Union{Int,Nothing}=nothing,
         pendingStrategyType::Union{Int,Nothing}=nothing, pendingPegPriceType::String="", pendingPegOffsetType::String="", pendingPegOffsetValue::Union{Int,Nothing}=nothing
-    )
+        )
 
         params = Dict{String,Any}(
             "symbol" => symbol,
@@ -1520,7 +1528,7 @@ module WebSocketAPI
     function place_otoco_order(
         client::WebSocketClient, symbol::String, workingType::String, workingSide::String, workingPrice::Float64,
         workingQuantity::Float64, pendingSide::String, pendingQuantity::Float64, pendingAboveType::String; kwargs...
-    )
+        )
 
         params = Dict{String,Any}(
             "symbol" => symbol,
@@ -1551,7 +1559,8 @@ module WebSocketAPI
     function cancel_order_list(client::WebSocketClient, symbol::String;
         orderListId::Union{Int,Nothing}=nothing,
         listClientOrderId::String="",
-        newClientOrderId::String="")
+        newClientOrderId::String=""
+        )
 
         params = Dict{String,Any}("symbol" => symbol)
 
@@ -1731,11 +1740,13 @@ module WebSocketAPI
     Query information about all orders – active, canceled, filled – filtered by time range.
     Weight: 20
     """
-    function all_orders(client::WebSocketClient, symbol::String;
+    function all_orders(
+        client::WebSocketClient, symbol::String;
         orderId::Union{Int,Nothing}=nothing,
         startTime::Union{Int,Nothing}=nothing,
         endTime::Union{Int,Nothing}=nothing,
-        limit::Int=500)
+        limit::Int=500
+        )
 
         # Validate limit
         if limit < 1 || limit > 1000
@@ -1759,9 +1770,7 @@ module WebSocketAPI
 
     Check execution status of an Order list.
     """
-    function order_list_status(client::WebSocketClient;
-        orderListId::Union{Int,Nothing}=nothing,
-        origClientOrderId::String="")
+    function order_list_status(client::WebSocketClient; orderListId::Union{Int,Nothing}=nothing, origClientOrderId::String="")
 
         params = Dict{String,Any}()
 
@@ -1791,11 +1800,13 @@ module WebSocketAPI
     Query information about all order lists, filtered by time range.
     Weight: 20
     """
-    function all_order_lists(client::WebSocketClient;
+    function all_order_lists(
+        client::WebSocketClient;
         fromId::Union{Int,Nothing}=nothing,
         startTime::Union{Int,Nothing}=nothing,
         endTime::Union{Int,Nothing}=nothing,
-        limit::Int=500)
+        limit::Int=500
+        )
 
         # Validate limit
         if limit < 1 || limit > 1000
@@ -1817,11 +1828,13 @@ module WebSocketAPI
     Displays the list of orders that were expired due to STP.
     Weight: 2 for preventedMatchId, 20 for orderId
     """
-    function my_prevented_matches(client::WebSocketClient, symbol::String;
+    function my_prevented_matches(
+        client::WebSocketClient, symbol::String;
         preventedMatchId::Union{Int,Nothing}=nothing,
         orderId::Union{Int,Nothing}=nothing,
         fromPreventedMatchId::Union{Int,Nothing}=nothing,
-        limit::Int=500)
+        limit::Int=500
+        )
 
         # Validate limit
         if limit < 1 || limit > 1000
@@ -1846,12 +1859,14 @@ module WebSocketAPI
     Retrieves allocations resulting from SOR order placement.
     Weight: 20
     """
-    function my_allocations(client::WebSocketClient, symbol::String;
+    function my_allocations(
+        client::WebSocketClient, symbol::String;
         startTime::Union{Int,Nothing}=nothing,
         endTime::Union{Int,Nothing}=nothing,
         fromAllocationId::Union{Int,Nothing}=nothing,
         limit::Int=500,
-        orderId::Union{Int,Nothing}=nothing)
+        orderId::Union{Int,Nothing}=nothing
+        )
 
         # Validate limit
         if limit < 1 || limit > 1000
@@ -1888,9 +1903,11 @@ module WebSocketAPI
     Queries all amendments of a single order.
     Weight: 4
     """
-    function order_amendments(client::WebSocketClient, symbol::String, orderId::Int;
+    function order_amendments(
+        client::WebSocketClient, symbol::String, orderId::Int;
         fromExecutionId::Union{Int,Nothing}=nothing,
-        limit::Int=500)
+        limit::Int=500
+        )
 
         # Validate limit
         if limit < 1 || limit > 1000

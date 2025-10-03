@@ -1,8 +1,10 @@
 module Events
 
 using StructTypes
+using ..Types
 
-export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus, Balance
+export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus, 
+        Balance, PartialBookDepth, EventStreamTerminated
 
 struct Balance
     a::String           # Asset
@@ -27,6 +29,12 @@ struct BalanceUpdate
     T::Int64            # Clear Time
 end
 StructTypes.StructType(::Type{BalanceUpdate}) = StructTypes.Struct()
+
+struct EventStreamTerminated
+    e::String           # Event Type
+    E::Int64            # Event Time (ms)
+end
+StructTypes.StructType(::Type{EventStreamTerminated}) = StructTypes.Struct()
 
 struct OrderInListStatus
     s::String           # Symbol
@@ -110,5 +118,17 @@ struct ExecutionReport
     gp::Union{String, Nothing} # Pegged Price
 end
 StructTypes.StructType(::Type{ExecutionReport}) = StructTypes.Struct()
+
+struct PartialBookDepth
+    lastUpdateId::Int64
+    bids::Vector{PriceLevel}
+    asks::Vector{PriceLevel}
+end
+StructTypes.StructType(::Type{PartialBookDepth}) = StructTypes.CustomStruct()
+StructTypes.construct(::Type{PartialBookDepth}, obj) = PartialBookDepth(
+    obj["lastUpdateId"],
+    [StructTypes.construct(PriceLevel, bid) for bid in obj["bids"]],
+    [StructTypes.construct(PriceLevel, ask) for ask in obj["asks"]]
+)
 
 end # module Events

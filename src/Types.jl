@@ -588,7 +588,7 @@ struct PriceLevel
     quantity::Float64
 end
 StructTypes.StructType(::Type{PriceLevel}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{PriceLevel}, arr::Vector) = PriceLevel(
+StructTypes.construct(::Type{PriceLevel}, arr::AbstractVector) = PriceLevel(
     parse(Float64, arr[1]),
     parse(Float64, arr[2])
 )
