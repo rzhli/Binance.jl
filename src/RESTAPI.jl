@@ -320,10 +320,12 @@ module RESTAPI
         validate_order(params, symbol_info.filters)
 
         response = make_request(client, "POST", "/api/v3/order"; params=params, signed=true)
-        if haskey(response, :transactTime)
-            response[:transactTime] = unix2datetime(response[:transactTime] / 1000)
+        # Convert response to mutable dict for datetime conversion
+        result = Dict{Symbol, Any}(pairs(response))
+        if haskey(result, :transactTime)
+            result[:transactTime] = unix2datetime(result[:transactTime] / 1000)
         end
-        return response
+        return result
     end
 
     function test_order(
