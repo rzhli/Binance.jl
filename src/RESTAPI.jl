@@ -321,10 +321,12 @@ module RESTAPI
         validate_order(params, symbol_info.filters)
 
         response = make_request(client, "POST", "/api/v3/order"; params=params, signed=true)
-        if haskey(response, :transactTime)
-            response[:transactTime] = unix2datetime(response[:transactTime] / 1000)
+        # Convert JSON3.Object to Dict to allow modification
+        response_dict = Dict{Symbol,Any}(pairs(response))
+        if haskey(response_dict, :transactTime)
+            response_dict[:transactTime] = unix2datetime(response_dict[:transactTime] / 1000)
         end
-        return response
+        return response_dict
     end
 
     function test_order(
@@ -363,10 +365,12 @@ module RESTAPI
         end
 
         response = make_request(client, "DELETE", "/api/v3/order"; params=params, signed=true)
-        if haskey(response, :transactTime)
-            response[:transactTime] = unix2datetime(response[:transactTime] / 1000)
+        # Convert JSON3.Object to Dict to allow modification
+        response_dict = Dict{Symbol,Any}(pairs(response))
+        if haskey(response_dict, :transactTime)
+            response_dict[:transactTime] = unix2datetime(response_dict[:transactTime] / 1000)
         end
-        return response
+        return response_dict
     end
 
     function cancel_all_orders(client::RESTClient, symbol::String)
@@ -527,8 +531,10 @@ module RESTAPI
             throw(ArgumentError("Either orderListId or origClientOrderId must be provided"))
         end
         response = make_request(client, "GET", "/api/v3/orderList"; params=params, signed=true)
-        response[:transactionTime] = unix2datetime(response[:transactionTime] / 1000)
-        return response
+        # Convert JSON3.Object to Dict to allow modification
+        response_dict = Dict{Symbol,Any}(pairs(response))
+        response_dict[:transactionTime] = unix2datetime(response_dict[:transactionTime] / 1000)
+        return response_dict
     end
 
     function get_all_order_lists(
@@ -775,15 +781,20 @@ module RESTAPI
         response = make_request(client, "GET", "/api/v3/ticker/24hr"; params=params)
 
         if isa(response, Vector)
-            for ticker in response
-                ticker[:openTime] = unix2datetime(ticker[:openTime] / 1000)
-                ticker[:closeTime] = unix2datetime(ticker[:closeTime] / 1000)
+            # Convert each element in the vector to Dict and modify
+            return map(response) do ticker
+                ticker_dict = Dict{Symbol,Any}(pairs(ticker))
+                ticker_dict[:openTime] = unix2datetime(ticker_dict[:openTime] / 1000)
+                ticker_dict[:closeTime] = unix2datetime(ticker_dict[:closeTime] / 1000)
+                ticker_dict
             end
         else
-            response[:openTime] = unix2datetime(response[:openTime] / 1000)
-            response[:closeTime] = unix2datetime(response[:closeTime] / 1000)
+            # Convert single response to Dict
+            response_dict = Dict{Symbol,Any}(pairs(response))
+            response_dict[:openTime] = unix2datetime(response_dict[:openTime] / 1000)
+            response_dict[:closeTime] = unix2datetime(response_dict[:closeTime] / 1000)
+            return response_dict
         end
-        return response
     end
 
     function get_ticker_book(client::RESTClient; symbol::String="")
@@ -830,8 +841,10 @@ module RESTAPI
         symbol = validate_symbol(symbol)
         params = Dict{String,Any}("symbol" => symbol)
         response = make_request(client, "GET", "/api/v3/avgPrice"; params=params)
-        response[:closeTime] = unix2datetime(response[:closeTime] / 1000)
-        return response
+        # Convert JSON3.Object to Dict to allow modification
+        response_dict = Dict{Symbol,Any}(pairs(response))
+        response_dict[:closeTime] = unix2datetime(response_dict[:closeTime] / 1000)
+        return response_dict
     end
 
     function get_trading_day_ticker(client::RESTClient; symbol::String="", symbols::Vector{String}=[], time_zone::String="", type::String="FULL")
@@ -853,15 +866,20 @@ module RESTAPI
         response = make_request(client, "GET", "/api/v3/ticker/tradingDay"; params=params)
 
         if isa(response, Vector)
-            for ticker in response
-                ticker[:openTime] = unix2datetime(ticker[:openTime] / 1000)
-                ticker[:closeTime] = unix2datetime(ticker[:closeTime] / 1000)
+            # Convert each element in the vector to Dict and modify
+            return map(response) do ticker
+                ticker_dict = Dict{Symbol,Any}(pairs(ticker))
+                ticker_dict[:openTime] = unix2datetime(ticker_dict[:openTime] / 1000)
+                ticker_dict[:closeTime] = unix2datetime(ticker_dict[:closeTime] / 1000)
+                ticker_dict
             end
         else
-            response[:openTime] = unix2datetime(response[:openTime] / 1000)
-            response[:closeTime] = unix2datetime(response[:closeTime] / 1000)
+            # Convert single response to Dict
+            response_dict = Dict{Symbol,Any}(pairs(response))
+            response_dict[:openTime] = unix2datetime(response_dict[:openTime] / 1000)
+            response_dict[:closeTime] = unix2datetime(response_dict[:closeTime] / 1000)
+            return response_dict
         end
-        return response
     end
 
     function get_ticker(client::RESTClient; symbol::String="", symbols::Vector{String}=[], window_size::String="1d", type::String="FULL")
@@ -880,15 +898,20 @@ module RESTAPI
         response = make_request(client, "GET", "/api/v3/ticker"; params=params)
 
         if isa(response, Vector)
-            for ticker in response
-                ticker[:openTime] = unix2datetime(ticker[:openTime] / 1000)
-                ticker[:closeTime] = unix2datetime(ticker[:closeTime] / 1000)
+            # Convert each element in the vector to Dict and modify
+            return map(response) do ticker
+                ticker_dict = Dict{Symbol,Any}(pairs(ticker))
+                ticker_dict[:openTime] = unix2datetime(ticker_dict[:openTime] / 1000)
+                ticker_dict[:closeTime] = unix2datetime(ticker_dict[:closeTime] / 1000)
+                ticker_dict
             end
         else
-            response[:openTime] = unix2datetime(response[:openTime] / 1000)
-            response[:closeTime] = unix2datetime(response[:closeTime] / 1000)
+            # Convert single response to Dict
+            response_dict = Dict{Symbol,Any}(pairs(response))
+            response_dict[:openTime] = unix2datetime(response_dict[:openTime] / 1000)
+            response_dict[:closeTime] = unix2datetime(response_dict[:closeTime] / 1000)
+            return response_dict
         end
-        return response
     end
 
 end # module RESTAPI

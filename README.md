@@ -2,7 +2,23 @@
 
 A comprehensive Julia SDK for interacting with Binance's Spot Trading APIs, including REST API, WebSocket Market Data Streams, and WebSocket API for real-time trading.
 
-## 🎉 Recent Updates (v0.5.0)
+## Recent Updates (v0.4.3)
+
+### Exact Decimal Precision Support
+- **FixedPointDecimals.jl Integration**: Added exact decimal precision for order quantities and prices
+- **DecimalPrice Type**: New type alias `FixedDecimal{Int64, 8}` for 8-decimal precision (cryptocurrency standard)
+- **Flexible Input Types**: Order functions now accept `String`, `Float64`, or `FixedDecimal` for numeric parameters
+- **Precision Guarantees**: Eliminates floating-point precision errors in trading operations
+
+### Bug Fixes
+- **JSON3.Object Immutability**: Fixed `MethodError` when converting timestamps in API responses
+- **Date Conversion**: All timestamp conversions now properly handle immutable JSON objects
+- **Response Handling**: Functions returning datetime fields now correctly return mutable `Dict` objects
+
+### API Enhancements
+- Updated `place_order()`, `cancel_order()`, and all order list functions
+- Enhanced `get_ticker_24hr()`, `get_trading_day_ticker()`, `get_ticker()`, and `get_avg_price()`
+- Comprehensive documentation for decimal precision usage
 
 ### WebSocket Enhancements
 - **eventStreamTerminated Support**: Added `EventStreamTerminated` struct and automatic handling so user data stream terminations are logged cleanly with timestamps.
