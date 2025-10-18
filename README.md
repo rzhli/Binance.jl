@@ -109,13 +109,35 @@ exchange_info = get_exchange_info(rest_client)
 # Get account info
 account_info = get_account_info(rest_client)
 
-# Place a market order (example - MARKET order)
+# Place a market order with exact decimal precision
+# You can use String for exact decimal values
 order_result = place_order(
     rest_client,
     "BTCUSDT",
     "BUY",
     "MARKET";
-    quantity = "0.001"
+    quantity = "0.001"  # String ensures exact precision
+)
+
+# Or use DecimalPrice (FixedDecimal{Int64,8}) for guaranteed exact decimals
+order_result = place_order(
+    rest_client,
+    "BTCUSDT",
+    "BUY",
+    "LIMIT";
+    quantity = DecimalPrice("0.001"),
+    price = DecimalPrice("60000.0"),
+    timeInForce = "GTC"
+)
+
+# Float64 is also supported but may have precision issues
+# For exact amounts, prefer String or DecimalPrice
+order_result = place_order(
+    rest_client,
+    "BTCUSDT",
+    "BUY",
+    "MARKET";
+    quantity = 0.001  # May lose precision in edge cases
 )
 ```
 
@@ -148,7 +170,18 @@ ws_client = WebSocketClient("config.toml")
 connect!(ws_client)
 session_logon(ws_client)
 
-# Place order
+# Place order with exact decimal precision using DecimalPrice
+order_result = place_order(
+    ws_client,
+    "BTCUSDT",
+    "BUY",
+    "LIMIT";
+    quantity = DecimalPrice("0.001"),
+    price = DecimalPrice("60000.0"),
+    timeInForce = "GTC"
+)
+
+# Or use String for exact values
 order_result = place_order(
     ws_client,
     "BTCUSDT",
@@ -168,6 +201,48 @@ account = account_status(ws_client)
 # Cleanup
 session_logout(ws_client)
 disconnect!(ws_client)
+```
+
+## Decimal Precision
+
+This SDK uses **FixedPointDecimals.jl** to provide exact decimal precision for cryptocurrency trading. This is critical because:
+
+- Float64 can have precision errors (e.g., `0.1 + 0.2 != 0.3`)
+- Cryptocurrency exchanges require exact decimal values
+- Different assets have different precision requirements
+
+### Usage Options
+
+1. **String** (Recommended for simple cases): Pass exact decimal as string
+   ```julia
+   quantity = "0.00100000"
+   ```
+
+2. **DecimalPrice** (Recommended for calculations): Use FixedDecimal with 8 decimal places
+   ```julia
+   quantity = DecimalPrice("0.001")  # Exact 8-decimal precision
+   # Performs arithmetic without precision loss
+   total = DecimalPrice("0.001") * DecimalPrice("60000.0")
+   ```
+
+3. **Float64** (Caution): May lose precision in edge cases
+   ```julia
+   quantity = 0.001  # Works but may have precision issues
+   ```
+
+### DecimalPrice Type
+
+`DecimalPrice` is a type alias for `FixedDecimal{Int64, 8}`, providing 8 decimal places of precision (standard for most cryptocurrencies like Bitcoin):
+
+```julia
+# Create from string (preferred)
+price = DecimalPrice("60000.12345678")
+
+# Arithmetic operations maintain precision
+total = DecimalPrice("0.001") * DecimalPrice("60000.0")  # Exact result
+
+# Convert to string for display
+price_str = string(price)  # "60000.12345678"
 ```
 
 ## Project Status

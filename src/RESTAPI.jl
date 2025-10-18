@@ -1,6 +1,7 @@
 module RESTAPI
 
     using HTTP, JSON3, Dates, SHA, URIs, StructTypes
+    using FixedPointDecimals
     using ..Config
     using ..Signature
     using ..RateLimiter
@@ -250,12 +251,12 @@ module RESTAPI
 
     function place_order(
         client::RESTClient, symbol::String, side::String, order_type::String;
-        quantity::Union{Float64,Nothing}=nothing,
-        quote_order_qty::Union{Float64,Nothing}=nothing,
-        price::Union{Float64,Nothing}=nothing,
+        quantity::Union{Float64,String,FixedDecimal,Nothing}=nothing,
+        quote_order_qty::Union{Float64,String,FixedDecimal,Nothing}=nothing,
+        price::Union{Float64,String,FixedDecimal,Nothing}=nothing,
         new_client_order_id::String="",
-        stop_price::Union{Float64,Nothing}=nothing,
-        iceberg_qty::Union{Float64,Nothing}=nothing,
+        stop_price::Union{Float64,String,FixedDecimal,Nothing}=nothing,
+        iceberg_qty::Union{Float64,String,FixedDecimal,Nothing}=nothing,
         time_in_force::String="GTC",
         new_order_resp_type::String="ACK"
         )
@@ -290,20 +291,20 @@ module RESTAPI
             if isnothing(price)
                 throw(ArgumentError("Price is required for $(order_type) orders"))
             end
-            params["price"] = string(price)
+            params["price"] = to_decimal_string(price)
         end
 
         if order_type in ["STOP_LOSS", "STOP_LOSS_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"]
             if isnothing(stop_price)
                 throw(ArgumentError("Stop price is required for $(order_type) orders"))
             end
-            params["stopPrice"] = string(stop_price)
+            params["stopPrice"] = to_decimal_string(stop_price)
         end
 
         if !isnothing(quantity)
-            params["quantity"] = string(quantity)
+            params["quantity"] = to_decimal_string(quantity)
         elseif !isnothing(quote_order_qty)
-            params["quoteOrderQty"] = string(quote_order_qty)
+            params["quoteOrderQty"] = to_decimal_string(quote_order_qty)
         else
             throw(ArgumentError("Either quantity or quoteOrderQty must be specified"))
         end
@@ -313,7 +314,7 @@ module RESTAPI
         end
 
         if !isnothing(iceberg_qty)
-            params["icebergQty"] = string(iceberg_qty)
+            params["icebergQty"] = to_decimal_string(iceberg_qty)
         end
 
         # --- Perform Validation ---
@@ -558,7 +559,7 @@ module RESTAPI
     end
 
     function place_oco_order(
-        client::RESTClient, symbol::String, side::String, quantity::Float64,
+        client::RESTClient, symbol::String, side::String, quantity::Union{Float64,String,FixedDecimal},
         above_type::String, below_type::String; kwargs...
     )
         params = Dict{String,Any}(kwargs)
@@ -573,8 +574,8 @@ module RESTAPI
 
     function place_oto_order(
         client::RESTClient, symbol::String, working_type::String, working_side::String,
-        working_price::Float64, working_quantity::Float64, pending_type::String,
-        pending_side::String, pending_quantity::Float64; kwargs...
+        working_price::Union{Float64,String,FixedDecimal}, working_quantity::Union{Float64,String,FixedDecimal}, pending_type::String,
+        pending_side::String, pending_quantity::Union{Float64,String,FixedDecimal}; kwargs...
     )
         params = Dict{String,Any}(kwargs)
         params[:symbol] = symbol
@@ -591,8 +592,8 @@ module RESTAPI
 
     function place_otoco_order(
         client::RESTClient, symbol::String, working_type::String, working_side::String,
-        working_price::Float64, working_quantity::Float64, pending_side::String,
-        pending_quantity::Float64, pending_above_type::String; kwargs...
+        working_price::Union{Float64,String,FixedDecimal}, working_quantity::Union{Float64,String,FixedDecimal}, pending_side::String,
+        pending_quantity::Union{Float64,String,FixedDecimal}, pending_above_type::String; kwargs...
     )
         params = Dict{String,Any}(kwargs)
         params[:symbol] = symbol

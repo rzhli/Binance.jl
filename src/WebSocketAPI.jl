@@ -1,8 +1,9 @@
 module WebSocketAPI
 
     using HTTP, JSON3, Dates, SHA, URIs, StructTypes, DataFrames, UUIDs
+    using FixedPointDecimals
     import HTTP.WebSockets
-    
+
     using ..Config, ..Signature, ..Types, ..RESTAPI, ..RateLimiter, ..Account, ..Events, ..Errors
 
     # ✨✨ 关键步骤 ✨✨
@@ -1162,10 +1163,10 @@ module WebSocketAPI
     """
     function place_order(
         client::WebSocketClient, symbol::String, side::String, type::String;
-        timeInForce::String="", price::Union{Float64,String,Nothing}=nothing,
-        quantity::Union{Float64,String,Nothing}=nothing, quoteOrderQty::Union{Float64,String,Nothing}=nothing,
-        newClientOrderId::String="", stopPrice::Union{Float64,String,Nothing}=nothing,
-        trailingDelta::Union{Int,Nothing}=nothing, icebergQty::Union{Float64,String,Nothing}=nothing,
+        timeInForce::String="", price::Union{Float64,String,FixedDecimal,Nothing}=nothing,
+        quantity::Union{Float64,String,FixedDecimal,Nothing}=nothing, quoteOrderQty::Union{Float64,String,FixedDecimal,Nothing}=nothing,
+        newClientOrderId::String="", stopPrice::Union{Float64,String,FixedDecimal,Nothing}=nothing,
+        trailingDelta::Union{Int,Nothing}=nothing, icebergQty::Union{Float64,String,FixedDecimal,Nothing}=nothing,
         newOrderRespType::String="", strategyId::Union{Int,Nothing}=nothing,
         strategyType::Union{Int,Nothing}=nothing, selfTradePreventionMode::String="",
         kwargs...  # Accept any additional parameters
@@ -1191,13 +1192,13 @@ module WebSocketAPI
 
         # Add parameters if provided (simplified)
         !isempty(timeInForce) && (params["timeInForce"] = timeInForce)
-        !isnothing(price) && (params["price"] = string(price))
-        !isnothing(quantity) && (params["quantity"] = string(quantity))
-        !isnothing(quoteOrderQty) && (params["quoteOrderQty"] = string(quoteOrderQty))
+        !isnothing(price) && (params["price"] = to_decimal_string(price))
+        !isnothing(quantity) && (params["quantity"] = to_decimal_string(quantity))
+        !isnothing(quoteOrderQty) && (params["quoteOrderQty"] = to_decimal_string(quoteOrderQty))
         !isempty(newClientOrderId) && (params["newClientOrderId"] = newClientOrderId)
-        !isnothing(stopPrice) && (params["stopPrice"] = string(stopPrice))
+        !isnothing(stopPrice) && (params["stopPrice"] = to_decimal_string(stopPrice))
         !isnothing(trailingDelta) && (params["trailingDelta"] = trailingDelta)
-        !isnothing(icebergQty) && (params["icebergQty"] = string(icebergQty))
+        !isnothing(icebergQty) && (params["icebergQty"] = to_decimal_string(icebergQty))
         !isempty(newOrderRespType) && (params["newOrderRespType"] = newOrderRespType)
         !isnothing(strategyId) && (params["strategyId"] = strategyId)
         !isnothing(strategyType) && (params["strategyType"] = strategyType)

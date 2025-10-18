@@ -35,6 +35,7 @@ export BinanceException, BinanceError, MalformedRequestError, UnauthorizedError,
 
 # Export data types
 export ExchangeInfo, RateLimit, SymbolInfo, Order, Trade, Kline, Ticker24hr
+export DecimalPrice, to_decimal_string
 
 # Export Event types
 export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus

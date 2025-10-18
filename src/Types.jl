@@ -1,6 +1,40 @@
 module Types
 
 using Dates, StructTypes, JSON3, DataFrames, Printf
+using FixedPointDecimals
+
+# Type alias for commonly used decimal precision in cryptocurrency (8 decimal places)
+const DecimalPrice = FixedDecimal{Int64, 8}
+
+# Export decimal types and conversion utilities
+export DecimalPrice, to_decimal_string
+
+"""
+    to_decimal_string(value)
+
+Convert a numeric value to its exact string representation for API calls.
+Supports Float64, String, and FixedDecimal types.
+
+# Examples
+```julia
+to_decimal_string(0.001)              # "0.001"
+to_decimal_string("0.00100000")       # "0.00100000" (preserved as-is)
+to_decimal_string(DecimalPrice(0.001)) # "0.00100000" (exact 8 decimals)
+```
+"""
+function to_decimal_string(value::Union{Float64, String, FixedDecimal, Nothing})
+    if isnothing(value)
+        return nothing
+    elseif isa(value, String)
+        return value  # Pass strings through as-is for user control
+    elseif isa(value, FixedDecimal)
+        return string(value)  # FixedDecimal provides exact string representation
+    elseif isa(value, Float64)
+        # For Float64, use string() which provides reasonable precision
+        # Users should prefer String or FixedDecimal for guaranteed exact values
+        return string(value)
+    end
+end
 
 # Enums
 export SymbolStatus, AccountPermissions, OrderStatus, OrderListStatus, OrderListOrderStatus,
