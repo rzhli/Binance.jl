@@ -802,17 +802,22 @@ module WebSocketAPI
 
     # --- Market Data Requests ---
 
-    function depth(client::WebSocketClient, symbol::String; limit::Int=100)
+    function depth(client::WebSocketClient, symbol::String; limit::Int=100, symbolStatus::String="")
         # Validate limit values
         valid_limits = [5, 10, 20, 50, 100, 500, 1000, 5000]
         if !(limit in valid_limits)
             throw(ArgumentError("Invalid limit for depth. Valid values: $(join(valid_limits, ", "))"))
         end
-        
+
         params = Dict{String,Any}("symbol" => symbol)
         if limit != 100
             params["limit"] = limit
         end
+
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+
         response = send_request(client, "depth", params)
         return JSON3.read(JSON3.write(response), OrderBook)
     end
@@ -971,17 +976,17 @@ module WebSocketAPI
         return JSON3.read(JSON3.write(response), AveragePrice)
     end
 
-    function ticker_24hr(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], type::String="FULL")
+    function ticker_24hr(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], type::String="FULL", symbolStatus::String="")
         # Validate type
         if !(type in ["FULL", "MINI"])
             throw(ArgumentError("Invalid type. Valid values: FULL, MINI"))
         end
-        
+
         # symbol and symbols cannot be used together
         if !isempty(symbol) && !isempty(symbols)
             throw(ArgumentError("symbol and symbols cannot be used together"))
         end
-        
+
         params = Dict{String,Any}()
         single_symbol = false
         if !isempty(symbol)
@@ -993,6 +998,11 @@ module WebSocketAPI
         if type != "FULL"
             params["type"] = type
         end
+
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+
         response = send_request(client, "ticker.24hr", params)
         if single_symbol
             return type == "FULL" ? JSON3.read(JSON3.write(response), Ticker24hrRest) : JSON3.read(JSON3.write(response), Ticker24hrMini)
@@ -1002,23 +1012,23 @@ module WebSocketAPI
     end
 
     function ticker_trading_day(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[],
-        time_zone::String="0", type::String="FULL")
-        
+        time_zone::String="0", type::String="FULL", symbolStatus::String="")
+
         # Validate timezone
         if time_zone != "0" && !occursin(r"^[+-]?\d{1,2}(:\d{2})?$", time_zone)
             throw(ArgumentError("Invalid timezone format. Use hours:minutes (e.g., -1:00, 05:45) or hours only (e.g., 0, 8, 4)"))
         end
-        
+
         # Validate type
         if !(type in ["FULL", "MINI"])
             throw(ArgumentError("Invalid type. Valid values: FULL, MINI"))
         end
-        
+
         # Either symbol or symbols must be specified (or neither for all symbols)
         if !isempty(symbol) && !isempty(symbols)
             throw(ArgumentError("symbol and symbols cannot be used together"))
         end
-        
+
         params = Dict{String,Any}()
         single_symbol = false
         if !isempty(symbol)
@@ -1033,6 +1043,11 @@ module WebSocketAPI
         if type != "FULL"
             params["type"] = type
         end
+
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+
         response = send_request(client, "ticker.tradingDay", params)
         if single_symbol
             return type == "FULL" ? JSON3.read(JSON3.write(response), TradingDayTicker) : JSON3.read(JSON3.write(response), TradingDayTickerMini)
@@ -1041,8 +1056,8 @@ module WebSocketAPI
         end
     end
 
-    function ticker(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], window_size::String="1d", type::String="FULL")
-        
+    function ticker(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], window_size::String="1d", type::String="FULL", symbolStatus::String="")
+
         # Validate window size
         valid_window_sizes = [
             # Minutes: 1m to 59m
@@ -1055,27 +1070,27 @@ module WebSocketAPI
         if !(window_size in valid_window_sizes)
             throw(ArgumentError("Invalid window size. Valid formats: 1m-59m, 1h-23h, 1d-7d"))
         end
-        
+
         # Validate type
         if !(type in ["FULL", "MINI"])
             throw(ArgumentError("Invalid type. Valid values: FULL, MINI"))
         end
-        
+
         # Either symbol or symbols must be specified
         if isempty(symbol) && isempty(symbols)
             throw(ArgumentError("Either symbol or symbols must be specified"))
         end
-        
+
         # symbol and symbols cannot be used together
         if !isempty(symbol) && !isempty(symbols)
             throw(ArgumentError("symbol and symbols cannot be used together"))
         end
-        
+
         # Maximum 200 symbols
         if length(symbols) > 200
             throw(ArgumentError("Maximum 200 symbols allowed in one request"))
         end
-        
+
         params = Dict{String,Any}()
         single_symbol = false
         if !isempty(symbol)
@@ -1090,6 +1105,11 @@ module WebSocketAPI
         if type != "FULL"
             params["type"] = type
         end
+
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+
         response = send_request(client, "ticker", params)
         if single_symbol
             return type == "FULL" ? JSON3.read(JSON3.write(response), RollingWindowTicker) : JSON3.read(JSON3.write(response), RollingWindowTickerMini)
@@ -1098,12 +1118,12 @@ module WebSocketAPI
         end
     end
 
-    function ticker_price(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[])
+    function ticker_price(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], symbolStatus::String="")
         # symbol and symbols cannot be used together
         if !isempty(symbol) && !isempty(symbols)
             throw(ArgumentError("symbol and symbols cannot be used together"))
         end
-        
+
         params = Dict{String,Any}()
         single_symbol = false
         if !isempty(symbol)
@@ -1112,16 +1132,21 @@ module WebSocketAPI
         elseif !isempty(symbols)
             params["symbols"] = symbols
         end
+
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+
         response = send_request(client, "ticker.price", params)
         return single_symbol ? JSON3.read(JSON3.write(response), PriceTicker) : JSON3.read(JSON3.write(response), Vector{PriceTicker})
     end
 
-    function ticker_book(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[])
+    function ticker_book(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], symbolStatus::String="")
         # symbol and symbols cannot be used together
         if !isempty(symbol) && !isempty(symbols)
             throw(ArgumentError("symbol and symbols cannot be used together"))
         end
-        
+
         params = Dict{String,Any}()
         single_symbol = false
         if !isempty(symbol)
@@ -1130,6 +1155,11 @@ module WebSocketAPI
         elseif !isempty(symbols)
             params["symbols"] = symbols
         end
+
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+
         response = send_request(client, "ticker.book", params)
         return single_symbol ? JSON3.read(JSON3.write(response), BookTicker) : JSON3.read(JSON3.write(response), Vector{BookTicker})
     end
@@ -1973,8 +2003,8 @@ module WebSocketAPI
         # Check if there's already an active user data stream subscription
         try
             subs_response = session_subscriptions(client)
-            if subs_response !== nothing
-                @info "User data stream already has $(length(subs_response)) active subscription(s), skipping new subscription"
+            if !isnothing(subs_response) && !isempty(subs_response)
+                @info "User data stream already has $(length(subs_response)) active subscription(s). Skipping new subscription."
                 return subs_response[1]  # Return the existing subscription
             end
         catch e

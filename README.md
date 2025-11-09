@@ -2,29 +2,70 @@
 
 A comprehensive Julia SDK for interacting with Binance's Spot Trading APIs, including REST API, WebSocket Market Data Streams, and WebSocket API for real-time trading.
 
-## Recent Updates (v0.4.3)
+## Recent Updates
 
-### Exact Decimal Precision Support
+### v0.4.4 - symbolStatus Parameter Support (2025-10-28)
+
+Implemented the `symbolStatus` parameter across all relevant market data endpoints as per Binance's API CHANGELOG (2025-10-28).
+
+#### New Parameter: `symbolStatus`
+- **What it does**: Filters symbols by trading status (`"TRADING"`, `"HALT"`, `"BREAK"`)
+- **Backward Compatible**: Optional parameter, defaults to no filtering
+- **Error Handling**: Returns error `-1220` if single symbol doesn't match status; returns empty array if no symbols match
+
+#### Updated REST API Endpoints
+- `get_orderbook()` - Order book depth data
+- `get_symbol_ticker()` - Symbol price ticker(s)
+- `get_ticker_24hr()` - 24-hour ticker statistics
+- `get_ticker_book()` - Best bid/ask prices
+- `get_trading_day_ticker()` - Trading day ticker statistics
+- `get_ticker()` - Rolling window ticker statistics
+
+#### Updated WebSocket API Endpoints
+- `depth()` - Order book depth data
+- `ticker_price()` - Symbol price ticker(s)
+- `ticker_book()` - Best bid/ask prices
+- `ticker_24hr()` - 24-hour ticker statistics
+- `ticker_trading_day()` - Trading day ticker statistics
+- `ticker()` - Rolling window ticker statistics
+
+#### Usage Example
+```julia
+# REST API - Get orderbook only for trading symbols
+orderbook = get_orderbook(client, "BTCUSDT"; symbolStatus="TRADING")
+
+# Get multiple tickers, filtering by status
+tickers = get_symbol_ticker(client; symbols=["BTCUSDT", "ETHUSDT"], symbolStatus="TRADING")
+
+# WebSocket API - Get price with status filter
+price = ticker_price(ws_client; symbol="BTCUSDT", symbolStatus="TRADING")
+```
+
+See `test_symbolStatus.jl` for comprehensive examples.
+
+### v0.4.3
+
+#### Exact Decimal Precision Support
 - **FixedPointDecimals.jl Integration**: Added exact decimal precision for order quantities and prices
 - **DecimalPrice Type**: New type alias `FixedDecimal{Int64, 8}` for 8-decimal precision (cryptocurrency standard)
 - **Flexible Input Types**: Order functions now accept `String`, `Float64`, or `FixedDecimal` for numeric parameters
 - **Precision Guarantees**: Eliminates floating-point precision errors in trading operations
 
-### Bug Fixes
+#### Bug Fixes
 - **JSON3.Object Immutability**: Fixed `MethodError` when converting timestamps in API responses
 - **Date Conversion**: All timestamp conversions now properly handle immutable JSON objects
 - **Response Handling**: Functions returning datetime fields now correctly return mutable `Dict` objects
 
-### API Enhancements
+#### API Enhancements
 - Updated `place_order()`, `cancel_order()`, and all order list functions
 - Enhanced `get_ticker_24hr()`, `get_trading_day_ticker()`, `get_ticker()`, and `get_avg_price()`
 - Comprehensive documentation for decimal precision usage
 
-### WebSocket Enhancements
+#### WebSocket Enhancements
 - **eventStreamTerminated Support**: Added `EventStreamTerminated` struct and automatic handling so user data stream terminations are logged cleanly with timestamps.
 - **Graceful Logging**: Default handler surfaces reconnection intent without spurious warnings.
 
-### Dependency Update
+#### Dependency Update
 - Added `Crayons.jl` as a project dependency for terminal color output.
 
 ## Features

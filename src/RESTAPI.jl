@@ -664,7 +664,7 @@ module RESTAPI
 
     # --- Market Data Functions ---
 
-    function get_orderbook(client::RESTClient, symbol::String; limit::Int=100)
+    function get_orderbook(client::RESTClient, symbol::String; limit::Int=100, symbolStatus::String="")
         symbol = validate_symbol(symbol)
         valid_limits = [5, 10, 20, 50, 100, 500, 1000, 5000]
         if !(limit in valid_limits)
@@ -675,6 +675,11 @@ module RESTAPI
             "symbol" => symbol,
             "limit" => limit
         )
+
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+
         return make_request(client, "GET", "/api/v3/depth"; params=params)
     end
 
@@ -765,19 +770,33 @@ module RESTAPI
         return JSON3.read(JSON3.write(response), Vector{Kline})
     end
 
-    function get_symbol_ticker(client::RESTClient; symbol::String="")
+    function get_symbol_ticker(client::RESTClient; symbol::String="", symbols::Vector{String}=String[], symbolStatus::String="")
         params = Dict{String,Any}()
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
+        elseif !isempty(symbols)
+            params["symbols"] = JSON3.write(symbols)
         end
+
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+
         return make_request(client, "GET", "/api/v3/ticker/price"; params=params)
     end
 
-    function get_ticker_24hr(client::RESTClient; symbol::String="")
+    function get_ticker_24hr(client::RESTClient; symbol::String="", symbols::Vector{String}=String[], symbolStatus::String="")
         params = Dict{String,Any}()
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
+        elseif !isempty(symbols)
+            params["symbols"] = JSON3.write(symbols)
         end
+
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+
         response = make_request(client, "GET", "/api/v3/ticker/24hr"; params=params)
 
         if isa(response, Vector)
@@ -797,11 +816,18 @@ module RESTAPI
         end
     end
 
-    function get_ticker_book(client::RESTClient; symbol::String="")
+    function get_ticker_book(client::RESTClient; symbol::String="", symbols::Vector{String}=String[], symbolStatus::String="")
         params = Dict{String,Any}()
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
+        elseif !isempty(symbols)
+            params["symbols"] = JSON3.write(symbols)
         end
+
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+
         return make_request(client, "GET", "/api/v3/ticker/bookTicker"; params=params)
     end
 
@@ -847,7 +873,7 @@ module RESTAPI
         return response_dict
     end
 
-    function get_trading_day_ticker(client::RESTClient; symbol::String="", symbols::Vector{String}=[], time_zone::String="", type::String="FULL")
+    function get_trading_day_ticker(client::RESTClient; symbol::String="", symbols::Vector{String}=[], time_zone::String="", type::String="FULL", symbolStatus::String="")
         params = Dict{String,Any}()
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
@@ -862,6 +888,10 @@ module RESTAPI
         end
 
         params["type"] = type
+
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
 
         response = make_request(client, "GET", "/api/v3/ticker/tradingDay"; params=params)
 
@@ -882,7 +912,7 @@ module RESTAPI
         end
     end
 
-    function get_ticker(client::RESTClient; symbol::String="", symbols::Vector{String}=[], window_size::String="1d", type::String="FULL")
+    function get_ticker(client::RESTClient; symbol::String="", symbols::Vector{String}=[], window_size::String="1d", type::String="FULL", symbolStatus::String="")
         params = Dict{String,Any}()
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
@@ -894,6 +924,10 @@ module RESTAPI
 
         params["windowSize"] = window_size
         params["type"] = type
+
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
 
         response = make_request(client, "GET", "/api/v3/ticker"; params=params)
 
