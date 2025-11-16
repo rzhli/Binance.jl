@@ -4,6 +4,158 @@ A comprehensive Julia SDK for interacting with Binance's Spot Trading APIs, incl
 
 ## Recent Updates
 
+### v0.5.0 - OrderBookManager Module (2025-11-16)
+
+Added complete local order book management with automatic synchronization from Binance WebSocket streams.
+
+#### New Feature: OrderBookManager ⭐
+
+**OrderBookManager** provides a powerful way to maintain a local, continuously-synchronized order book with near-zero latency access. This is ideal for:
+
+- **High-frequency trading strategies**: Access order book data in < 1ms (vs 20-100ms for REST/WebSocket calls)
+- **Market making**: Monitor best bid/ask and depth continuously without API rate limits
+- **Arbitrage**: Compare prices across markets with minimal latency
+- **Deep market analysis**: Access up to 5000 price levels with real-time updates
+
+**Why use OrderBookManager instead of ticker/depth streams?**
+
+| Method | Data | Latency | API Consumption | Use Case |
+|--------|------|---------|----------------|----------|
+| Ticker stream | Latest price only | ~10-50ms | None (WebSocket) | Simple price triggers |
+| Depth stream | 5-20 level snapshots | ~20-100ms | None (WebSocket) | Basic order book access |
+| **OrderBookManager** ⭐ | **Up to 5000 levels** | **< 1ms** | **None** | **HFT, market making, deep analysis** |
+
+#### Key Features
+
+- ✅ **Automatic Synchronization**: Implements Binance's corrected algorithm (2025-11-12) for maintaining local order books
+- ✅ **Near-Zero Latency**: Local order book access in < 1ms vs 20-100ms for REST/WebSocket calls
+- ✅ **Complete Depth**: Support for up to 5000 price levels (vs 20 levels in depth stream)
+- ✅ **Real-time Updates**: WebSocket diff depth stream with automatic event buffering
+- ✅ **Thread-Safe**: Safe concurrent access to order book data
+- ✅ **Advanced Analytics**: Built-in VWAP calculation and depth imbalance analysis
+- ✅ **Custom Callbacks**: React to order book changes in real-time
+- ✅ **Auto-Recovery**: Automatic reconnection and resynchronization on errors
+
+#### Quick Start
+
+```julia
+using Binance
+
+# Initialize clients
+rest_client = RESTClient("config.toml")
+ws_client = MarketDataStreamClient("config.toml")
+
+# Create and start order book manager
+orderbook = OrderBookManager("BTCUSDT", rest_client, ws_client;
+                              max_depth=5000,        # Up to 5000 levels
+                              update_speed="100ms")  # Fast updates
+
+start!(orderbook)
+
+# Wait for initialization
+while !is_ready(orderbook)
+    sleep(0.5)
+end
+
+# Access order book with < 1ms latency
+best_bid = get_best_bid(orderbook)  # (price=96443.52, quantity=0.5)
+best_ask = get_best_ask(orderbook)  # (price=96443.53, quantity=0.3)
+spread = get_spread(orderbook)       # 0.01
+
+# Get top N levels
+top_10_bids = get_bids(orderbook, 10)  # Vector of PriceQuantity
+top_10_asks = get_asks(orderbook, 10)
+
+# Advanced analysis
+vwap_result = calculate_vwap(orderbook, 1.0, :buy)  # Buy 1 BTC at VWAP
+# Returns: (vwap=96445.12, total_cost=96445.12)
+
+imbalance = calculate_depth_imbalance(orderbook; levels=20)
+# Returns: 0.345 (positive = more bids, negative = more asks)
+
+# Cleanup when done
+stop!(orderbook)
+```
+
+#### Real-time Trading Strategy Example
+
+```julia
+# Define custom callback for real-time updates
+function on_update(manager)
+    best_bid = get_best_bid(manager)
+    best_ask = get_best_ask(manager)
+    imbalance = calculate_depth_imbalance(manager; levels=20)
+
+    # Your trading logic here
+    if imbalance > 0.3
+        println("Strong buying pressure detected!")
+    elseif imbalance < -0.3
+        println("Strong selling pressure detected!")
+    end
+end
+
+# Create with callback
+orderbook = OrderBookManager("BTCUSDT", rest_client, ws_client;
+                              on_update=on_update)
+start!(orderbook)
+
+# OrderBookManager will call your callback on every update
+# Your strategy runs in real-time with < 1ms latency
+```
+
+#### API Reference
+
+**Core Methods:**
+- `OrderBookManager(symbol, rest_client, ws_client; max_depth=5000, update_speed="100ms", on_update=nothing)` - Create manager
+- `start!(manager)` - Start synchronization
+- `stop!(manager)` - Stop and cleanup
+- `is_ready(manager)` - Check if initialized
+
+**Query Methods:**
+- `get_best_bid(manager)` - Best (highest) bid price and quantity
+- `get_best_ask(manager)` - Best (lowest) ask price and quantity
+- `get_spread(manager)` - Bid-ask spread
+- `get_mid_price(manager)` - Mid price (average of best bid/ask)
+- `get_bids(manager, n)` - Top N bid levels (sorted)
+- `get_asks(manager, n)` - Top N ask levels (sorted)
+- `get_orderbook_snapshot(manager; max_levels=100)` - Immutable snapshot
+
+**Analysis Methods:**
+- `calculate_vwap(manager, size, side)` - Volume-weighted average price for order size
+- `calculate_depth_imbalance(manager; levels=5)` - Order book imbalance (-1.0 to 1.0)
+
+#### Examples
+
+See `examples/orderbook_basic.jl` and `examples/orderbook_advanced.jl` for complete examples.
+
+#### Implementation Details
+
+OrderBookManager follows Binance's **corrected guidelines (2025-11-12)** for managing local order books:
+
+1. Subscribe to WebSocket diff depth stream (`@depth@100ms` or `@depth`)
+2. Buffer incoming depth update events
+3. Fetch REST API depth snapshot (`GET /api/v3/depth?limit=5000`)
+4. Validate snapshot is fresh (lastUpdateId >= first buffered event's U)
+5. Discard outdated buffered events (where u <= snapshot's lastUpdateId)
+6. Verify first remaining event's [U, u] range contains snapshot's lastUpdateId
+7. Apply all valid buffered events to complete initial sync
+8. Process continuous differential updates from WebSocket stream
+9. Automatic error detection and resynchronization on missed events
+
+#### Bug Fixes in v0.5.0
+
+- **Critical**: Fixed price sorting bug in `get_best_bid()` and `get_best_ask()`
+  - Previously incorrectly assumed OrderedDict maintains sorted order
+  - Now correctly uses `maximum()` and `minimum()` to find best prices
+  - Also fixed sorting in `get_bids()`, `get_asks()`, `calculate_vwap()`, and `calculate_depth_imbalance()`
+
+#### Deprecated in v0.5.0
+
+- **`subscribe_all_tickers()`** - Uses Binance's deprecated `!ticker@arr` stream (deprecated 2025-11-14)
+  - **Migration**: Use `subscribe_all_mini_tickers()` or individual `subscribe_ticker(symbol)` instead
+
+---
+
 ### v0.4.4 - symbolStatus Parameter Support (2025-10-28)
 
 Implemented the `symbolStatus` parameter across all relevant market data endpoints as per Binance's API CHANGELOG (2025-10-28).
@@ -91,6 +243,13 @@ See `test_symbolStatus.jl` for comprehensive examples.
 - **Real-time Data**: Tickers, Klines, Depth, Aggregate Trades
 - **All Market Symbols**: Support for individual and array streams
 - **Connection Management**: Auto-reconnect with heartbeat, ping/pong handling
+
+#### OrderBookManager ⭐ New in v0.5.0
+- **Local Order Book**: Continuously-synchronized local order book with automatic WebSocket + REST sync
+- **Near-Zero Latency**: Access order book data in < 1ms (vs 20-100ms for REST/WebSocket)
+- **Complete Depth**: Support for up to 5000 price levels
+- **Advanced Analytics**: Built-in VWAP calculation and depth imbalance analysis
+- **Auto-Recovery**: Automatic reconnection and resynchronization on errors
 
 #### WebSocket API (100% Complete)
 - **Session Management**: Logon, Status, Logout (no auth required for status/logout)
@@ -345,6 +504,7 @@ Binance.jl/
 │   ├── RESTAPI.jl          # REST endpoints implementation
 │   ├── MarketDataStreams.jl # WebSocket market data streams
 │   ├── WebSocketAPI.jl     # Interactive WebSocket API
+│   ├── OrderBookManager.jl # Local order book management ⭐ New in v0.5.0
 │   ├── Config.jl           # Configuration management
 │   ├── Signature.jl        # Authentication and signing
 │   ├── Types.jl            # Data models and structs
@@ -353,8 +513,12 @@ Binance.jl/
 │   ├── Errors.jl           # Custom error types
 │   ├── Events.jl           # WebSocket event types
 │   └── RateLimiter.jl      # API rate limiting logic
+├── examples/
+│   ├── orderbook_basic.jl   # OrderBookManager basic usage ⭐ New in v0.5.0
+│   └── orderbook_advanced.jl # OrderBookManager advanced features ⭐ New in v0.5.0
 ├── config_example.toml     # Configuration template
 ├── examples.jl             # Usage examples
+├── CHANGELOG.md            # Version history and changes
 ├── README.md               # This file
 └── Project.toml            # Julia project dependencies
 ```
