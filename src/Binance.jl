@@ -11,6 +11,7 @@ include("MarketDataStreams.jl")
 include("Account.jl")
 include("Events.jl")
 include("WebSocketAPI.jl")
+include("OrderBookManager.jl")
 
 # Import from submodules
 using .Config
@@ -24,6 +25,7 @@ using .RateLimiter
 using .Account
 using .Signature
 using .Events
+using .OrderBookManagers
 
 # Export client types and configuration
 export RESTClient, MarketDataStreamClient, WebSocketClient, BinanceConfig, BinanceRateLimit
@@ -92,6 +94,13 @@ export get_account_status, get_api_trading_status, get_withdraw_history
 
 # Export Signature functions
 export HmacSigner, Ed25519Signer
+
+# Export OrderBookManager types and functions
+export OrderBookManager, PriceQuantity, OrderBookSnapshot
+export start!, stop!, is_ready
+export get_best_bid, get_best_ask, get_spread, get_mid_price
+export get_bids, get_asks, get_orderbook_snapshot
+export calculate_vwap, calculate_depth_imbalance
 
 function __init__()
     ENV["DATAFRAMES_FLOAT_FORMAT"] = "%.0f"

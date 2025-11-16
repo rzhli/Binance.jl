@@ -41,11 +41,12 @@ dist/
 # Test files with sensitive data
 # Uncomment if test.jl contains sensitive information
 test.jl
+test_orderbook_strategy.jl
 
 # Personal trading strategies
 # Uncomment if Strategy.jl is proprietary
 Strategy.jl
-Strategy backup.jl
+
 # Other files that might contain sensitive data
 # Uncommend as needed
 # examples.jl

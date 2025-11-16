@@ -103,7 +103,29 @@ module MarketDataStreams
         return subscribe(client, stream_name, callback)
     end
 
+    """
+        subscribe_all_tickers(client::MarketDataStreamClient, callback::Function)
+
+    **DEPRECATED**: This function uses the deprecated `!ticker@arr` stream.
+
+    As of 2025-11-14, Binance has deprecated the All Market Tickers Stream (`!ticker@arr`).
+    This stream will be removed from Binance systems at a later date.
+
+    **Please use one of these alternatives instead:**
+    - `subscribe_all_mini_tickers()` - Subscribe to all mini ticker updates using `!miniTicker@arr`
+    - `subscribe_ticker(symbol)` - Subscribe to individual symbol tickers using `<symbol>@ticker`
+
+    See: https://binance-docs.github.io/apidocs/spot/en/#change-log
+    """
     function subscribe_all_tickers(client::MarketDataStreamClient, callback::Function)
+        @warn """
+        DEPRECATION WARNING: subscribe_all_tickers() uses the deprecated !ticker@arr stream.
+        This stream has been deprecated by Binance as of 2025-11-14 and will be removed in the future.
+
+        Please migrate to one of these alternatives:
+        - subscribe_all_mini_tickers() for all market mini tickers (!miniTicker@arr)
+        - subscribe_ticker(symbol) for individual symbol tickers (<symbol>@ticker)
+        """
         stream_name = "!ticker@arr"
         return subscribe(client, stream_name, callback)
     end
