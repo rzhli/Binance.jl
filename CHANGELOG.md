@@ -48,13 +48,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.4] - 2025-10-28
 
 ### Added
-- Implemented `symbolStatus` parameter across all relevant market data endpoints
+- **symbolStatus Parameter Support** - Implemented across all relevant market data endpoints as per Binance's API CHANGELOG (2025-10-28)
 - Support for filtering symbols by trading status (`"TRADING"`, `"HALT"`, `"BREAK"`)
 - Error handling for invalid symbol status combinations (error `-1220`)
+- **Backward Compatible** - Optional parameter, defaults to no filtering
 
 ### Changed
-- Updated REST API endpoints: `get_orderbook()`, `get_symbol_ticker()`, `get_ticker_24hr()`, `get_ticker_book()`, `get_trading_day_ticker()`, `get_ticker()`
-- Updated WebSocket API endpoints: `depth()`, `ticker_price()`, `ticker_book()`, `ticker_24hr()`, `ticker_trading_day()`, `ticker()`
+- **Updated REST API Endpoints**:
+  - `get_orderbook()` - Order book depth data
+  - `get_symbol_ticker()` - Symbol price ticker(s)
+  - `get_ticker_24hr()` - 24-hour ticker statistics
+  - `get_ticker_book()` - Best bid/ask prices
+  - `get_trading_day_ticker()` - Trading day ticker statistics
+  - `get_ticker()` - Rolling window ticker statistics
+
+- **Updated WebSocket API Endpoints**:
+  - `depth()` - Order book depth data
+  - `ticker_price()` - Symbol price ticker(s)
+  - `ticker_book()` - Best bid/ask prices
+  - `ticker_24hr()` - 24-hour ticker statistics
+  - `ticker_trading_day()` - Trading day ticker statistics
+  - `ticker()` - Rolling window ticker statistics
+
+### Usage Examples
+```julia
+# REST API - Get orderbook only for trading symbols
+orderbook = get_orderbook(client, "BTCUSDT"; symbolStatus="TRADING")
+
+# Get multiple tickers, filtering by status
+tickers = get_symbol_ticker(client; symbols=["BTCUSDT", "ETHUSDT"], symbolStatus="TRADING")
+
+# WebSocket API - Get price with status filter
+price = ticker_price(ws_client; symbol="BTCUSDT", symbolStatus="TRADING")
+```
+
+### Error Handling
+- Returns error `-1220` if single symbol doesn't match status
+- Returns empty array if no symbols match status filter
 
 ### Documentation
 - Added comprehensive usage examples in `test_symbolStatus.jl`
@@ -63,21 +93,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.3] - 2025-01-28
 
 ### Added
-- **Exact Decimal Precision Support**: Integrated FixedPointDecimals.jl for precise cryptocurrency calculations
-- `DecimalPrice` type alias (`FixedDecimal{Int64, 8}`) for 8-decimal precision
-- Flexible input types for order functions: `String`, `Float64`, or `FixedDecimal`
-- `EventStreamTerminated` struct for WebSocket user data stream terminations
-- Crayons.jl dependency for terminal color output
+- **Exact Decimal Precision Support** - Integrated FixedPointDecimals.jl for precise cryptocurrency calculations
+- **DecimalPrice Type** - New type alias `FixedDecimal{Int64, 8}` for 8-decimal precision (cryptocurrency standard)
+- **Flexible Input Types** - Order functions now accept `String`, `Float64`, or `FixedDecimal` for numeric parameters
+- **EventStreamTerminated Struct** - For WebSocket user data stream terminations
+- **Crayons.jl Dependency** - Added for terminal color output
 
 ### Fixed
-- JSON3.Object immutability issues causing `MethodError` in timestamp conversions
-- Date conversion handling for immutable JSON objects
-- Response handling to return mutable `Dict` objects for datetime fields
+- **JSON3.Object Immutability Issues** - Fixed `MethodError` when converting timestamps in API responses
+  - Date conversion handling for immutable JSON objects
+  - Response handling to return mutable `Dict` objects for datetime fields
 
 ### Changed
-- Enhanced `place_order()`, `cancel_order()`, and all order list functions with decimal precision support
-- Updated `get_ticker_24hr()`, `get_trading_day_ticker()`, `get_ticker()`, `get_avg_price()` with improved response handling
-- Improved WebSocket event stream termination logging with timestamps
+- **Enhanced Order Functions** - `place_order()`, `cancel_order()`, and all order list functions with decimal precision support
+- **Updated Market Data Functions** - `get_ticker_24hr()`, `get_trading_day_ticker()`, `get_ticker()`, `get_avg_price()` with improved response handling
+- **Improved WebSocket Event Stream** - Termination logging with timestamps
+
+### Usage Examples
+
+#### Decimal Precision
+```julia
+# Using String for exact decimal values (recommended for simple cases)
+order_result = place_order(
+    rest_client,
+    "BTCUSDT",
+    "BUY",
+    "MARKET";
+    quantity = "0.001"  # String ensures exact precision
+)
+
+# Using DecimalPrice (recommended for calculations)
+order_result = place_order(
+    rest_client,
+    "BTCUSDT",
+    "BUY",
+    "LIMIT";
+    quantity = DecimalPrice("0.001"),
+    price = DecimalPrice("60000.0"),
+    timeInForce = "GTC"
+)
+
+# Arithmetic operations maintain precision
+total = DecimalPrice("0.001") * DecimalPrice("60000.0")  # Exact result
+```
+
+### Precision Guarantees
+- Eliminates floating-point precision errors (e.g., `0.1 + 0.2 != 0.3`)
+- Critical for cryptocurrency trading where exchanges require exact decimal values
+- Different assets have different precision requirements (8 decimals standard for Bitcoin)
 
 ### Documentation
 - Added comprehensive decimal precision usage guide in README.md

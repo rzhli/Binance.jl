@@ -156,69 +156,7 @@ OrderBookManager follows Binance's **corrected guidelines (2025-11-12)** for man
 
 ---
 
-### v0.4.4 - symbolStatus Parameter Support (2025-10-28)
-
-Implemented the `symbolStatus` parameter across all relevant market data endpoints as per Binance's API CHANGELOG (2025-10-28).
-
-#### New Parameter: `symbolStatus`
-- **What it does**: Filters symbols by trading status (`"TRADING"`, `"HALT"`, `"BREAK"`)
-- **Backward Compatible**: Optional parameter, defaults to no filtering
-- **Error Handling**: Returns error `-1220` if single symbol doesn't match status; returns empty array if no symbols match
-
-#### Updated REST API Endpoints
-- `get_orderbook()` - Order book depth data
-- `get_symbol_ticker()` - Symbol price ticker(s)
-- `get_ticker_24hr()` - 24-hour ticker statistics
-- `get_ticker_book()` - Best bid/ask prices
-- `get_trading_day_ticker()` - Trading day ticker statistics
-- `get_ticker()` - Rolling window ticker statistics
-
-#### Updated WebSocket API Endpoints
-- `depth()` - Order book depth data
-- `ticker_price()` - Symbol price ticker(s)
-- `ticker_book()` - Best bid/ask prices
-- `ticker_24hr()` - 24-hour ticker statistics
-- `ticker_trading_day()` - Trading day ticker statistics
-- `ticker()` - Rolling window ticker statistics
-
-#### Usage Example
-```julia
-# REST API - Get orderbook only for trading symbols
-orderbook = get_orderbook(client, "BTCUSDT"; symbolStatus="TRADING")
-
-# Get multiple tickers, filtering by status
-tickers = get_symbol_ticker(client; symbols=["BTCUSDT", "ETHUSDT"], symbolStatus="TRADING")
-
-# WebSocket API - Get price with status filter
-price = ticker_price(ws_client; symbol="BTCUSDT", symbolStatus="TRADING")
-```
-
-See `test_symbolStatus.jl` for comprehensive examples.
-
-### v0.4.3
-
-#### Exact Decimal Precision Support
-- **FixedPointDecimals.jl Integration**: Added exact decimal precision for order quantities and prices
-- **DecimalPrice Type**: New type alias `FixedDecimal{Int64, 8}` for 8-decimal precision (cryptocurrency standard)
-- **Flexible Input Types**: Order functions now accept `String`, `Float64`, or `FixedDecimal` for numeric parameters
-- **Precision Guarantees**: Eliminates floating-point precision errors in trading operations
-
-#### Bug Fixes
-- **JSON3.Object Immutability**: Fixed `MethodError` when converting timestamps in API responses
-- **Date Conversion**: All timestamp conversions now properly handle immutable JSON objects
-- **Response Handling**: Functions returning datetime fields now correctly return mutable `Dict` objects
-
-#### API Enhancements
-- Updated `place_order()`, `cancel_order()`, and all order list functions
-- Enhanced `get_ticker_24hr()`, `get_trading_day_ticker()`, `get_ticker()`, and `get_avg_price()`
-- Comprehensive documentation for decimal precision usage
-
-#### WebSocket Enhancements
-- **eventStreamTerminated Support**: Added `EventStreamTerminated` struct and automatic handling so user data stream terminations are logged cleanly with timestamps.
-- **Graceful Logging**: Default handler surfaces reconnection intent without spurious warnings.
-
-#### Dependency Update
-- Added `Crayons.jl` as a project dependency for terminal color output.
+**For detailed version history and previous releases, see [CHANGELOG.md](CHANGELOG.md).**
 
 ## Features
 
@@ -421,45 +359,25 @@ disconnect!(ws_client)
 
 ## Decimal Precision
 
-This SDK uses **FixedPointDecimals.jl** to provide exact decimal precision for cryptocurrency trading. This is critical because:
+This SDK uses **FixedPointDecimals.jl** for exact decimal precision in cryptocurrency trading, eliminating floating-point errors (e.g., `0.1 + 0.2 != 0.3`).
 
-- Float64 can have precision errors (e.g., `0.1 + 0.2 != 0.3`)
-- Cryptocurrency exchanges require exact decimal values
-- Different assets have different precision requirements
-
-### Usage Options
-
-1. **String** (Recommended for simple cases): Pass exact decimal as string
-   ```julia
-   quantity = "0.00100000"
-   ```
-
-2. **DecimalPrice** (Recommended for calculations): Use FixedDecimal with 8 decimal places
-   ```julia
-   quantity = DecimalPrice("0.001")  # Exact 8-decimal precision
-   # Performs arithmetic without precision loss
-   total = DecimalPrice("0.001") * DecimalPrice("60000.0")
-   ```
-
-3. **Float64** (Caution): May lose precision in edge cases
-   ```julia
-   quantity = 0.001  # Works but may have precision issues
-   ```
-
-### DecimalPrice Type
-
-`DecimalPrice` is a type alias for `FixedDecimal{Int64, 8}`, providing 8 decimal places of precision (standard for most cryptocurrencies like Bitcoin):
+### Quick Guide
 
 ```julia
-# Create from string (preferred)
-price = DecimalPrice("60000.12345678")
+# 1. String (recommended for simple values)
+quantity = "0.001"
 
-# Arithmetic operations maintain precision
-total = DecimalPrice("0.001") * DecimalPrice("60000.0")  # Exact result
+# 2. DecimalPrice (recommended for calculations)
+quantity = DecimalPrice("0.001")
+total = DecimalPrice("0.001") * DecimalPrice("60000.0")  # Exact arithmetic
 
-# Convert to string for display
-price_str = string(price)  # "60000.12345678"
+# 3. Float64 (use with caution - may lose precision)
+quantity = 0.001
 ```
+
+**Type Alias**: `DecimalPrice = FixedDecimal{Int64, 8}` (8 decimal places - Bitcoin standard)
+
+For detailed examples, see [CHANGELOG.md v0.4.3](CHANGELOG.md#043---2025-01-28).
 
 ## Project Status
 
