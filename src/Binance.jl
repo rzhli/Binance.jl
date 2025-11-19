@@ -8,6 +8,7 @@ include("Signature.jl")
 include("RateLimiter.jl")
 include("RESTAPI.jl")
 include("MarketDataStreams.jl")
+include("SBEMarketDataStreams.jl")
 include("Account.jl")
 include("Events.jl")
 include("WebSocketAPI.jl")
@@ -20,6 +21,7 @@ using .Types
 using .Filters
 using .RESTAPI
 using .MarketDataStreams
+using .SBEMarketDataStreams
 using .WebSocketAPI
 using .RateLimiter
 using .Account
@@ -28,12 +30,12 @@ using .Events
 using .OrderBookManagers
 
 # Export client types and configuration
-export RESTClient, MarketDataStreamClient, WebSocketClient, BinanceConfig, BinanceRateLimit
+export RESTClient, MarketDataStreamClient, SBEStreamClient, WebSocketClient, BinanceConfig, BinanceRateLimit
 
 # Export exception types
 export BinanceException, BinanceError, MalformedRequestError, UnauthorizedError,
-       WAFViolationError, CancelReplacePartialSuccess, RateLimitError,
-       IPAutoBannedError, BinanceServerError
+    WAFViolationError, CancelReplacePartialSuccess, RateLimitError,
+    IPAutoBannedError, BinanceServerError
 
 # Export data types
 export ExchangeInfo, RateLimit, SymbolInfo, Order, Trade, Kline, Ticker24hr
@@ -58,6 +60,15 @@ export subscribe_user_data, unsubscribe, close_all_connections, list_active_stre
 export subscribe_mini_ticker, subscribe_all_tickers, subscribe_all_mini_tickers
 export subscribe_book_ticker, subscribe_all_book_tickers, subscribe_diff_depth
 export subscribe_rolling_ticker, subscribe_combined, subscribe_avg_price
+
+# Export SBEMarketDataStreams functions
+export sbe_subscribe, sbe_unsubscribe, sbe_subscribe_trade, sbe_unsubscribe_trade
+export sbe_subscribe_best_bid_ask, sbe_unsubscribe_best_bid_ask, sbe_subscribe_combined
+export sbe_subscribe_depth, sbe_unsubscribe_depth, sbe_subscribe_depth20, sbe_unsubscribe_depth20
+export sbe_close_all, sbe_list_streams, connect_sbe!
+
+# Export SBE data types
+export TradeEvent, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent, PriceLevel
 
 # Export WebSocket API functions - Authentication
 export connect!, session_logon, session_status, exchangeInfo, session_logout, disconnect!
