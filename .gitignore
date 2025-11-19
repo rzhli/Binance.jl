@@ -49,6 +49,6 @@ single_run_test.jl
 Strategy.jl
 OrderBookStrategy.jl
 # Other files that might contain sensitive data
-# Uncommend as needed
-# examples.jl
+# Uncomment as needed
+# examples/examples.jl
 SymbolInfo.txt

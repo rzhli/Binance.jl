@@ -202,7 +202,7 @@ order = place_order(rest_client, "BTCUSDT", "BUY", "LIMIT";
                     quantity="0.001", price="60000.0", timeInForce="GTC")
 ```
 
-**📖 More examples:** [examples.jl](examples.jl)
+**📖 More examples:** [examples/examples.jl](examples/examples.jl)
 
 ## Documentation
 
@@ -262,7 +262,7 @@ sbe_close_all(sbe_client)
 | `examples/orderbook_basic.jl` | OrderBookManager basic usage |
 | `examples/orderbook_advanced.jl` | Advanced OrderBookManager with analytics |
 | `examples/sbe_stream_example.jl` | SBE binary streams usage |
-| `examples.jl` | General REST API, WebSocket streams examples |
+| `examples/examples.jl` | General REST API, WebSocket streams examples |
 
 ## Architecture
 
@@ -304,10 +304,10 @@ Binance.jl/
 ├── examples/
 │   ├── orderbook_basic.jl      # OrderBookManager basic usage
 │   ├── orderbook_advanced.jl   # OrderBookManager advanced features
-│   └── sbe_stream_example.jl   # SBE streams usage example
+│   ├── sbe_stream_example.jl   # SBE streams usage example
+│   └── examples.jl             # General usage examples
 │
 ├── config_example.toml         # Configuration template
-├── examples.jl                 # General usage examples
 ├── CHANGELOG.md                # Version history
 └── README.md                   # This file
 ```
