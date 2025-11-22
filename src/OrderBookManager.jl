@@ -43,12 +43,14 @@ module OrderBookManagers
 using DataStructures: OrderedDict
 using ..Config: BinanceConfig
 using ..RESTAPI: get_orderbook
-using ..MarketDataStreams: subscribe_diff_depth, unsubscribe
+using ..Types: PriceLevel
+using ..MarketDataStreams: subscribe_diff_depth, unsubscribe, MarketDataStreamClient
+using ..SBEMarketDataStreams: SBEStreamClient, sbe_subscribe_depth, sbe_unsubscribe_depth, DepthDiffEvent
 
 export OrderBookManager, start!, stop!, is_ready,
-       get_best_bid, get_best_ask, get_spread, get_mid_price,
-       get_bids, get_asks, get_orderbook_snapshot,
-       calculate_vwap, calculate_depth_imbalance
+    get_best_bid, get_best_ask, get_spread, get_mid_price,
+    get_bids, get_asks, get_orderbook_snapshot,
+    calculate_vwap, calculate_depth_imbalance
 
 # ============================================================================
 # Core Data Structures
@@ -103,18 +105,18 @@ mutable struct OrderBookManager
 
     # Order book state
     update_id::Ref{Int64}
-    bids::OrderedDict{Float64, Float64}
-    asks::OrderedDict{Float64, Float64}
+    bids::OrderedDict{Float64,Float64}
+    asks::OrderedDict{Float64,Float64}
 
     # Synchronization state
     is_initialized::Ref{Bool}
     event_buffer::Vector{Any}
 
     # WebSocket subscription
-    stream_id::Ref{Union{String, Nothing}}
+    stream_id::Ref{Union{String,Nothing}}
 
     # Configuration
-    on_update::Union{Function, Nothing}
+    on_update::Union{Function,Nothing}
     max_depth::Int
     update_speed::String
 
@@ -145,9 +147,9 @@ function OrderBookManager(
     symbol::String,
     rest_client,
     ws_client;
-    max_depth::Int = 5000,
-    update_speed::String = "100ms",
-    on_update::Union{Function, Nothing} = nothing
+    max_depth::Int=5000,
+    update_speed::String="100ms",
+    on_update::Union{Function,Nothing}=nothing
 )
     # Validate parameters
     valid_depths = [5, 10, 20, 50, 100, 500, 1000, 5000]
@@ -164,11 +166,11 @@ function OrderBookManager(
         rest_client,
         ws_client,
         Ref{Int64}(0),
-        OrderedDict{Float64, Float64}(),
-        OrderedDict{Float64, Float64}(),
+        OrderedDict{Float64,Float64}(),
+        OrderedDict{Float64,Float64}(),
         Ref{Bool}(false),
         Vector{Any}(),
-        Ref{Union{String, Nothing}}(nothing),
+        Ref{Union{String,Nothing}}(nothing),
         on_update,
         max_depth,
         update_speed,
@@ -209,22 +211,34 @@ function start!(manager::OrderBookManager)
         try
             handle_depth_event!(manager, event)
         catch e
-            @error "Error handling depth event for $(manager.symbol)" exception=(e, catch_backtrace())
+            @error "Error handling depth event for $(manager.symbol)" exception = (e, catch_backtrace())
             # Try to restart synchronization
             restart_sync!(manager)
         end
     end
 
     # Subscribe to diff depth stream
-    stream_id = subscribe_diff_depth(
-        manager.ws_client,
-        manager.symbol,
-        on_depth_event;
-        update_speed = manager.update_speed
-    )
+    if manager.ws_client isa MarketDataStreamClient
+        stream_id = subscribe_diff_depth(
+            manager.ws_client,
+            manager.symbol,
+            on_depth_event;
+            update_speed=manager.update_speed
+        )
+        println("[OrderBookManager] Started for $(manager.symbol) (JSON stream: $stream_id, speed: $(manager.update_speed))")
+    elseif manager.ws_client isa SBEStreamClient
+        # SBE streams are typically 50ms, so we might ignore update_speed or warn if it's different
+        stream_id = sbe_subscribe_depth(
+            manager.ws_client,
+            manager.symbol,
+            on_depth_event
+        )
+        println("[OrderBookManager] Started for $(manager.symbol) (SBE stream: $stream_id)")
+    else
+        error("Unsupported WebSocket client type: $(typeof(manager.ws_client))")
+    end
 
     manager.stream_id[] = stream_id
-    println("[OrderBookManager] Started for $(manager.symbol) (stream: $stream_id, speed: $(manager.update_speed))")
 end
 
 """
@@ -235,9 +249,13 @@ Stop the order book synchronization and clean up resources.
 function stop!(manager::OrderBookManager)
     if !isnothing(manager.stream_id[])
         try
-            unsubscribe(manager.ws_client, manager.stream_id[])
+            if manager.ws_client isa MarketDataStreamClient
+                unsubscribe(manager.ws_client, manager.stream_id[])
+            elseif manager.ws_client isa SBEStreamClient
+                sbe_unsubscribe_depth(manager.ws_client, manager.symbol)
+            end
         catch e
-            @warn "Error unsubscribing from stream" exception=e
+            @warn "Error unsubscribing from stream" exception = e
         end
         manager.stream_id[] = nothing
     end
@@ -264,6 +282,23 @@ is_ready(manager::OrderBookManager) = manager.is_initialized[]
 # Internal Synchronization Logic
 # ============================================================================
 
+# Helper functions for event access (JSON Dict vs SBE Struct)
+get_first_update_id(event::Dict) = event["U"]
+get_first_update_id(event::DepthDiffEvent) = event.firstBookUpdateId
+
+get_last_update_id(event::Dict) = event["u"]
+get_last_update_id(event::DepthDiffEvent) = event.lastBookUpdateId
+
+get_bids_data(event::Dict) = event["b"]
+get_bids_data(event::DepthDiffEvent) = event.bids
+
+get_asks_data(event::Dict) = event["a"]
+get_asks_data(event::DepthDiffEvent) = event.asks
+
+# Helper to parse price/qty
+parse_price_qty(item::Vector) = (parse(Float64, item[1]), parse(Float64, item[2]))
+parse_price_qty(item::PriceLevel) = (item.price, item.quantity)
+
 """
     handle_depth_event!(manager, event)
 
@@ -281,7 +316,7 @@ function handle_depth_event!(manager::OrderBookManager, event)
             try
                 initialize_from_snapshot!(manager)
             catch e
-                @error "Failed to initialize order book" symbol=manager.symbol exception=e
+                @error "Failed to initialize order book" symbol = manager.symbol exception = e
                 # Clear buffer and try again
                 empty!(manager.event_buffer)
             end
@@ -291,7 +326,7 @@ function handle_depth_event!(manager::OrderBookManager, event)
         status = apply_update!(manager, event)
 
         if status == :restart
-            @warn "Missed events detected, restarting synchronization" symbol=manager.symbol
+            @warn "Missed events detected, restarting synchronization" symbol = manager.symbol
             restart_sync!(manager)
         end
     end
@@ -316,7 +351,7 @@ function initialize_from_snapshot!(manager::OrderBookManager)
     end
 
     # Step 1: Note the U of the first buffered event
-    first_event_U = manager.event_buffer[1]["U"]
+    first_event_U = get_first_update_id(manager.event_buffer[1])
 
     # Step 2: Fetch depth snapshot
     snapshot = get_orderbook(manager.rest_client, manager.symbol; limit=manager.max_depth)
@@ -347,14 +382,14 @@ function initialize_from_snapshot!(manager::OrderBookManager)
 
     # Step 5: Discard outdated buffered events (where u <= lastUpdateId)
     original_buffer_size = length(manager.event_buffer)
-    filter!(event -> event["u"] > snapshot_last_update_id, manager.event_buffer)
+    filter!(event -> get_last_update_id(event) > snapshot_last_update_id, manager.event_buffer)
     discarded_count = original_buffer_size - length(manager.event_buffer)
 
     # Step 6: Verify first remaining buffered event
     if !isempty(manager.event_buffer)
         first_remaining = manager.event_buffer[1]
-        U = first_remaining["U"]
-        u = first_remaining["u"]
+        U = get_first_update_id(first_remaining)
+        u = get_last_update_id(first_remaining)
 
         # Snapshot's lastUpdateId should be within [U; u] range
         if snapshot_last_update_id < U || snapshot_last_update_id > u
@@ -389,8 +424,8 @@ Returns:
 - `:restart` - Events were missed, need to restart synchronization
 """
 function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=false)
-    event_U = event["U"]  # First update ID
-    event_u = event["u"]  # Last update ID
+    event_U = get_first_update_id(event)  # First update ID
+    event_u = get_last_update_id(event)   # Last update ID
 
     if !skip_validation
         # Check if event is outdated
@@ -405,9 +440,8 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
     end
 
     # Apply bid updates
-    for bid in event["b"]
-        price = parse(Float64, bid[1])
-        quantity = parse(Float64, bid[2])
+    for bid in get_bids_data(event)
+        price, quantity = parse_price_qty(bid)
 
         if quantity == 0.0
             delete!(manager.bids, price)
@@ -417,9 +451,8 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
     end
 
     # Apply ask updates
-    for ask in event["a"]
-        price = parse(Float64, ask[1])
-        quantity = parse(Float64, ask[2])
+    for ask in get_asks_data(event)
+        price, quantity = parse_price_qty(ask)
 
         if quantity == 0.0
             delete!(manager.asks, price)
@@ -438,7 +471,7 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
         try
             manager.on_update(manager)
         catch e
-            @error "Error in user callback" exception=e
+            @error "Error in user callback" exception = e
         end
     end
 
@@ -451,7 +484,7 @@ end
 Restart the order book synchronization from scratch.
 """
 function restart_sync!(manager::OrderBookManager)
-    @warn "Restarting order book synchronization" symbol=manager.symbol
+    @warn "Restarting order book synchronization" symbol = manager.symbol
 
     # Reset state but keep stream active
     manager.is_initialized[] = false
@@ -552,7 +585,7 @@ function get_bids(manager::OrderBookManager, n::Int=10)
     end
 
     # Sort by price descending (highest first)
-    sorted_bids = sort(collect(manager.bids), by=x->x.first, rev=true)
+    sorted_bids = sort(collect(manager.bids), by=x -> x.first, rev=true)
 
     count = min(n, length(sorted_bids))
     result = PriceQuantity[]
@@ -578,7 +611,7 @@ function get_asks(manager::OrderBookManager, n::Int=10)
     end
 
     # Sort by price ascending (lowest first)
-    sorted_asks = sort(collect(manager.asks), by=x->x.first)
+    sorted_asks = sort(collect(manager.asks), by=x -> x.first)
 
     count = min(n, length(sorted_asks))
     result = PriceQuantity[]
@@ -642,10 +675,10 @@ function calculate_vwap(manager::OrderBookManager, size::Float64, side::Symbol)
     # Get sorted levels
     if side == :buy
         # For buying, we consume asks (lowest price first)
-        sorted_levels = sort(collect(manager.asks), by=x->x.first)
+        sorted_levels = sort(collect(manager.asks), by=x -> x.first)
     else
         # For selling, we consume bids (highest price first)
-        sorted_levels = sort(collect(manager.bids), by=x->x.first, rev=true)
+        sorted_levels = sort(collect(manager.bids), by=x -> x.first, rev=true)
     end
 
     remaining = size
@@ -691,7 +724,7 @@ function calculate_depth_imbalance(manager::OrderBookManager; levels::Int=5)
     ask_volume = 0.0
 
     # Get top N bids (sorted descending)
-    sorted_bids = sort(collect(manager.bids), by=x->x.first, rev=true)
+    sorted_bids = sort(collect(manager.bids), by=x -> x.first, rev=true)
     for (i, (_, qty)) in enumerate(sorted_bids)
         if i > levels
             break
@@ -700,7 +733,7 @@ function calculate_depth_imbalance(manager::OrderBookManager; levels::Int=5)
     end
 
     # Get top N asks (sorted ascending)
-    sorted_asks = sort(collect(manager.asks), by=x->x.first)
+    sorted_asks = sort(collect(manager.asks), by=x -> x.first)
     for (i, (_, qty)) in enumerate(sorted_asks)
         if i > levels
             break

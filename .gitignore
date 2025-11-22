@@ -42,12 +42,16 @@ dist/
 # Uncomment if test.jl contains sensitive information
 test.jl
 test_orderbook_strategy.jl
+test_convert.jl
 single_run_test.jl
 
 # Personal trading strategies
 # Uncomment if Strategy.jl is proprietary
 Strategy.jl
+StrategyCommon.jl
 OrderBookStrategy.jl
+ConvertStrategy.jl
+
 # Other files that might contain sensitive data
 # Uncomment as needed
 # examples/examples.jl
