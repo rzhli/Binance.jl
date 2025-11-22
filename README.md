@@ -99,6 +99,7 @@ imbalance = calculate_depth_imbalance(orderbook; levels=20)
 | **SBE Streams** | High-performance binary market data (60-70% less bandwidth) |
 | **WebSocket API** | Interactive real-time trading with heartbeat |
 | **OrderBookManager** | Local order book with < 1ms latency access |
+| **Convert API** | Limit orders and quotes for token conversion |
 | **Authentication** | Ed25519, RSA, and HMAC-SHA256 signature support |
 | **Rate Limiting** | Automatic compliance with Binance limits |
 | **Error Handling** | Comprehensive error types and recovery |

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2025-11-22
+
+### Added
+- **Binance Convert API Support** - Complete implementation of Convert endpoints
+  - **Limit Orders**: Place, cancel, and query open convert limit orders
+  - **Quotes**: Get and accept quotes for token conversion
+  - **Information**: Query exchange info, asset info, and trade history
+  - **Endpoints Implemented**:
+    - `convert_limit_place_order`, `convert_limit_cancel_order`, `convert_limit_query_open_orders`
+    - `convert_get_quote`, `convert_accept_quote`, `convert_order_status`
+    - `convert_exchange_info`, `convert_asset_info`, `convert_trade_flow`
+
+### Fixed
+- **OrderBookStrategy.jl**: Fixed `MethodError` in cleanup functions by adding missing `stream_client` argument
+- **Documentation**: Added comprehensive examples to `test_convert.jl` for Convert strategy
+
 ## [0.6.0] - 2025-11-19
 
 ### Added

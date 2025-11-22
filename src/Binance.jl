@@ -10,6 +10,7 @@ include("RESTAPI.jl")
 include("MarketDataStreams.jl")
 include("SBEMarketDataStreams.jl")
 include("Account.jl")
+include("Convert.jl")
 include("Events.jl")
 include("WebSocketAPI.jl")
 include("OrderBookManager.jl")
@@ -25,6 +26,7 @@ using .SBEMarketDataStreams
 using .WebSocketAPI
 using .RateLimiter
 using .Account
+using .Convert
 using .Signature
 using .Events
 using .OrderBookManagers
@@ -68,7 +70,7 @@ export sbe_subscribe_depth, sbe_unsubscribe_depth, sbe_subscribe_depth20, sbe_un
 export sbe_close_all, sbe_list_streams, connect_sbe!
 
 # Export SBE data types
-export TradeEvent, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent, PriceLevel
+export TradeEvent, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
 
 # Export WebSocket API functions - Authentication
 export connect!, session_logon, session_status, exchangeInfo, session_logout, disconnect!
@@ -102,6 +104,11 @@ export userdata_stream_subscribe_signature
 export get_api_key_permission, get_account_info, get_deposit_history, get_deposit_address
 export withdraw, get_asset_detail, get_trade_fee, dust_transfer, get_dust_log
 export get_account_status, get_api_trading_status, get_withdraw_history
+
+# Export Convert functions
+export convert_exchange_info, convert_asset_info, convert_get_quote, convert_accept_quote
+export convert_order_status, convert_trade_flow, convert_limit_place_order
+export convert_limit_cancel_order, convert_limit_query_open_orders
 
 # Export Signature functions
 export HmacSigner, Ed25519Signer
