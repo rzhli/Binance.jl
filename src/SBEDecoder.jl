@@ -4,8 +4,13 @@ SBE Decoder Module
 Implements decoding for Binance SBE (Simple Binary Encoding) messages
 based on the official SBE schema.
 
-Schema version: 5.2
-Byte order: Little Endian
+Schema Information:
+- Schema ID: 3
+- Supported Versions: 1 (deprecated), 2 (current as of 2025-12-18)
+- Byte order: Little Endian
+
+Note: Schema version 3:1 is deprecated as of 2025-12-18. Version 3:2 is the current version.
+Both versions use the same message structure, so this decoder is compatible with both.
 
 Message Types:
 - TradesStreamEvent (10000)
@@ -18,6 +23,23 @@ module SBEDecoder
 using ...Types: PriceLevel
 export SBEMessageHeader, TradeEvent, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
 export decode_sbe_header, decode_sbe_message, mantissa_to_float
+export SCHEMA_ID, SCHEMA_VERSION_DEPRECATED, SCHEMA_VERSION_CURRENT
+
+# ============================================================================
+# Schema Version Constants
+# ============================================================================
+
+const SCHEMA_ID = UInt16(3)
+const SCHEMA_VERSION_DEPRECATED = UInt16(1)  # Deprecated as of 2025-12-18
+const SCHEMA_VERSION_CURRENT = UInt16(2)     # Current version as of 2025-12-18
+
+# ============================================================================
+# SBE Null Value Constants (for optional fields)
+# ============================================================================
+# As of 2025-12-09, MDEntrySize fields in incremental book ticker/depth
+# are presence="optional" and use null sentinel values when absent.
+
+const INT64_NULL = typemax(Int64)  # 0x7FFFFFFFFFFFFFFF - null value for int64 mantissa
 
 # ============================================================================
 # Message Header Structure
@@ -29,8 +51,8 @@ SBE Message Header (8 bytes)
 Fields:
 - blockLength: uint16 - Length of message body
 - templateId: uint16 - Message type identifier
-- schemaId: uint16 - Schema identifier (always 1)
-- version: uint16 - Schema version (always 0)
+- schemaId: uint16 - Schema identifier (Binance uses 3)
+- version: uint16 - Schema version (1 deprecated, 2 current)
 """
 struct SBEMessageHeader
     blockLength::UInt16
@@ -202,7 +224,7 @@ function decode_sbe_message(data::Vector{UInt8})
 end
 
 """Decode TradesStreamEvent (template ID: 10000)"""
-function decode_trades_event(data::Vector{UInt8}, header::SBEMessageHeader)
+function decode_trades_event(data::Vector{UInt8}, ::SBEMessageHeader)
     offset = 9  # After header
 
     # Read fixed fields
@@ -220,14 +242,15 @@ function decode_trades_event(data::Vector{UInt8}, header::SBEMessageHeader)
 
     # Read trades group
     # Group header: blockLength (uint16) + numInGroup (uint32)
-    blockLength = read_uint16(data, offset)
+    # Note: blockLength is read but not used as we know the fixed structure
+    _ = read_uint16(data, offset)  # blockLength
     offset += 2
 
     numInGroup = read_uint32(data, offset)
     offset += 4
 
     trades = TradeData[]
-    for i in 1:numInGroup
+    for _ in 1:numInGroup
         trade_offset = offset
 
         # Each trade: id (8) + price (8) + qty (8) + isBuyerMaker (1)
@@ -256,13 +279,17 @@ function decode_trades_event(data::Vector{UInt8}, header::SBEMessageHeader)
     end
 
     # Read symbol (varString8)
-    symbol, offset = read_var_string(data, offset)
+    symbol, _ = read_var_string(data, offset)
 
     return TradeEvent(eventTime, transactTime, symbol, trades)
 end
 
-"""Decode BestBidAskStreamEvent (template ID: 10001)"""
-function decode_best_bid_ask_event(data::Vector{UInt8}, header::SBEMessageHeader)
+"""Decode BestBidAskStreamEvent (template ID: 10001)
+
+Note: As of 2025-12-09 schema update, MDEntrySize fields (bidQty, askQty) are presence="optional".
+When quantity is null (INT64_NULL), it is converted to NaN.
+"""
+function decode_best_bid_ask_event(data::Vector{UInt8}, ::SBEMessageHeader)
     offset = 9  # After header
 
     # Read all fixed fields
@@ -292,18 +319,24 @@ function decode_best_bid_ask_event(data::Vector{UInt8}, header::SBEMessageHeader
 
     # Convert to floats
     bidPrice = mantissa_to_float(bidPriceMantissa, priceExponent)
-    bidQty = mantissa_to_float(bidQtyMantissa, qtyExponent)
+    # Handle optional MDEntrySize: null value means quantity is not present
+    bidQty = bidQtyMantissa == INT64_NULL ? NaN : mantissa_to_float(bidQtyMantissa, qtyExponent)
     askPrice = mantissa_to_float(askPriceMantissa, priceExponent)
-    askQty = mantissa_to_float(askQtyMantissa, qtyExponent)
+    # Handle optional MDEntrySize: null value means quantity is not present
+    askQty = askQtyMantissa == INT64_NULL ? NaN : mantissa_to_float(askQtyMantissa, qtyExponent)
 
     # Read symbol
-    symbol, offset = read_var_string(data, offset)
+    symbol, _ = read_var_string(data, offset)
 
     return BestBidAskEvent(eventTime, bookUpdateId, symbol, bidPrice, bidQty, askPrice, askQty)
 end
 
-"""Decode DepthSnapshotStreamEvent (template ID: 10002)"""
-function decode_depth_snapshot_event(data::Vector{UInt8}, header::SBEMessageHeader)
+"""Decode DepthSnapshotStreamEvent (template ID: 10002)
+
+Note: Uses smallGroupSize16Encoding (blockLength uint16 + numInGroup uint16) for bid/ask groups
+as per 2025-12-09 schema update.
+"""
+function decode_depth_snapshot_event(data::Vector{UInt8}, ::SBEMessageHeader)
     offset = 9  # After header
 
     # Read fixed fields
@@ -319,15 +352,16 @@ function decode_depth_snapshot_event(data::Vector{UInt8}, header::SBEMessageHead
     qtyExponent = read_int8(data, offset)
     offset += 1
 
-    # Read bids group (groupSize16Encoding: blockLength uint16 + numInGroup uint16)
-    bids_blockLength = read_uint16(data, offset)
+    # Read bids group (smallGroupSize16Encoding: blockLength uint16 + numInGroup uint16)
+    # Note: blockLength is read but not used as we know the fixed structure
+    _ = read_uint16(data, offset)  # bids_blockLength
     offset += 2
 
     bids_numInGroup = read_uint16(data, offset)
     offset += 2
 
     bids = PriceLevel[]
-    for i in 1:bids_numInGroup
+    for _ in 1:bids_numInGroup
         priceMantissa = read_int64(data, offset)
         offset += 8
 
@@ -341,14 +375,14 @@ function decode_depth_snapshot_event(data::Vector{UInt8}, header::SBEMessageHead
     end
 
     # Read asks group
-    asks_blockLength = read_uint16(data, offset)
+    _ = read_uint16(data, offset)  # asks_blockLength
     offset += 2
 
     asks_numInGroup = read_uint16(data, offset)
     offset += 2
 
     asks = PriceLevel[]
-    for i in 1:asks_numInGroup
+    for _ in 1:asks_numInGroup
         priceMantissa = read_int64(data, offset)
         offset += 8
 
@@ -362,13 +396,17 @@ function decode_depth_snapshot_event(data::Vector{UInt8}, header::SBEMessageHead
     end
 
     # Read symbol
-    symbol, offset = read_var_string(data, offset)
+    symbol, _ = read_var_string(data, offset)
 
     return DepthSnapshotEvent(eventTime, bookUpdateId, symbol, bids, asks)
 end
 
-"""Decode DepthDiffStreamEvent (template ID: 10003)"""
-function decode_depth_diff_event(data::Vector{UInt8}, header::SBEMessageHeader)
+"""Decode DepthDiffStreamEvent (template ID: 10003)
+
+Note: As of 2025-12-09 schema update, MDEntrySize fields are presence="optional".
+When quantity is null (INT64_NULL), it is converted to NaN.
+"""
+function decode_depth_diff_event(data::Vector{UInt8}, ::SBEMessageHeader)
     offset = 9  # After header
 
     # Read fixed fields
@@ -388,14 +426,15 @@ function decode_depth_diff_event(data::Vector{UInt8}, header::SBEMessageHeader)
     offset += 1
 
     # Read bids group
-    bids_blockLength = read_uint16(data, offset)
+    # Note: blockLength is read but not used as we know the fixed structure
+    _ = read_uint16(data, offset)  # bids_blockLength
     offset += 2
 
     bids_numInGroup = read_uint16(data, offset)
     offset += 2
 
     bids = PriceLevel[]
-    for i in 1:bids_numInGroup
+    for _ in 1:bids_numInGroup
         priceMantissa = read_int64(data, offset)
         offset += 8
 
@@ -403,20 +442,21 @@ function decode_depth_diff_event(data::Vector{UInt8}, header::SBEMessageHeader)
         offset += 8
 
         price = mantissa_to_float(priceMantissa, priceExponent)
-        qty = mantissa_to_float(qtyMantissa, qtyExponent)
+        # Handle optional MDEntrySize: null value means quantity is not present
+        qty = qtyMantissa == INT64_NULL ? NaN : mantissa_to_float(qtyMantissa, qtyExponent)
 
         push!(bids, PriceLevel(price, qty))
     end
 
     # Read asks group
-    asks_blockLength = read_uint16(data, offset)
+    _ = read_uint16(data, offset)  # asks_blockLength
     offset += 2
 
     asks_numInGroup = read_uint16(data, offset)
     offset += 2
 
     asks = PriceLevel[]
-    for i in 1:asks_numInGroup
+    for _ in 1:asks_numInGroup
         priceMantissa = read_int64(data, offset)
         offset += 8
 
@@ -424,13 +464,14 @@ function decode_depth_diff_event(data::Vector{UInt8}, header::SBEMessageHeader)
         offset += 8
 
         price = mantissa_to_float(priceMantissa, priceExponent)
-        qty = mantissa_to_float(qtyMantissa, qtyExponent)
+        # Handle optional MDEntrySize: null value means quantity is not present
+        qty = qtyMantissa == INT64_NULL ? NaN : mantissa_to_float(qtyMantissa, qtyExponent)
 
         push!(asks, PriceLevel(price, qty))
     end
 
     # Read symbol
-    symbol, offset = read_var_string(data, offset)
+    symbol, _ = read_var_string(data, offset)
 
     return DepthDiffEvent(eventTime, firstBookUpdateId, lastBookUpdateId, symbol, bids, asks)
 end

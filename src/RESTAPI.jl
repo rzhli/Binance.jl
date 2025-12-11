@@ -18,8 +18,8 @@ module RESTAPI
         get_klines, get_symbol_ticker, get_ticker_24hr, get_ticker_book,
         get_ui_klines, get_avg_price, get_trading_day_ticker, get_ticker,
         test_order, cancel_replace_order, amend_order, place_oco_order,
-        place_oto_order, place_otoco_order, cancel_order_list,
-        place_sor_order, test_sor_order, get_my_filters
+        place_oto_order, place_otoco_order, place_opo_order, place_opoco_order,
+        cancel_order_list, place_sor_order, test_sor_order, get_my_filters
 
     """
     A client for interacting with the Binance REST API.
@@ -612,6 +612,155 @@ module RESTAPI
         params[:pendingAboveType] = pending_above_type
 
         return make_request(client, "POST", "/api/v3/orderList/otoco"; params=params, signed=true)
+    end
+
+    """
+        place_opo_order(client, symbol, trigger_price, working_type, working_side,
+                        working_quantity; kwargs...)
+
+    Place a One-Pays-the-Other (OPO) order list.
+
+    OPO allows you to place a trigger order that, when conditions are met, places a
+    working order. If the working order fills, the trigger is canceled.
+
+    # Required Parameters
+    - `symbol`: Trading pair symbol (e.g., "BTCUSDT")
+    - `trigger_price`: Price at which the pending order will be triggered
+    - `working_type`: Type of the working order ("LIMIT" or "LIMIT_MAKER")
+    - `working_side`: Side of the working order ("BUY" or "SELL")
+    - `working_quantity`: Quantity for the working order
+
+    # Optional Parameters (via kwargs)
+    - `listClientOrderId`: Unique id for the order list
+    - `workingClientOrderId`: Unique id for the working order
+    - `workingPrice`: Price for the working order (required for LIMIT orders)
+    - `workingTimeInForce`: Time in force for working order
+    - `workingIcebergQty`: Iceberg quantity for working order
+    - `workingSelfTradePreventionMode`: STP mode for working order
+    - `pendingType`: Type of pending order (default: "LIMIT")
+    - `pendingSide`: Side of pending order
+    - `pendingQuantity`: Quantity for pending order
+    - `pendingPrice`: Price for pending order
+    - `pendingStopPrice`: Stop price for pending order
+    - `pendingTrailingDelta`: Trailing delta for pending order
+    - `pendingTimeInForce`: Time in force for pending order
+    - `pendingIcebergQty`: Iceberg quantity for pending order
+    - `pendingSelfTradePreventionMode`: STP mode for pending order
+    - `triggerPriceDirection`: Direction for trigger price ("UP" or "DOWN")
+    - `newOrderRespType`: Response type ("ACK", "RESULT", or "FULL")
+    - `selfTradePreventionMode`: STP mode for the order list
+
+    # Returns
+    Order list response with details of both orders.
+
+    # Example
+    ```julia
+    # Place an OPO order: trigger a limit buy when price drops
+    place_opo_order(client, "BTCUSDT", 50000.0, "LIMIT", "BUY", 0.001;
+        workingPrice=49500.0,
+        workingTimeInForce="GTC"
+    )
+    ```
+
+    # Note
+    Available after 2025-12-18. Check `opoAllowed` in exchange info for symbol support.
+    """
+    function place_opo_order(
+        client::RESTClient, symbol::String, trigger_price::Union{Float64,String,FixedDecimal},
+        working_type::String, working_side::String,
+        working_quantity::Union{Float64,String,FixedDecimal}; kwargs...
+    )
+        params = Dict{String,Any}(kwargs)
+        params[:symbol] = symbol
+        params[:triggerPrice] = to_decimal_string(trigger_price)
+        params[:workingType] = working_type
+        params[:workingSide] = working_side
+        params[:workingQuantity] = to_decimal_string(working_quantity)
+
+        return make_request(client, "POST", "/api/v3/orderList/opo"; params=params, signed=true)
+    end
+
+    """
+        place_opoco_order(client, symbol, trigger_price, working_type, working_side,
+                          working_quantity, pending_side, pending_quantity,
+                          pending_above_type; kwargs...)
+
+    Place a One-Pays-the-Other-with-Contingent-Order (OPOCO) order list.
+
+    OPOCO combines OPO with OCO: places a trigger order that, when conditions are met,
+    places an OCO order pair. This allows for complex order strategies.
+
+    # Required Parameters
+    - `symbol`: Trading pair symbol (e.g., "BTCUSDT")
+    - `trigger_price`: Price at which the pending orders will be triggered
+    - `working_type`: Type of the working order ("LIMIT" or "LIMIT_MAKER")
+    - `working_side`: Side of the working order ("BUY" or "SELL")
+    - `working_quantity`: Quantity for the working order
+    - `pending_side`: Side of pending OCO orders
+    - `pending_quantity`: Quantity for pending orders
+    - `pending_above_type`: Type of the pending above order
+
+    # Optional Parameters (via kwargs)
+    - `listClientOrderId`: Unique id for the order list
+    - `workingClientOrderId`: Unique id for working order
+    - `workingPrice`: Price for working order
+    - `workingTimeInForce`: Time in force for working order
+    - `workingIcebergQty`: Iceberg quantity for working order
+    - `workingSelfTradePreventionMode`: STP mode for working order
+    - `pendingAboveClientOrderId`: Unique id for pending above order
+    - `pendingAbovePrice`: Price for pending above order
+    - `pendingAboveStopPrice`: Stop price for pending above order
+    - `pendingAboveTrailingDelta`: Trailing delta for pending above order
+    - `pendingAboveTimeInForce`: Time in force for pending above order
+    - `pendingAboveIcebergQty`: Iceberg quantity for pending above order
+    - `pendingBelowType`: Type of pending below order
+    - `pendingBelowClientOrderId`: Unique id for pending below order
+    - `pendingBelowPrice`: Price for pending below order
+    - `pendingBelowStopPrice`: Stop price for pending below order
+    - `pendingBelowTrailingDelta`: Trailing delta for pending below order
+    - `pendingBelowTimeInForce`: Time in force for pending below order
+    - `pendingBelowIcebergQty`: Iceberg quantity for pending below order
+    - `triggerPriceDirection`: Direction for trigger price ("UP" or "DOWN")
+    - `newOrderRespType`: Response type ("ACK", "RESULT", or "FULL")
+    - `selfTradePreventionMode`: STP mode for the order list
+
+    # Returns
+    Order list response with details of all orders.
+
+    # Example
+    ```julia
+    # Place OPOCO: when price hits trigger, place an OCO for take-profit/stop-loss
+    place_opoco_order(client, "BTCUSDT", 50000.0, "LIMIT", "BUY", 0.001,
+        "SELL", 0.001, "TAKE_PROFIT_LIMIT";
+        workingPrice=49500.0,
+        pendingAbovePrice=52000.0,
+        pendingAboveStopPrice=51500.0,
+        pendingBelowType="STOP_LOSS_LIMIT",
+        pendingBelowPrice=48000.0,
+        pendingBelowStopPrice=48500.0
+    )
+    ```
+
+    # Note
+    Available after 2025-12-18. Check `opoAllowed` in exchange info for symbol support.
+    """
+    function place_opoco_order(
+        client::RESTClient, symbol::String, trigger_price::Union{Float64,String,FixedDecimal},
+        working_type::String, working_side::String,
+        working_quantity::Union{Float64,String,FixedDecimal}, pending_side::String,
+        pending_quantity::Union{Float64,String,FixedDecimal}, pending_above_type::String; kwargs...
+    )
+        params = Dict{String,Any}(kwargs)
+        params[:symbol] = symbol
+        params[:triggerPrice] = to_decimal_string(trigger_price)
+        params[:workingType] = working_type
+        params[:workingSide] = working_side
+        params[:workingQuantity] = to_decimal_string(working_quantity)
+        params[:pendingSide] = pending_side
+        params[:pendingQuantity] = to_decimal_string(pending_quantity)
+        params[:pendingAboveType] = pending_above_type
+
+        return make_request(client, "POST", "/api/v3/orderList/opoco"; params=params, signed=true)
     end
 
     function cancel_order_list(

@@ -72,7 +72,7 @@ export OrderBook, PriceLevel, MarketTrade, AggregateTrade, AveragePrice, Ticker2
 @enum OrderStatus NEW PENDING_NEW PARTIALLY_FILLED FILLED CANCELED PENDING_CANCEL REJECTED EXPIRED EXPIRED_IN_MATCH
 @enum OrderListStatus RESPONSE EXEC_STARTED UPDATED ALL_DONE
 @enum OrderListOrderStatus EXECUTING REJECT
-@enum ContingencyType OCO OTO
+@enum ContingencyType OCO OTO OTOCO OPO
 # AllocationType has only one value "SOR", which conflicts with WorkingFloor. Keeping as String.
 # @enum AllocationType SOR
 @enum OrderTypes LIMIT MARKET STOP_LOSS STOP_LOSS_LIMIT TAKE_PROFIT TAKE_PROFIT_LIMIT LIMIT_MAKER
@@ -83,7 +83,7 @@ export OrderBook, PriceLevel, MarketTrade, AggregateTrade, AveragePrice, Ticker2
 @enum TimeInForce GTC IOC FOK
 @enum RateLimiters REQUEST_WEIGHT ORDERS RAW_REQUESTS CONNECTIONS
 @enum RateLimitIntervals SECOND MINUTE DAY
-@enum STPModes NONE EXPIRE_MAKER EXPIRE_TAKER EXPIRE_BOTH DECREMENT
+@enum STPModes NONE EXPIRE_MAKER EXPIRE_TAKER EXPIRE_BOTH DECREMENT TRANSFER
 
 # StructTypes.StructType(::Type{<:Enum}) = StructTypes.StringType()
 
@@ -341,7 +341,7 @@ struct RateLimit
 end
 StructTypes.StructType(::Type{RateLimit}) = StructTypes.Struct()
 
-struct SymbolInfo
+mutable struct SymbolInfo
     symbol::String
     status::SymbolStatus
     baseAsset::String
@@ -353,6 +353,8 @@ struct SymbolInfo
     orderTypes::Vector{OrderTypes}
     icebergAllowed::Bool
     ocoAllowed::Bool
+    otoAllowed::Bool
+    opoAllowed::Bool
     quoteOrderQtyMarketAllowed::Bool
     isSpotTradingAllowed::Bool
     isMarginTradingAllowed::Bool
@@ -360,8 +362,17 @@ struct SymbolInfo
     permissions::Vector{AccountPermissions}
     defaultSelfTradePreventionMode::STPModes
     allowedSelfTradePreventionModes::Vector{STPModes}
+
+    # Inner constructor for default values
+    function SymbolInfo()
+        new()
+    end
 end
-StructTypes.StructType(::Type{SymbolInfo}) = StructTypes.Struct()
+StructTypes.StructType(::Type{SymbolInfo}) = StructTypes.Mutable()
+StructTypes.defaults(::Type{SymbolInfo}) = Dict{Symbol,Any}(
+    :otoAllowed => false,
+    :opoAllowed => false
+)
 
 function Base.show(io::IO, ::MIME"text/plain", s::SymbolInfo)
     println(io, "SymbolInfo for ", s.symbol, ":")

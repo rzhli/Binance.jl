@@ -51,7 +51,7 @@ export get_server_time, get_exchange_info, ping
 export get_symbol_ticker, get_orderbook, get_recent_trades, get_historical_trades
 export place_order, test_order, cancel_order, cancel_all_orders, cancel_replace_order, amend_order
 export get_open_orders, get_order, get_all_orders, get_my_trades
-export place_oco_order, place_oto_order, place_otoco_order, cancel_order_list
+export place_oco_order, place_oto_order, place_otoco_order, place_opo_order, place_opoco_order, cancel_order_list
 export place_sor_order, test_sor_order, get_order_list, get_all_order_lists, get_open_order_lists
 export get_agg_trades, get_klines, get_ui_klines, get_avg_price, get_trading_day_ticker, get_ticker
 
@@ -69,7 +69,7 @@ export sbe_subscribe_best_bid_ask, sbe_unsubscribe_best_bid_ask, sbe_subscribe_c
 export sbe_subscribe_depth, sbe_unsubscribe_depth, sbe_subscribe_depth20, sbe_unsubscribe_depth20
 export sbe_close_all, sbe_list_streams, connect_sbe!
 
-# Export SBE data types
+# Export SBE data types (WebSocket SBE - Schema 3:2)
 export TradeEvent, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
 
 # Export WebSocket API functions - Authentication
@@ -84,7 +84,7 @@ export ticker, ticker_price, ticker_book
 export test_order, cancel_replace_order, amend_order, cancel_all_orders
 
 # Export WebSocket API functions - Order Lists
-export place_oco_order, place_oto_order, place_otoco_order, cancel_order_list
+export place_oco_order, place_oto_order, place_otoco_order, place_opo_order, place_opoco_order, cancel_order_list
 
 # Export WebSocket API functions - SOR
 export place_sor_order, test_sor_order
@@ -119,6 +119,9 @@ export start!, stop!, is_ready
 export get_best_bid, get_best_ask, get_spread, get_mid_price
 export get_bids, get_asks, get_orderbook_snapshot
 export calculate_vwap, calculate_depth_imbalance
+
+# Export Config functions (for BinanceFIX to use)
+export load_config
 
 function __init__()
     ENV["DATAFRAMES_FLOAT_FORMAT"] = "%.0f"

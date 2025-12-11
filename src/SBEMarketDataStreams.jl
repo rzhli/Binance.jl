@@ -130,6 +130,26 @@ function connect_sbe!(client::SBEStreamClient)
                     client.ws_connection = ws
                     @info "✅ Connected to SBE Market Data Stream"
 
+                    # Resubscribe to existing streams
+                    if !isempty(client.subscriptions)
+                        streams = collect(keys(client.subscriptions))
+                        @info "Resubscribing to $(length(streams)) streams..."
+
+                        # Send subscription request for all streams
+                        subscribe_msg = JSON3.write(Dict(
+                            "method" => "SUBSCRIBE",
+                            "params" => streams,
+                            "id" => next_request_id!(client)
+                        ))
+
+                        try
+                            HTTP.WebSockets.send(ws, subscribe_msg)
+                            @info "Sent resubscription request for: $(join(streams, ", "))"
+                        catch e
+                            @error "Failed to resubscribe: $e"
+                        end
+                    end
+
                     # Start ping/pong handler
                     ping_task = @async handle_ping_pong(client, ws)
 

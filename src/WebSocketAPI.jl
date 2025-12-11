@@ -40,8 +40,8 @@ module WebSocketAPI
         amend_order, cancel_all_orders
 
     # Order Lists
-    export place_oco_order, place_oto_order, place_otoco_order, cancel_order_list,
-        order_list_status, open_order_lists_status, all_order_lists
+    export place_oco_order, place_oto_order, place_otoco_order, place_opo_order, place_opoco_order,
+        cancel_order_list, order_list_status, open_order_lists_status, all_order_lists
 
     # SOR (Smart Order Routing)
     export place_sor_order, test_sor_order
@@ -1580,6 +1580,139 @@ module WebSocketAPI
         end
 
         return send_signed_request(client, "orderList.place.otoco", params)
+    end
+
+    """
+        place_opo_order(client, symbol, triggerPrice, workingType, workingSide, workingQuantity; kwargs...)
+
+    Place a new One-Pays-the-Other (OPO) order list via WebSocket API.
+
+    OPO allows you to place a trigger order that, when conditions are met, places a
+    working order. If the working order fills, the trigger is canceled.
+
+    # Required Parameters
+    - `symbol`: Trading pair symbol (e.g., "BTCUSDT")
+    - `triggerPrice`: Price at which the pending order will be triggered
+    - `workingType`: Type of the working order ("LIMIT" or "LIMIT_MAKER")
+    - `workingSide`: Side of the working order ("BUY" or "SELL")
+    - `workingQuantity`: Quantity for the working order
+
+    # Optional Parameters (via kwargs)
+    - `listClientOrderId`: Unique id for the order list
+    - `workingClientOrderId`: Unique id for the working order
+    - `workingPrice`: Price for the working order (required for LIMIT orders)
+    - `workingTimeInForce`: Time in force for working order
+    - `workingIcebergQty`: Iceberg quantity for working order
+    - `workingSelfTradePreventionMode`: STP mode for working order
+    - `pendingType`: Type of pending order
+    - `pendingSide`: Side of pending order
+    - `pendingQuantity`: Quantity for pending order
+    - `pendingPrice`: Price for pending order
+    - `pendingStopPrice`: Stop price for pending order
+    - `pendingTrailingDelta`: Trailing delta for pending order
+    - `pendingTimeInForce`: Time in force for pending order
+    - `pendingIcebergQty`: Iceberg quantity for pending order
+    - `pendingSelfTradePreventionMode`: STP mode for pending order
+    - `triggerPriceDirection`: Direction for trigger price ("UP" or "DOWN")
+    - `newOrderRespType`: Response type ("ACK", "RESULT", or "FULL")
+    - `selfTradePreventionMode`: STP mode for the order list
+
+    # Note
+    Available after 2025-12-18. Check `opoAllowed` in exchange info for symbol support.
+    """
+    function place_opo_order(
+        client::WebSocketClient, symbol::String, triggerPrice::Union{Float64,String},
+        workingType::String, workingSide::String, workingQuantity::Union{Float64,String}; kwargs...
+        )
+
+        params = Dict{String,Any}(
+            "symbol" => symbol,
+            "triggerPrice" => string(triggerPrice),
+            "workingType" => workingType,
+            "workingSide" => workingSide,
+            "workingQuantity" => string(workingQuantity)
+        )
+
+        # Add any additional parameters from kwargs
+        for (key, value) in kwargs
+            if !isnothing(value) && !isempty(string(value))
+                params[string(key)] = isa(value, Number) ? value : string(value)
+            end
+        end
+
+        return send_signed_request(client, "orderList.place.opo", params)
+    end
+
+    """
+        place_opoco_order(client, symbol, triggerPrice, workingType, workingSide, workingQuantity, pendingSide, pendingQuantity, pendingAboveType; kwargs...)
+
+    Place a new One-Pays-the-Other-with-Contingent-Order (OPOCO) order list via WebSocket API.
+
+    OPOCO combines OPO with OCO: places a trigger order that, when conditions are met,
+    places an OCO order pair. This allows for complex order strategies.
+
+    # Required Parameters
+    - `symbol`: Trading pair symbol (e.g., "BTCUSDT")
+    - `triggerPrice`: Price at which the pending orders will be triggered
+    - `workingType`: Type of the working order ("LIMIT" or "LIMIT_MAKER")
+    - `workingSide`: Side of the working order ("BUY" or "SELL")
+    - `workingQuantity`: Quantity for the working order
+    - `pendingSide`: Side of pending OCO orders
+    - `pendingQuantity`: Quantity for pending orders
+    - `pendingAboveType`: Type of the pending above order
+
+    # Optional Parameters (via kwargs)
+    - `listClientOrderId`: Unique id for the order list
+    - `workingClientOrderId`: Unique id for working order
+    - `workingPrice`: Price for working order
+    - `workingTimeInForce`: Time in force for working order
+    - `workingIcebergQty`: Iceberg quantity for working order
+    - `workingSelfTradePreventionMode`: STP mode for working order
+    - `pendingAboveClientOrderId`: Unique id for pending above order
+    - `pendingAbovePrice`: Price for pending above order
+    - `pendingAboveStopPrice`: Stop price for pending above order
+    - `pendingAboveTrailingDelta`: Trailing delta for pending above order
+    - `pendingAboveTimeInForce`: Time in force for pending above order
+    - `pendingAboveIcebergQty`: Iceberg quantity for pending above order
+    - `pendingBelowType`: Type of pending below order
+    - `pendingBelowClientOrderId`: Unique id for pending below order
+    - `pendingBelowPrice`: Price for pending below order
+    - `pendingBelowStopPrice`: Stop price for pending below order
+    - `pendingBelowTrailingDelta`: Trailing delta for pending below order
+    - `pendingBelowTimeInForce`: Time in force for pending below order
+    - `pendingBelowIcebergQty`: Iceberg quantity for pending below order
+    - `triggerPriceDirection`: Direction for trigger price ("UP" or "DOWN")
+    - `newOrderRespType`: Response type ("ACK", "RESULT", or "FULL")
+    - `selfTradePreventionMode`: STP mode for the order list
+
+    # Note
+    Available after 2025-12-18. Check `opoAllowed` in exchange info for symbol support.
+    """
+    function place_opoco_order(
+        client::WebSocketClient, symbol::String, triggerPrice::Union{Float64,String},
+        workingType::String, workingSide::String, workingQuantity::Union{Float64,String},
+        pendingSide::String, pendingQuantity::Union{Float64,String}, pendingAboveType::String; kwargs...
+        )
+
+        params = Dict{String,Any}(
+            "symbol" => symbol,
+            "triggerPrice" => string(triggerPrice),
+            "workingType" => workingType,
+            "workingSide" => workingSide,
+            "workingQuantity" => string(workingQuantity),
+            "pendingSide" => pendingSide,
+            "pendingQuantity" => string(pendingQuantity),
+            "pendingAboveType" => pendingAboveType
+        )
+
+        # Add any additional parameters from kwargs
+        for (key, value) in kwargs
+            if !isnothing(value) && !isempty(string(value))
+                params[string(key)] = isa(value, Number) ? value : string(value)
+            end
+        end
+
+        return send_signed_request(client, "orderList.place.opoco", params)
     end
 
     """

@@ -24,6 +24,37 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.7.0 - SDK Split & BinanceFIX (2025-12-11) 🔧
+
+**Breaking Change**: FIX API separated into standalone `BinanceFIX.jl` package.
+
+**Why?**
+- Cleaner separation of concerns (REST/WebSocket vs FIX protocol)
+- Independent versioning for FIX features
+- Smaller main package for users who don't need FIX
+
+**Migration:**
+```julia
+# Before (v0.6.x)
+using Binance
+session = FIXSession(config, sender_comp_id; session_type=OrderEntry)
+
+# After (v0.7.0)
+using Binance
+using BinanceFIX
+session = FIXSession(config, sender_comp_id; session_type=OrderEntry)
+```
+
+**BinanceFIX.jl v0.1.0 Features:**
+- Complete FIX 4.4 protocol support
+- Session types: OrderEntry, DropCopy, MarketData
+- FIX SBE support (ports 9001/9002)
+- FIX SBE binary decoder
+
+**📖 See:** [BinanceFIX/README.md](BinanceFIX/README.md)
+
+---
+
 ### v0.6.0 - SBE Market Data Streams (2025-11-19) ⚡
 
 High-performance **Simple Binary Encoding (SBE)** streams for ultra-low latency trading.
@@ -297,6 +328,16 @@ Binance.jl/
 │   ├── Events.jl               # WebSocket event types
 │   ├── Filters.jl              # Order validation filters
 │   └── Errors.jl               # Custom error types
+│
+├── BinanceFIX/                  # FIX Protocol SDK (sub-package)
+│   ├── Project.toml
+│   ├── src/
+│   │   ├── BinanceFIX.jl       # Main FIX module
+│   │   ├── FIXAPI.jl           # FIX session and order entry
+│   │   ├── FIXConstants.jl     # FIX field tags and constants
+│   │   └── FIXSBEDecoder.jl    # FIX SBE binary decoder
+│   ├── test/                   # FIX test suite
+│   └── examples/               # FIX usage examples
 │
 ├── docs/
 │   ├── OrderBookManager.md     # OrderBookManager documentation

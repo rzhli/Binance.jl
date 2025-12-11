@@ -21,6 +21,29 @@ recv_window = 5000
 # Proxy for requests (e.g., "http://127.0.0.1:7890")
 proxy = "http://127.0.0.1:7890"
 
+[fix]
+  # stunnel proxy settings for FIX API
+  # Configure your stunnel to proxy these local ports to the Binance FIX servers
+  host = "127.0.0.1"
+
+  # Standard FIX encoding (remote port 9000)
+  # FIX text protocol requests → FIX text protocol responses
+  order_entry_port = 9000   # fix-oe.binance.com:9000
+  drop_copy_port = 9001     # fix-dc.binance.com:9000
+  market_data_port = 9002   # fix-md.binance.com:9000
+
+  # FIX SBE Hybrid mode (remote port 9001) - Available 2025-12-18
+  # FIX text protocol requests → SBE binary responses
+  order_entry_sbe_hybrid_port = 9010   # fix-oe.binance.com:9001
+  drop_copy_sbe_hybrid_port = 9011     # fix-dc.binance.com:9001
+  market_data_sbe_hybrid_port = 9012   # fix-md.binance.com:9001
+
+  # FIX SBE Full mode (remote port 9002) - Available 2025-12-18
+  # SBE binary requests → SBE binary responses
+  order_entry_sbe_full_port = 9020     # fix-oe.binance.com:9002
+  drop_copy_sbe_full_port = 9021       # fix-dc.binance.com:9002
+  market_data_sbe_full_port = 9022     # fix-md.binance.com:9002
+
 [rate_limiting]
 # Maximum requests per minute for general endpoints
 max_requests_per_minute = 1200

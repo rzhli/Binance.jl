@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2025-12-11
+
+### Changed
+- **SDK Split**: Separated FIX API into standalone `BinanceFIX.jl` package
+  - Main `Binance.jl` now focuses on REST API, WebSocket streams, and SBE market data
+  - FIX protocol support moved to `BinanceFIX/` subdirectory as independent package
+  - Reduces main package complexity and allows independent versioning
+
+### Removed (from Binance.jl)
+- **FIX API Module**: All FIX protocol code moved to BinanceFIX.jl
+  - `FIXAPI.jl` - FIX session management and order entry
+  - `FIXConstants.jl` - FIX field tags and constants
+  - FIX-related exports removed from main module
+
+### Added
+- **BinanceFIX.jl v0.1.0** - New standalone FIX protocol SDK
+  - Complete FIX 4.4 protocol support for Binance trading
+  - Session types: OrderEntry, DropCopy, MarketData
+  - FIX SBE support (ports 9001/9002)
+  - `FIXSBEDecoder.jl` - FIX SBE binary message decoder
+  - All FIX constants and template IDs from `spot-fixsbe-1_0.xml` schema
+  - Independent test suite and examples
+
+### Migration Guide
+If you were using FIX API features, update your code:
+
+```julia
+# Before (v0.6.x)
+using Binance
+session = FIXSession(config, sender_comp_id; session_type=OrderEntry)
+
+# After (v0.7.0)
+using Binance
+using BinanceFIX
+session = FIXSession(config, sender_comp_id; session_type=OrderEntry)
+```
+
+### New Package Structure
+```
+Binance.jl/
+├── src/                    # Main SDK (REST, WebSocket, SBE streams)
+├── BinanceFIX/            # FIX Protocol SDK (sub-package)
+│   ├── src/
+│   │   ├── BinanceFIX.jl
+│   │   ├── FIXAPI.jl
+│   │   ├── FIXConstants.jl
+│   │   └── FIXSBEDecoder.jl
+│   ├── test/
+│   └── examples/
+└── examples/              # Main SDK examples
+```
+
 ## [0.6.1] - 2025-11-22
 
 ### Added
@@ -270,6 +322,18 @@ Earlier changes were not tracked in this changelog. Please refer to git commit h
 ---
 
 ## Document Change History
+
+### 2025-12-11
+- **SDK Split v0.7.0**: Separated FIX API into standalone BinanceFIX.jl package
+- **New Package**:
+  - `BinanceFIX/src/BinanceFIX.jl` - Main FIX module
+  - `BinanceFIX/src/FIXAPI.jl` - FIX session and order entry
+  - `BinanceFIX/src/FIXConstants.jl` - FIX constants and SBE template IDs
+  - `BinanceFIX/src/FIXSBEDecoder.jl` - FIX SBE binary decoder
+  - `BinanceFIX/test/` - FIX test suite
+  - `BinanceFIX/examples/` - FIX usage examples
+- **README.md**: Updated architecture and added BinanceFIX documentation
+- **CHANGELOG.md**: Added v0.7.0 release notes with migration guide
 
 ### 2025-11-19
 - **SBE Market Data Streams**: Added v0.6.0 with complete SBE implementation
