@@ -850,55 +850,73 @@ end
 function connect_fix(session::FIXSession)
     try
         if session.config.fix_use_tls
-            # Use system openssl command for TLS connection
-            println("DEBUG: Connecting to $(session.host):$(session.port) via openssl s_client...")
+            # Use socat to handle TLS connection
+            println("DEBUG: Connecting to $(session.host):$(session.port) via TLS...")
 
-            # Build openssl s_client command
-            # -quiet: suppress s_client output (certificate info, etc.)
-            # -connect: specify host:port
-            # -servername: SNI hostname (important for some proxies/CDNs)
-            # Note: If using Fake IP mode proxy (like Clash), don't use -proxy flag
-            #       as the traffic will be automatically proxied based on IP range
             proxy_str = session.config.proxy
 
-            # Check if we should use explicit proxy or rely on system proxy (Fake IP mode)
+            # Check if we should use explicit proxy
             use_explicit_proxy = !isempty(proxy_str) && !startswith(proxy_str, "fake://")
 
+            local cmd
             if use_explicit_proxy
                 # Parse proxy URL (http://host:port)
                 proxy_match = match(r"https?://([^:]+):(\d+)", proxy_str)
                 if !isnothing(proxy_match)
                     proxy_host = proxy_match.captures[1]
                     proxy_port = proxy_match.captures[2]
-                    println("DEBUG: Using explicit proxy $(proxy_host):$(proxy_port)")
-                    cmd = `openssl s_client -quiet -proxy $(proxy_host):$(proxy_port) -servername $(session.host) -connect $(session.host):$(session.port)`
+                    println("DEBUG: Using HTTP CONNECT proxy $(proxy_host):$(proxy_port)")
+                    # Two-stage approach:
+                    # 1. socat STDIO to PROXY (establishes HTTP CONNECT tunnel)
+                    # 2. Pipe through openssl s_client for TLS
+                    # Use socat's EXEC to chain openssl after PROXY connection
+                    #
+                    # socat STDIO PROXY:proxyhost:targethost:targetport,proxyport=X
+                    # gives us a plain TCP tunnel through the proxy
+                    # Then we need to layer TLS on top - but socat PROXY doesn't support that directly
+                    #
+                    # Alternative: Use socat to do HTTP CONNECT, then openssl for TLS handshake
+                    # This requires a two-process pipeline which Julia doesn't support well
+                    #
+                    # Best approach for HTTP CONNECT + TLS: use socat OPENSSL with PROXY chained
+                    # However, socat OPENSSL doesn't support proxy parameter directly.
+                    #
+                    # Workaround: Start a background socat PROXY listener, connect via OPENSSL to it
+                    # This is complex, so for proxy+TLS we fall back to plain proxy mode (use_tls=false)
+                    # and recommend users to run a separate socat proxy process.
+
+                    @warn "HTTP proxy with TLS is complex. For best results, either:\n" *
+                          "  1. Set proxy=\"\" in [fix_testnet] config (testnet often accessible directly)\n" *
+                          "  2. Use use_tls=false and run a separate socat TLS proxy:\n" *
+                          "     socat TCP-LISTEN:19000,fork,reuseaddr \\\n" *
+                          "       OPENSSL:$(session.host):$(session.port),verify=0 &\n" *
+                          "Attempting direct socat OPENSSL connection (ignoring proxy)..."
+
+                    # Try direct connection (proxy may be transparent/fake-IP mode)
+                    cmd = Cmd(["socat", "-T", "30", "STDIO",
+                        "OPENSSL:$(session.host):$(session.port),verify=0"])
                 else
                     @warn "Invalid proxy format, connecting directly"
-                    cmd = `openssl s_client -quiet -servername $(session.host) -connect $(session.host):$(session.port)`
+                    cmd = Cmd(["socat", "-T", "30", "STDIO", "OPENSSL:$(session.host):$(session.port),verify=0"])
                 end
             else
-                # Direct connection or Fake IP mode (proxy handles it transparently)
-                println("DEBUG: Direct TLS connection (or Fake IP mode)")
-                cmd = `openssl s_client -quiet -servername $(session.host) -connect $(session.host):$(session.port)`
+                # Direct TLS connection using socat's native OpenSSL support
+                println("DEBUG: Direct TLS connection via socat OPENSSL")
+                cmd = Cmd(["socat", "-T", "30", "STDIO", "OPENSSL:$(session.host):$(session.port),verify=0"])
             end
 
             println("DEBUG: Running command: $cmd")
 
-            # Open bidirectional pipe to openssl process
+            # Open bidirectional pipe to process
+            # IMPORTANT: Don't sleep here! The server may close the connection
+            # if no data is sent within ~1 second after TLS handshake.
+            # Proceed directly to logon.
             process = open(cmd, "r+")
 
-            # Give it a moment to establish connection
-            sleep(0.5)
-
-            # Check if process is still running
-            if !process_running(process)
-                error("OpenSSL process terminated immediately - TLS handshake failed")
-            end
-
             session.openssl_process = process
-            session.socket = process  # Process object supports read/write via .in and .out
+            session.socket = process
 
-            println("Connected to FIX server at $(session.host):$(session.port) (TLS via openssl s_client)")
+            println("Connected to FIX server at $(session.host):$(session.port) (TLS)")
         else
             # Plain TCP connection
             println("DEBUG: Connecting to $(session.host):$(session.port)...")

@@ -1,3 +1,5 @@
+using Pkg
+Pkg.activate(joinpath(@__DIR__, ".."))
 using Binance
 using BinanceFIX
 using Dates
@@ -15,8 +17,12 @@ using Dates
 # - Error handling and reconnection
 # =============================================================================
 
-config = Binance.from_toml("config.toml")
-sender_comp_id = "abcd1234"
+config = Binance.from_toml("/home/rzhli/文档/投资/Binance/config.toml"; testnet=true)
+function random_sender_comp_id()
+    chars = vcat('a':'z', 'A':'Z', '0':'9')
+    return String(rand(chars, 8))
+end
+sender_comp_id = random_sender_comp_id()
 
 # =============================================================================
 # 1. Order Entry Session - Basic Orders

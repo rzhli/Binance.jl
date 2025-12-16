@@ -50,7 +50,7 @@ struct BinanceConfig
     log_file::String
 end
 
-function from_toml(config_path::String="config.toml")
+function from_toml(config_path::String="config.toml"; testnet::Bool=false)
     if !isfile(config_path)
         error("Configuration file not found: $config_path")
     end
@@ -58,9 +58,8 @@ function from_toml(config_path::String="config.toml")
     try
         config_data = TOML.parsefile(config_path)
 
-        # Extract connection settings first to determine which keys to use
+        # Extract connection settings
         connection = get(config_data, "connection", Dict())
-        testnet = get(connection, "testnet", false)
 
         # Extract API settings
         api = get(config_data, "api", Dict())
@@ -93,10 +92,19 @@ function from_toml(config_path::String="config.toml")
         max_connections_per_5m = get(rate_limiting, "max_connections_per_5m", 300)
         ws_return_rate_limits = get(rate_limiting, "ws_return_rate_limits", true)
 
-        # Extract FIX API settings
-        fix = get(config_data, "fix", Dict())
+        # Extract FIX API settings - use testnet section if testnet=true
+        fix_section = testnet ? "fix_testnet" : "fix"
+        fix = get(config_data, fix_section, Dict())
+        # Fallback to [fix] section if testnet section doesn't exist
+        if isempty(fix) && testnet
+            fix = get(config_data, "fix", Dict())
+        end
         fix_host = get(fix, "host", "127.0.0.1")
         fix_use_tls = get(fix, "use_tls", false)
+        # Allow FIX section to override proxy (for testnet which may not need proxy)
+        if haskey(fix, "proxy")
+            proxy = fix["proxy"]
+        end
         # Standard FIX encoding (port 9000 on remote)
         fix_order_entry_host = get(fix, "order_entry_host", fix_host)
         fix_order_entry_port = get(fix, "order_entry_port", 9000)
