@@ -1004,7 +1004,9 @@ function generate_client_order_id(prefix::String="")
 end
 
 function calculate_checksum(msg::String)
-    sum_val = sum(UInt8[c for c in msg])
+    # FIX checksum is sum of raw bytes (UTF-8 code units), not characters
+    # This is important for symbols containing non-ASCII characters
+    sum_val = sum(codeunits(msg))
     return lpad(string(sum_val % 256), 3, '0')
 end
 
@@ -1033,7 +1035,9 @@ function build_message(session::FIXSession, msg_type::String, fields::Dict{Int,S
         body_str *= "$tag=$(fields[tag])\x01"
     end
 
-    body_length = length(body_str)
+    # FIX BodyLength is byte count, not character count
+    # Use sizeof() for correct UTF-8 handling with non-ASCII symbols
+    body_length = sizeof(body_str)
     prefix = "8=FIX.4.4\x019=$body_length\x01"
     full_msg_without_checksum = prefix * body_str
 
@@ -2429,7 +2433,9 @@ function new_order_list(session::FIXSession, symbol::String, orders::Vector{Dict
         end
     end
 
-    body_length = length(body_str)
+    # FIX BodyLength is byte count, not character count
+    # Use sizeof() for correct UTF-8 handling with non-ASCII symbols
+    body_length = sizeof(body_str)
     prefix = "8=FIX.4.4\x019=$body_length\x01"
     full_msg = prefix * body_str
     checksum = calculate_checksum(full_msg)
@@ -2760,7 +2766,9 @@ function market_data_request(session::FIXSession, symbols::Vector{String};
         end
     end
 
-    body_length = length(body_str)
+    # FIX BodyLength is byte count, not character count
+    # Use sizeof() for correct UTF-8 handling with non-ASCII symbols
+    body_length = sizeof(body_str)
     prefix = "8=FIX.4.4\x019=$body_length\x01"
     full_msg = prefix * body_str
     checksum = calculate_checksum(full_msg)
