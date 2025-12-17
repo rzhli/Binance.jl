@@ -1,5 +1,6 @@
 # Personal configuration files (contain API keys)
 config.toml
+config_vm.toml
 
 # Private key files
 key/
