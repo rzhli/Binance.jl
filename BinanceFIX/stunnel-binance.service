@@ -1,0 +1,14 @@
+[Unit]
+Description=Stunnel Binance FIX API Proxy
+Documentation=https://github.com/rzhli/Binance.jl
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/bin/stunnel /etc/stunnel/binance-fix.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

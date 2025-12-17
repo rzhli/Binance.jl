@@ -769,7 +769,6 @@ mutable struct FIXSession
     host::String
     port::Int
     socket::Union{IO,Nothing}
-    openssl_process::Union{Base.Process,Nothing}  # OpenSSL s_client process for TLS
     seq_num::Int
     sender_comp_id::String
     target_comp_id::String
@@ -806,7 +805,7 @@ mutable struct FIXSession
 
         signer = Signature.create_signer(config)
         now_time = now(Dates.UTC)
-        new(host, port, nothing, nothing, 1, sender_comp_id, target_comp_id, config, signer,
+        new(host, port, nothing, 1, sender_comp_id, target_comp_id, config, signer,
             session_type, false, "",
             30, now_time, now_time, "", nothing, false, nothing, Ref(false),
             on_maintenance, on_disconnect, on_message)
@@ -849,82 +848,12 @@ end
 
 function connect_fix(session::FIXSession)
     try
-        if session.config.fix_use_tls
-            # Use socat to handle TLS connection
-            println("DEBUG: Connecting to $(session.host):$(session.port) via TLS...")
-
-            proxy_str = session.config.proxy
-
-            # Check if we should use explicit proxy
-            use_explicit_proxy = !isempty(proxy_str) && !startswith(proxy_str, "fake://")
-
-            local cmd
-            if use_explicit_proxy
-                # Parse proxy URL (http://host:port)
-                proxy_match = match(r"https?://([^:]+):(\d+)", proxy_str)
-                if !isnothing(proxy_match)
-                    proxy_host = proxy_match.captures[1]
-                    proxy_port = proxy_match.captures[2]
-                    println("DEBUG: Using HTTP CONNECT proxy $(proxy_host):$(proxy_port)")
-                    # Two-stage approach:
-                    # 1. socat STDIO to PROXY (establishes HTTP CONNECT tunnel)
-                    # 2. Pipe through openssl s_client for TLS
-                    # Use socat's EXEC to chain openssl after PROXY connection
-                    #
-                    # socat STDIO PROXY:proxyhost:targethost:targetport,proxyport=X
-                    # gives us a plain TCP tunnel through the proxy
-                    # Then we need to layer TLS on top - but socat PROXY doesn't support that directly
-                    #
-                    # Alternative: Use socat to do HTTP CONNECT, then openssl for TLS handshake
-                    # This requires a two-process pipeline which Julia doesn't support well
-                    #
-                    # Best approach for HTTP CONNECT + TLS: use socat OPENSSL with PROXY chained
-                    # However, socat OPENSSL doesn't support proxy parameter directly.
-                    #
-                    # Workaround: Start a background socat PROXY listener, connect via OPENSSL to it
-                    # This is complex, so for proxy+TLS we fall back to plain proxy mode (use_tls=false)
-                    # and recommend users to run a separate socat proxy process.
-
-                    @warn "HTTP proxy with TLS is complex. For best results, either:\n" *
-                          "  1. Set proxy=\"\" in [fix_testnet] config (testnet often accessible directly)\n" *
-                          "  2. Use use_tls=false and run a separate socat TLS proxy:\n" *
-                          "     socat TCP-LISTEN:19000,fork,reuseaddr \\\n" *
-                          "       OPENSSL:$(session.host):$(session.port),verify=0 &\n" *
-                          "Attempting direct socat OPENSSL connection (ignoring proxy)..."
-
-                    # Try direct connection (proxy may be transparent/fake-IP mode)
-                    cmd = Cmd(["socat", "-T", "30", "STDIO",
-                        "OPENSSL:$(session.host):$(session.port),verify=0"])
-                else
-                    @warn "Invalid proxy format, connecting directly"
-                    cmd = Cmd(["socat", "-T", "30", "STDIO", "OPENSSL:$(session.host):$(session.port),verify=0"])
-                end
-            else
-                # Direct TLS connection using socat's native OpenSSL support
-                println("DEBUG: Direct TLS connection via socat OPENSSL")
-                cmd = Cmd(["socat", "-T", "30", "STDIO", "OPENSSL:$(session.host):$(session.port),verify=0"])
-            end
-
-            println("DEBUG: Running command: $cmd")
-
-            # Open bidirectional pipe to process
-            # IMPORTANT: Don't sleep here! The server may close the connection
-            # if no data is sent within ~1 second after TLS handshake.
-            # Proceed directly to logon.
-            process = open(cmd, "r+")
-
-            session.openssl_process = process
-            session.socket = process
-
-            println("Connected to FIX server at $(session.host):$(session.port) (TLS)")
-        else
-            # Plain TCP connection
-            println("DEBUG: Connecting to $(session.host):$(session.port)...")
-            tcp_socket = connect(session.host, session.port)
-            session.socket = tcp_socket
-            session.openssl_process = nothing
-            println("Connected to FIX proxy at $(session.host):$(session.port) (Plain TCP)")
-        end
+        # TCP connection to local stunnel proxy
+        # stunnel handles TLS termination to Binance FIX servers
+        println("DEBUG: Connecting to stunnel proxy at $(session.host):$(session.port)...")
+        tcp_socket = connect(session.host, session.port)
+        session.socket = tcp_socket
+        println("Connected to FIX server via stunnel at $(session.host):$(session.port)")
 
         # Reset timestamps on new connection
         now_time = now(Dates.UTC)
@@ -936,7 +865,8 @@ function connect_fix(session::FIXSession)
 
         return session.socket
     catch e
-        error("Failed to connect to FIX server: $e")
+        error("Failed to connect to FIX server: $e\n" *
+              "Make sure stunnel is running. See BinanceFIX/stunnel.conf for configuration.")
     end
 end
 
@@ -947,16 +877,6 @@ function close_fix(session::FIXSession)
     if !isnothing(session.socket) && isopen(session.socket)
         close(session.socket)
         println("FIX connection closed")
-    end
-
-    # Kill openssl process if running
-    if !isnothing(session.openssl_process)
-        try
-            kill(session.openssl_process)
-        catch
-            # Process may already be dead
-        end
-        session.openssl_process = nothing
     end
 
     session.socket = nothing
@@ -2956,12 +2876,6 @@ Returns a vector of raw message strings, or empty vector if no data available.
 """
 function receive_message(session::FIXSession; timeout_ms::Int=0, verbose::Bool=false)
     if isnothing(session.socket) || !isopen(session.socket)
-        return String[]
-    end
-
-    # Check if openssl process is still alive
-    if !isnothing(session.openssl_process) && !process_running(session.openssl_process)
-        @warn "OpenSSL process has terminated"
         return String[]
     end
 

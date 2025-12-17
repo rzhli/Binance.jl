@@ -26,8 +26,7 @@ struct BinanceConfig
     max_connections_per_5m::Int
     ws_return_rate_limits::Bool
 
-    # FIX API settings
-    fix_use_tls::Bool
+    # FIX API settings (requires stunnel for TLS termination)
     # Standard FIX encoding (port 9000 on remote)
     fix_host::String # Legacy/Default host
     fix_order_entry_host::String
@@ -100,7 +99,6 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
             fix = get(config_data, "fix", Dict())
         end
         fix_host = get(fix, "host", "127.0.0.1")
-        fix_use_tls = get(fix, "use_tls", false)
         # Allow FIX section to override proxy (for testnet which may not need proxy)
         if haskey(fix, "proxy")
             proxy = fix["proxy"]
@@ -157,7 +155,7 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
             api_key, signature_method, api_secret, private_key_path, private_key_pass,
             testnet, timeout, recv_window, proxy, max_reconnect_attempts, reconnect_delay,
             max_request_weight_per_minute, max_orders_per_10s, max_orders_per_day, max_connections_per_5m, ws_return_rate_limits,
-            fix_use_tls, fix_host,
+            fix_host,
             fix_order_entry_host, fix_order_entry_port,
             fix_drop_copy_host, fix_drop_copy_port,
             fix_market_data_host, fix_market_data_port,

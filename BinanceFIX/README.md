@@ -235,6 +235,79 @@ BinanceFIX/
 └── README.md               # This file
 ```
 
+## Stunnel Setup (Required)
+
+Binance FIX API requires TLS connections. This SDK uses stunnel for TLS termination.
+
+### Quick Setup
+
+```bash
+# Install stunnel
+sudo apt install stunnel4   # Ubuntu/Debian
+# or
+brew install stunnel        # macOS
+
+# Copy configuration
+sudo cp stunnel.conf /etc/stunnel/binance-fix.conf
+
+# Start stunnel
+sudo systemctl start stunnel4
+# or run directly
+stunnel stunnel.conf
+```
+
+### Cloud VM Deployment (Google Cloud, AWS, etc.)
+
+1. **Create VM** in a region close to Binance servers (Asia recommended for lower latency)
+
+2. **Install dependencies**:
+```bash
+sudo apt update && sudo apt install -y stunnel4
+curl -fsSL https://install.julialang.org | sh
+```
+
+3. **Clone and setup**:
+```bash
+git clone https://github.com/rzhli/Binance.jl.git
+cd Binance.jl/BinanceFIX
+sudo cp stunnel.conf /etc/stunnel/binance-fix.conf
+sudo cp stunnel-binance.service /etc/systemd/system/
+sudo systemctl enable stunnel-binance
+sudo systemctl start stunnel-binance
+```
+
+4. **Generate Ed25519 key** (if not already done):
+```bash
+mkdir -p key
+openssl genpkey -algorithm ED25519 -out key/ed25519-private.pem
+openssl pkey -in key/ed25519-private.pem -pubout -out key/ed25519-public.pem
+```
+
+5. **Configure Binance API**:
+   - Upload `key/ed25519-public.pem` to Binance API Management
+   - Enable FIX_API permission
+   - Add VM's public IP to whitelist
+
+6. **Create config.toml**:
+```bash
+cp config_example.toml config.toml
+# Edit config.toml with your API key and key path
+```
+
+### Port Mapping
+
+| Local Port | Remote Server | Description |
+|------------|---------------|-------------|
+| 9000 | fix-oe.binance.com:9000 | Order Entry (Standard FIX) |
+| 9001 | fix-dc.binance.com:9000 | Drop Copy (Standard FIX) |
+| 9002 | fix-md.binance.com:9000 | Market Data (Standard FIX) |
+| 9010 | fix-oe.binance.com:9001 | Order Entry (SBE Hybrid) |
+| 9011 | fix-dc.binance.com:9001 | Drop Copy (SBE Hybrid) |
+| 9012 | fix-md.binance.com:9001 | Market Data (SBE Hybrid) |
+| 9020 | fix-oe.binance.com:9002 | Order Entry (SBE Full) |
+| 9021 | fix-dc.binance.com:9002 | Drop Copy (SBE Full) |
+| 9022 | fix-md.binance.com:9002 | Market Data (SBE Full) |
+
 ## Requirements
 
 - Julia 1.11+
