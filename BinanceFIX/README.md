@@ -109,21 +109,99 @@ subscribe_trade_stream(session, "BTCUSDT")
 
 BinanceFIX supports FIX SBE (Simple Binary Encoding) for high-performance trading:
 
-- **Port 9001**: FIX request → FIX SBE response
-- **Port 9002**: FIX SBE request → FIX SBE response (lowest latency)
+- **Port 9001**: FIX text request → FIX SBE response (Hybrid mode)
+- **Port 9002**: FIX SBE request → FIX SBE response (Full SBE mode, lowest latency)
 
-### FIX SBE Decoder
+### FIX SBE Full Mode (Pure Binary)
+
+For the lowest latency, use the `SBESession` for pure SBE request/response:
+
+```julia
+using Binance
+using BinanceFIX
+
+# Load config
+config = Binance.from_toml("config.toml"; testnet=true)
+sender_comp_id = "your_sender_id"
+
+# Create SBE Order Entry session (port 9002)
+session = SBESession(config, sender_comp_id; session_type=SBEOrderEntry)
+
+# Connect and logon
+connect_sbe(session)
+logon_sbe(session)
+
+# Start connection monitor
+start_sbe_monitor(session)
+
+# Place a limit order (using UInt8 enum values)
+cl_ord_id = new_order_single_sbe(session, "BTCUSDT", UInt8(1);  # 1=BUY
+    quantity=0.001, price=50000.0, order_type=UInt8(2))  # 2=LIMIT
+
+# Cancel order
+order_cancel_request_sbe(session, "BTCUSDT"; orig_cl_ord_id=cl_ord_id)
+
+# Mass cancel all orders for symbol
+order_mass_cancel_request_sbe(session, "BTCUSDT")
+
+# Query rate limits
+limit_query_sbe(session)
+
+# Process incoming messages
+messages = process_sbe_messages(session)
+for (msg_type, decoded) in messages
+    if msg_type == :execution_report
+        println("Order: $(decoded.cl_ord_id) Status: $(decoded.ord_status)")
+    elseif msg_type == :execution_report_ack
+        println("Ack: $(decoded.cl_ord_id)")
+    end
+end
+
+# Cleanup
+stop_sbe_monitor(session)
+logout_sbe(session)
+close_sbe(session)
+```
+
+### SBE Session Types
+
+```julia
+# Order Entry - for placing, canceling, amending orders
+session = SBESession(config, sender_comp_id; session_type=SBEOrderEntry)
+
+# Drop Copy - read-only execution reports
+session = SBESession(config, sender_comp_id; session_type=SBEDropCopy)
+
+# Market Data - market data streams
+session = SBESession(config, sender_comp_id; session_type=SBEMarketData)
+
+# Subscribe to market data
+market_data_request_sbe(session, ["BTCUSDT", "ETHUSDT"];
+    entry_types=[UInt8(0), UInt8(1)])  # 0=Bid, 1=Offer
+
+# Get instrument list
+instrument_list_request_sbe(session)
+```
+
+### FIX SBE Decoder (for Hybrid Mode)
+
+When using standard FIX text requests with SBE responses (port 9001):
 
 ```julia
 using BinanceFIX
 
-# Decode FIX SBE message
+# Decode FIX SBE message from raw bytes
 data = receive_raw_data(session)
-msg = decode_fix_sbe_message(data)
+msg_type, decoded = decode_sbe_message(data)
 
-println("Template: ", get_template_name(msg.header.templateId))
-println("SeqNum: ", msg.header.seqNum)
-println("SendingTime: ", msg.header.sendingTime)
+if msg_type == :execution_report
+    println("Order ID: ", decoded.order_id)
+    println("ClOrdId: ", decoded.cl_ord_id)
+    println("Status: ", decoded.ord_status)
+    println("CumQty: ", decoded.cum_qty)
+elseif msg_type == :logon_ack
+    println("Logged in, UUID: ", decoded.uuid)
+end
 ```
 
 ### SBE Message Format
@@ -143,6 +221,26 @@ Message Header:
 - seqNum: uint32
 - sendingTime: int64 (microseconds since epoch)
 ```
+
+### SBE Decoded Message Types
+
+| Message Type | Template ID | Description |
+|--------------|-------------|-------------|
+| `SBELogonAck` | 20009 | Logon acknowledgment |
+| `SBELogout` | 20004 | Logout message |
+| `SBEHeartbeat` | 20001 | Heartbeat message |
+| `SBEReject` | 20003 | Session reject |
+| `SBEExecutionReport` | 98 | Full execution report |
+| `SBEExecutionReportAck` | 198 | Mini execution report (OnlyAcks mode) |
+| `SBEOrderCancelReject` | 96 | Cancel reject |
+| `SBEListStatus` | 102 | Order list status |
+| `SBEOrderMassCancelReport` | 104 | Mass cancel report |
+| `SBELimitResponse` | 121 | Rate limit query response |
+| `SBEMarketDataSnapshot` | 204 | Market data snapshot |
+| `SBEMarketDataIncrementalTrade` | 205 | Incremental trade updates |
+| `SBEMarketDataIncrementalBookTicker` | 206 | Incremental book ticker |
+| `SBEMarketDataIncrementalDepth` | 207 | Incremental depth updates |
+| `SBEInstrumentList` | 201 | Instrument list response |
 
 ## Order Types
 
@@ -227,11 +325,14 @@ See `examples/` directory:
 BinanceFIX/
 ├── src/
 │   ├── BinanceFIX.jl       # Main module with exports
-│   ├── FIXAPI.jl           # FIX session and order entry
+│   ├── FIXAPI.jl           # FIX text session and order entry
 │   ├── FIXConstants.jl     # FIX field tags and constants
-│   └── FIXSBEDecoder.jl    # FIX SBE binary decoder
+│   ├── FIXSBEDecoder.jl    # FIX SBE binary decoder
+│   ├── FIXSBEEncoder.jl    # FIX SBE binary encoder
+│   └── FIXSBESession.jl    # FIX SBE session management
 ├── test/                   # Test suite
 ├── examples/               # Usage examples
+├── stunnel.conf            # Stunnel configuration
 └── README.md               # This file
 ```
 
@@ -296,6 +397,8 @@ cp config_example.toml config.toml
 
 ### Port Mapping
 
+#### Production
+
 | Local Port | Remote Server | Description |
 |------------|---------------|-------------|
 | 9000 | fix-oe.binance.com:9000 | Order Entry (Standard FIX) |
@@ -307,6 +410,20 @@ cp config_example.toml config.toml
 | 9020 | fix-oe.binance.com:9002 | Order Entry (SBE Full) |
 | 9021 | fix-dc.binance.com:9002 | Drop Copy (SBE Full) |
 | 9022 | fix-md.binance.com:9002 | Market Data (SBE Full) |
+
+#### Testnet
+
+| Local Port | Remote Server | Description |
+|------------|---------------|-------------|
+| 19000 | fix-oe.testnet.binance.vision:9000 | Order Entry (Standard FIX) |
+| 19001 | fix-dc.testnet.binance.vision:9000 | Drop Copy (Standard FIX) |
+| 19002 | fix-md.testnet.binance.vision:9000 | Market Data (Standard FIX) |
+| 19010 | fix-oe.testnet.binance.vision:9001 | Order Entry (SBE Hybrid) |
+| 19011 | fix-dc.testnet.binance.vision:9001 | Drop Copy (SBE Hybrid) |
+| 19012 | fix-md.testnet.binance.vision:9001 | Market Data (SBE Hybrid) |
+| 19020 | fix-oe.testnet.binance.vision:9002 | Order Entry (SBE Full) |
+| 19021 | fix-dc.testnet.binance.vision:9002 | Drop Copy (SBE Full) |
+| 19022 | fix-md.testnet.binance.vision:9002 | Market Data (SBE Full) |
 
 ## Requirements
 

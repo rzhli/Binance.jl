@@ -10,10 +10,12 @@ It depends on the main Binance.jl package for configuration and signature utilit
 - **MarketData**: Market data streams via FIX (port 9000)
 
 ## FIX SBE Support
-- Port 9001: FIX request → FIX SBE response
-- Port 9002: FIX SBE request → FIX SBE response
+- Port 9001: FIX request → FIX SBE response (hybrid mode)
+- Port 9002: FIX SBE request → FIX SBE response (pure SBE mode)
 
-## Usage
+Use `SBESession` for pure SBE mode connections.
+
+## Usage - Text FIX
 
 ```julia
 using Binance
@@ -40,18 +42,50 @@ start_monitor(session)
 logout(session)
 close_fix(session)
 ```
+
+## Usage - FIX SBE
+
+```julia
+using Binance
+using BinanceFIX
+
+# Load config
+config = Binance.load_config("config.toml")
+
+# Create SBE session (port 9002)
+session = SBESession(config, "SENDER"; session_type=SBEOrderEntry)
+
+# Connect and logon
+connect_sbe(session)
+logon_sbe(session)
+
+# Place order (using UInt8 enums)
+cl_ord_id = new_order_single_sbe(session, "BTCUSDT", UInt8(1);  # 1=BUY
+    quantity=0.001, price=50000.0, order_type=UInt8(2))  # 2=LIMIT
+
+# Start connection monitor
+start_sbe_monitor(session)
+
+# Cleanup
+logout_sbe(session)
+close_sbe(session)
+```
 """
 module BinanceFIX
 
 # Include submodules
 include("FIXConstants.jl")
 include("FIXSBEDecoder.jl")
+include("FIXSBEEncoder.jl")
 include("FIXAPI.jl")
+include("FIXSBESession.jl")
 
 # Import from submodules
 using .FIXConstants
 using .FIXSBEDecoder
+using .FIXSBEEncoder
 using .FIXAPI
+using .FIXSBESession
 
 # =============================================================================
 # Re-export FIXConstants (commonly used)
@@ -198,5 +232,72 @@ export SOFHeader, FIXSBEMessageHeader, FIXSBEMessage
 export decode_sofh, decode_message_header, decode_fix_sbe_message
 export has_complete_message, extract_message
 export mantissa_to_float
+
+# SBE Decoded message types
+export SBELogonAck, SBELogout, SBEHeartbeat, SBETestRequest, SBEReject, SBENews
+export SBEExecutionReport, SBEExecutionReportAck, SBEOrderCancelReject
+export SBEListStatus, SBEOrderMassCancelReport, SBEOrderAmendReject
+export SBELimitResponse, SBELimitIndicator
+export SBEMarketDataSnapshot, SBEMarketDataReject
+export SBEMarketDataIncrementalTrade, SBEMarketDataIncrementalBookTicker, SBEMarketDataIncrementalDepth
+export SBEInstrumentList, SBEInstrumentInfo, SBEMDEntry, SBEMiscFee
+
+# SBE Message decoder dispatch
+export decode_sbe_message
+export decode_logon_ack, decode_logout, decode_heartbeat, decode_test_request
+export decode_reject, decode_news
+export decode_execution_report, decode_execution_report_ack
+export decode_order_cancel_reject, decode_list_status
+export decode_order_mass_cancel_report, decode_order_amend_reject
+export decode_limit_response
+export decode_market_data_snapshot, decode_market_data_reject
+export decode_market_data_incremental_trade, decode_market_data_incremental_book_ticker
+export decode_market_data_incremental_depth
+export decode_instrument_list
+
+# =============================================================================
+# Re-export FIXSBEEncoder types and functions
+# =============================================================================
+
+# SBE Buffer
+export SBEBuffer
+
+# SBE Encoder functions - Admin messages
+export encode_logon, encode_logout, encode_heartbeat, encode_test_request
+
+# SBE Encoder functions - Order Entry messages
+export encode_new_order_single, encode_order_cancel_request
+export encode_order_mass_cancel_request, encode_order_amend_keep_priority
+export encode_limit_query
+
+# SBE Encoder functions - Market Data messages
+export encode_market_data_request, encode_instrument_list_request
+
+# =============================================================================
+# Re-export FIXSBESession types and functions
+# =============================================================================
+
+# SBE Session types
+export SBESession, SBESessionType
+export SBEOrderEntry, SBEDropCopy, SBEMarketData
+
+# SBE Connection management
+export connect_sbe, logon_sbe, logout_sbe, close_sbe
+export heartbeat_sbe, test_request_sbe
+export start_sbe_monitor, stop_sbe_monitor, reconnect_sbe
+
+# SBE Order Entry functions
+export new_order_single_sbe, order_cancel_request_sbe
+export order_mass_cancel_request_sbe, order_amend_keep_priority_sbe
+export limit_query_sbe
+
+# SBE Market Data functions
+export market_data_request_sbe, instrument_list_request_sbe
+
+# SBE Message processing
+export receive_sbe_message, process_sbe_messages
+
+# SBE Session limits
+export SBE_SESSION_LIMITS, get_sbe_session_limits
 
 end # module BinanceFIX
