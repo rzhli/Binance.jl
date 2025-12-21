@@ -16,7 +16,11 @@ Construct a `T` instance directly from a JSON3-parsed value without
 round-tripping through a string. This avoids the extra allocations from
 `JSON3.write`/`JSON3.read` when the data is already materialized.
 """
-@inline to_struct(::Type{T}, value) where {T} = StructTypes.constructfrom(T, value)
+@inline function to_struct(::Type{T}, value) where {T}
+    # CustomStructs are expected to provide StructTypes.construct, not constructfrom.
+    st = StructTypes.StructType(T)
+    return st isa StructTypes.CustomStruct ? StructTypes.construct(T, value) : StructTypes.constructfrom(T, value)
+end
 
 """
     to_decimal_string(value)
