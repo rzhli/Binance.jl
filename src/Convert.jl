@@ -2,7 +2,7 @@ module Convert
 
 using JSON3, StructTypes, Dates
 using ..RESTAPI
-using ..Types: to_decimal_string
+using ..Types: to_decimal_string, to_struct
 
 export convert_exchange_info, convert_asset_info, convert_get_quote, convert_accept_quote,
     convert_order_status, convert_trade_flow, convert_limit_place_order,
@@ -119,14 +119,7 @@ function convert_exchange_info(client::RESTClient; from_asset::String="", to_ass
         params["toAsset"] = to_asset
     end
     response = make_request(client, "GET", "/sapi/v1/convert/exchangeInfo"; params=params, signed=true)
-    # The API returns a list directly or wrapped? Documentation says list of objects.
-    # Let's assume it returns a list of assets directly based on typical SAPI behavior for this endpoint type,
-    # but checking docs, it often returns a wrapper.
-    # If response is a Vector, we parse it. If it's a Dict with "list", we parse that.
-    # Based on structure, let's try to parse as Vector first or check structure.
-    # Actually, for safety with StructTypes, we often read into the struct.
-    # Let's assume standard Binance response format.
-    return JSON3.read(JSON3.write(response), Vector{ConvertAsset})
+    return to_struct(Vector{ConvertAsset}, response)
 end
 
 """
@@ -147,7 +140,7 @@ function convert_asset_info(client::RESTClient; assets::Vector{String}=String[])
         params["assets"] = JSON3.write(assets)
     end
     response = make_request(client, "GET", "/sapi/v1/convert/assetInfo"; params=params, signed=true)
-    return JSON3.read(JSON3.write(response), Vector{ConvertAssetInfo})
+    return to_struct(Vector{ConvertAssetInfo}, response)
 end
 
 """
@@ -181,7 +174,7 @@ function convert_get_quote(
     end
 
     response = make_request(client, "POST", "/sapi/v1/convert/getQuote"; params=params, signed=true)
-    return JSON3.read(JSON3.write(response), ConvertQuote)
+    return to_struct(ConvertQuote, response)
 end
 
 """
@@ -195,7 +188,7 @@ Accept the offered quote by quote ID.
 function convert_accept_quote(client::RESTClient, quote_id::String)
     params = Dict{String,Any}("quoteId" => quote_id)
     response = make_request(client, "POST", "/sapi/v1/convert/acceptQuote"; params=params, signed=true)
-    return JSON3.read(JSON3.write(response), ConvertAcceptQuote)
+    return to_struct(ConvertAcceptQuote, response)
 end
 
 """
@@ -218,7 +211,7 @@ function convert_order_status(client::RESTClient; order_id::String="", quote_id:
     end
 
     response = make_request(client, "GET", "/sapi/v1/convert/orderStatus"; params=params, signed=true)
-    return JSON3.read(JSON3.write(response), ConvertOrderStatus)
+    return to_struct(ConvertOrderStatus, response)
 end
 
 """
@@ -257,7 +250,7 @@ function convert_trade_flow(
     end
 
     response = make_request(client, "GET", "/sapi/v1/convert/tradeFlow"; params=params, signed=true)
-    return JSON3.read(JSON3.write(response), ConvertTradeFlowResponse)
+    return to_struct(ConvertTradeFlowResponse, response)
 end
 
 """
@@ -298,7 +291,7 @@ function convert_limit_place_order(
     end
 
     response = make_request(client, "POST", "/sapi/v1/convert/limit/placeOrder"; params=params, signed=true)
-    return JSON3.read(JSON3.write(response), ConvertLimitOrder)
+    return to_struct(ConvertLimitOrder, response)
 end
 
 """
@@ -324,10 +317,7 @@ Query all convert limit open orders.
 """
 function convert_limit_query_open_orders(client::RESTClient)
     response = make_request(client, "GET", "/sapi/v1/convert/limit/queryOpenOrders"; signed=true)
-    # The response is likely a list of orders or a wrapper.
-    # Assuming list based on typical endpoints, but let's check if it needs wrapper.
-    # If it's a list:
-    return JSON3.read(JSON3.write(response), Vector{ConvertLimitOrder})
+    return to_struct(Vector{ConvertLimitOrder}, response)
 end
 
 end # module Convert

@@ -52,6 +52,8 @@ export OrderBookManager, start!, stop!, is_ready,
     get_bids, get_asks, get_orderbook_snapshot,
     calculate_vwap, calculate_depth_imbalance
 
+const DepthEvent = Union{Dict{String,Any}, DepthDiffEvent}
+
 # ============================================================================
 # Core Data Structures
 # ============================================================================
@@ -80,14 +82,18 @@ struct OrderBookSnapshot
 end
 
 """
-    OrderBookManager
+    OrderBookManager{R,W}
 
 Manages a local order book with automatic synchronization from Binance.
 
+# Type Parameters
+- `R`: REST client type (e.g., RESTClient)
+- `W`: WebSocket client type (e.g., MarketDataStreamClient or SBEStreamClient)
+
 # Fields
 - `symbol::String`: Trading pair symbol (e.g., "BTCUSDT")
-- `rest_client`: REST API client for fetching snapshots
-- `ws_client`: WebSocket client for streaming updates
+- `rest_client::R`: REST API client for fetching snapshots
+- `ws_client::W`: WebSocket client for streaming updates
 - `update_id::Ref{Int64}`: Current order book update ID
 - `bids::OrderedDict{Float64,Float64}`: Buy orders (price => quantity)
 - `asks::OrderedDict{Float64,Float64}`: Sell orders (price => quantity)
@@ -98,10 +104,10 @@ Manages a local order book with automatic synchronization from Binance.
 - `max_depth::Int`: Maximum depth for REST snapshot (default: 5000)
 - `update_speed::String`: Update speed "100ms" or "1000ms" (default: "100ms")
 """
-mutable struct OrderBookManager
+mutable struct OrderBookManager{R,W}
     symbol::String
-    rest_client::Any
-    ws_client::Any
+    rest_client::R
+    ws_client::W
 
     # Order book state
     update_id::Ref{Int64}
@@ -110,7 +116,7 @@ mutable struct OrderBookManager
 
     # Synchronization state
     is_initialized::Ref{Bool}
-    event_buffer::Vector{Any}
+    event_buffer::Vector{DepthEvent}
 
     # WebSocket subscription
     stream_id::Ref{Union{String,Nothing}}
@@ -132,8 +138,8 @@ Create a new OrderBookManager.
 
 # Arguments
 - `symbol::String`: Trading pair symbol
-- `rest_client`: REST API client
-- `ws_client`: WebSocket market data client
+- `rest_client::R`: REST API client
+- `ws_client::W`: WebSocket market data client
 
 # Keyword Arguments
 - `max_depth::Int=5000`: Maximum depth for snapshot (5, 10, 20, 50, 100, 500, 1000, 5000)
@@ -145,23 +151,23 @@ If provided, `on_update` will be called as: `on_update(manager::OrderBookManager
 """
 function OrderBookManager(
     symbol::String,
-    rest_client,
-    ws_client;
+    rest_client::R,
+    ws_client::W;
     max_depth::Int=5000,
     update_speed::String="100ms",
     on_update::Union{Function,Nothing}=nothing
-)
+) where {R,W}
     # Validate parameters
-    valid_depths = [5, 10, 20, 50, 100, 500, 1000, 5000]
+    valid_depths = (5, 10, 20, 50, 100, 500, 1000, 5000)
     if !(max_depth in valid_depths)
         error("max_depth must be one of: $(join(valid_depths, ", "))")
     end
 
-    if !(update_speed in ["100ms", "1000ms"])
+    if !(update_speed in ("100ms", "1000ms"))
         error("update_speed must be '100ms' or '1000ms'")
     end
 
-    OrderBookManager(
+    OrderBookManager{R,W}(
         symbol,
         rest_client,
         ws_client,
@@ -169,7 +175,7 @@ function OrderBookManager(
         OrderedDict{Float64,Float64}(),
         OrderedDict{Float64,Float64}(),
         Ref{Bool}(false),
-        Vector{Any}(),
+        Vector{DepthEvent}(),
         Ref{Union{String,Nothing}}(nothing),
         on_update,
         max_depth,
@@ -588,11 +594,12 @@ function get_bids(manager::OrderBookManager, n::Int=10)
     sorted_bids = sort(collect(manager.bids), by=x -> x.first, rev=true)
 
     count = min(n, length(sorted_bids))
-    result = PriceQuantity[]
+    # Pre-allocate result vector
+    result = Vector{PriceQuantity}(undef, count)
 
-    for i in 1:count
+    @inbounds for i in 1:count
         price, quantity = sorted_bids[i]
-        push!(result, PriceQuantity(price, quantity))
+        result[i] = PriceQuantity(price, quantity)
     end
 
     return result
@@ -614,11 +621,12 @@ function get_asks(manager::OrderBookManager, n::Int=10)
     sorted_asks = sort(collect(manager.asks), by=x -> x.first)
 
     count = min(n, length(sorted_asks))
-    result = PriceQuantity[]
+    # Pre-allocate result vector
+    result = Vector{PriceQuantity}(undef, count)
 
-    for i in 1:count
+    @inbounds for i in 1:count
         price, quantity = sorted_asks[i]
-        push!(result, PriceQuantity(price, quantity))
+        result[i] = PriceQuantity(price, quantity)
     end
 
     return result

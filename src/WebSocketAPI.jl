@@ -283,13 +283,13 @@ module WebSocketAPI
                                         event_type = string(event_payload[:e])
                                         if haskey(client.ws_callbacks, event_type)
                                             try
-                                                event_struct = JSON3.read(JSON3.write(event_payload), EVENT_TYPE_MAP[event_type])
+                                                event_struct = to_struct(EVENT_TYPE_MAP[event_type], event_payload)
                                                 client.ws_callbacks[event_type](event_struct)
                                             catch e
                                                 @error "Error in event callback for '$event_type': $e"
                                             end
                                         elseif event_type == "eventStreamTerminated"
-                                            event_struct = JSON3.read(JSON3.write(event_payload), EventStreamTerminated)
+                                            event_struct = to_struct(EventStreamTerminated, event_payload)
                                             handle_event_stream_terminated!(client, event_struct)
                                         else
                                             @warn "Received unhandled event of type '$(event_type)'"
@@ -797,7 +797,7 @@ module WebSocketAPI
         response = send_request(client, "exchangeInfo", params)
 
         # Convert JSON3.Object to ExchangeInfo type
-        return JSON3.read(JSON3.write(response), ExchangeInfo)
+        return to_struct(ExchangeInfo, response)
     end
 
     # --- Market Data Requests ---
@@ -819,7 +819,7 @@ module WebSocketAPI
         end
 
         response = send_request(client, "depth", params)
-        return JSON3.read(JSON3.write(response), OrderBook)
+        return to_struct(OrderBook, response)
     end
 
     function trades_recent(client::WebSocketClient, symbol::String; limit::Int=500)
@@ -833,7 +833,7 @@ module WebSocketAPI
             params["limit"] = limit
         end
         response = send_request(client, "trades.recent", params)
-        return JSON3.read(JSON3.write(response), Vector{MarketTrade})
+        return to_struct(Vector{MarketTrade}, response)
     end
 
     function trades_historical(client::WebSocketClient, symbol::String; from_id::Union{Int,Nothing}=nothing, limit::Int=500)
@@ -850,7 +850,7 @@ module WebSocketAPI
             params["limit"] = limit
         end
         response = send_request(client, "trades.historical", params)
-        return JSON3.read(JSON3.write(response), Vector{MarketTrade})
+        return to_struct(Vector{MarketTrade}, response)
     end
 
     function trades_aggregate(client::WebSocketClient, symbol::String; from_id::Union{Int,Nothing}=nothing,
@@ -879,7 +879,7 @@ module WebSocketAPI
             params["limit"] = limit
         end
         response = send_request(client, "trades.aggregate", params)
-        return JSON3.read(JSON3.write(response), Vector{AggregateTrade})
+        return to_struct(Vector{AggregateTrade}, response)
     end
 
     function klines(client::WebSocketClient, symbol::String, interval::String;
@@ -919,7 +919,7 @@ module WebSocketAPI
             params["limit"] = limit
         end
         response = send_request(client, "klines", params)
-        klines_vector = JSON3.read(JSON3.write(response), Vector{Kline})
+        klines_vector = to_struct(Vector{Kline}, response)
         df = DataFrame(klines_vector)
         df.open_time = floor.(df.open_time, Second)
         df.close_time = floor.(df.close_time, Second)
@@ -963,7 +963,7 @@ module WebSocketAPI
             params["limit"] = limit
         end
         response = send_request(client, "uiKlines", params)
-        klines_vector = JSON3.read(JSON3.write(response), Vector{Kline})
+        klines_vector = to_struct(Vector{Kline}, response)
         df = DataFrame(klines_vector)
         df.open_time = floor.(df.open_time, Second)
         df.close_time = floor.(df.close_time, Second)
@@ -973,7 +973,7 @@ module WebSocketAPI
     function avg_price(client::WebSocketClient, symbol::String)
         params = Dict{String,Any}("symbol" => symbol)
         response = send_request(client, "avgPrice", params)
-        return JSON3.read(JSON3.write(response), AveragePrice)
+        return to_struct(AveragePrice, response)
     end
 
     function ticker_24hr(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], type::String="FULL", symbolStatus::String="")
@@ -1005,9 +1005,9 @@ module WebSocketAPI
 
         response = send_request(client, "ticker.24hr", params)
         if single_symbol
-            return type == "FULL" ? JSON3.read(JSON3.write(response), Ticker24hrRest) : JSON3.read(JSON3.write(response), Ticker24hrMini)
+            return type == "FULL" ? to_struct(Ticker24hrRest, response) : to_struct(Ticker24hrMini, response)
         else
-            return type == "FULL" ? JSON3.read(JSON3.write(response), Vector{Ticker24hrRest}) : JSON3.read(JSON3.write(response), Vector{Ticker24hrMini})
+            return type == "FULL" ? to_struct(Vector{Ticker24hrRest}, response) : to_struct(Vector{Ticker24hrMini}, response)
         end
     end
 
@@ -1050,9 +1050,9 @@ module WebSocketAPI
 
         response = send_request(client, "ticker.tradingDay", params)
         if single_symbol
-            return type == "FULL" ? JSON3.read(JSON3.write(response), TradingDayTicker) : JSON3.read(JSON3.write(response), TradingDayTickerMini)
+            return type == "FULL" ? to_struct(TradingDayTicker, response) : to_struct(TradingDayTickerMini, response)
         else
-            return type == "FULL" ? JSON3.read(JSON3.write(response), Vector{TradingDayTicker}) : JSON3.read(JSON3.write(response), Vector{TradingDayTickerMini})
+            return type == "FULL" ? to_struct(Vector{TradingDayTicker}, response) : to_struct(Vector{TradingDayTickerMini}, response)
         end
     end
 
@@ -1112,9 +1112,9 @@ module WebSocketAPI
 
         response = send_request(client, "ticker", params)
         if single_symbol
-            return type == "FULL" ? JSON3.read(JSON3.write(response), RollingWindowTicker) : JSON3.read(JSON3.write(response), RollingWindowTickerMini)
+            return type == "FULL" ? to_struct(RollingWindowTicker, response) : to_struct(RollingWindowTickerMini, response)
         else
-            return type == "FULL" ? JSON3.read(JSON3.write(response), Vector{RollingWindowTicker}) : JSON3.read(JSON3.write(response), Vector{RollingWindowTickerMini})
+            return type == "FULL" ? to_struct(Vector{RollingWindowTicker}, response) : to_struct(Vector{RollingWindowTickerMini}, response)
         end
     end
 
@@ -1138,7 +1138,7 @@ module WebSocketAPI
         end
 
         response = send_request(client, "ticker.price", params)
-        return single_symbol ? JSON3.read(JSON3.write(response), PriceTicker) : JSON3.read(JSON3.write(response), Vector{PriceTicker})
+        return single_symbol ? to_struct(PriceTicker, response) : to_struct(Vector{PriceTicker}, response)
     end
 
     function ticker_book(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], symbolStatus::String="")
@@ -1161,7 +1161,7 @@ module WebSocketAPI
         end
 
         response = send_request(client, "ticker.book", params)
-        return single_symbol ? JSON3.read(JSON3.write(response), BookTicker) : JSON3.read(JSON3.write(response), Vector{BookTicker})
+        return single_symbol ? to_struct(BookTicker, response) : to_struct(Vector{BookTicker}, response)
     end
 
     # --- Trading Functions ---
@@ -1820,8 +1820,8 @@ module WebSocketAPI
             params["omitZeroBalances"] = omitZeroBalances
         end
         full_response = send_signed_request(client, "account.status", params; return_full_response=true)
-        account_info = JSON3.read(JSON3.write(full_response.result), AccountInfo)
-        rate_limits = JSON3.read(JSON3.write(full_response.rateLimits), Vector{Account.RateLimit})
+        account_info = to_struct(AccountInfo, full_response.result)
+        rate_limits = to_struct(Vector{Account.RateLimit}, full_response.rateLimits)
         return AccountStatusResponse(account_info, rate_limits)
     end
 

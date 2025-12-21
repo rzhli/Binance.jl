@@ -226,7 +226,7 @@ module RESTAPI
         end
 
         response = make_request(client, "GET", "/api/v3/exchangeInfo"; params=params)
-        return JSON3.read(JSON3.write(response), ExchangeInfo)
+        return to_struct(ExchangeInfo, response)
     end
 
     function ping(client::RESTClient)
@@ -433,7 +433,7 @@ module RESTAPI
         end
 
         response = make_request(client, "GET", "/api/v3/order"; params=params, signed=true)
-        return JSON3.read(JSON3.write(response), Order)
+        return to_struct(Order, response)
     end
 
     function get_open_orders(client::RESTClient; symbol::String="")
@@ -443,7 +443,7 @@ module RESTAPI
         end
 
         response = make_request(client, "GET", "/api/v3/openOrders"; params=params, signed=true)
-        return JSON3.read(JSON3.write(response), Vector{Order})
+        return to_struct(Vector{Order}, response)
     end
 
     function get_all_orders(
@@ -474,7 +474,7 @@ module RESTAPI
         end
 
         response = make_request(client, "GET", "/api/v3/allOrders"; params=params, signed=true)
-        return JSON3.read(JSON3.write(response), Vector{Order})
+        return to_struct(Vector{Order}, response)
     end
 
     function get_my_filters(client::RESTClient; symbol::String="")
@@ -514,7 +514,7 @@ module RESTAPI
         end
 
         response = make_request(client, "GET", "/api/v3/myTrades"; params=params, signed=true)
-        return JSON3.read(JSON3.write(response), Vector{Trade})
+        return to_struct(Vector{Trade}, response)
     end
 
     function get_order_list(
@@ -843,7 +843,7 @@ module RESTAPI
             "limit" => limit
         )
         response = make_request(client, "GET", "/api/v3/trades"; params=params)
-        return JSON3.read(JSON3.write(response), Vector{Trade})
+        return to_struct(Vector{Trade}, response)
     end
 
     function get_historical_trades(client::RESTClient, symbol::String; limit::Int=500, from_id::Int=0)
@@ -861,7 +861,7 @@ module RESTAPI
         end
 
         response = make_request(client, "GET", "/api/v3/historicalTrades"; params=params)
-        return JSON3.read(JSON3.write(response), Vector{Trade})
+        return to_struct(Vector{Trade}, response)
     end
 
     function get_agg_trades(client::RESTClient, symbol::String;
@@ -916,7 +916,7 @@ module RESTAPI
         end
 
         response = make_request(client, "GET", "/api/v3/klines"; params=params)
-        return JSON3.read(JSON3.write(response), Vector{Kline})
+        return to_struct(Vector{Kline}, response)
     end
 
     function get_symbol_ticker(client::RESTClient; symbol::String="", symbols::Vector{String}=String[], symbolStatus::String="")
@@ -1009,7 +1009,7 @@ module RESTAPI
         end
 
         response = make_request(client, "GET", "/api/v3/uiKlines"; params=params)
-        return JSON3.read(JSON3.write(response), Vector{Kline})
+        return to_struct(Vector{Kline}, response)
     end
 
     function get_avg_price(client::RESTClient, symbol::String)

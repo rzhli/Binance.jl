@@ -2,6 +2,7 @@ module Account
 
     using JSON3, StructTypes, DataFrames, Dates
     using ..RESTAPI
+    using ..Types: to_struct
     
     export get_account_info, get_account_status, get_api_trading_status,
         get_api_key_permission, get_withdraw_history, get_deposit_history,
@@ -190,7 +191,7 @@ module Account
             params["omitZeroBalances"] = omitZeroBalances
         end
         response = make_request(client, "GET", "/api/v3/account"; params=params, signed=true)
-        return JSON3.read(JSON3.write(response), AccountInfo)
+        return to_struct(AccountInfo, response)
     end
 
     function get_account_status(client::RESTClient)
@@ -369,12 +370,12 @@ module Account
             params["limit"] = limit
         end
         response = make_request(client, "GET", "/api/v3/myTrades"; params=params, signed=true)
-        return JSON3.read(JSON3.write(response), Vector{Trade})
+        return to_struct(Vector{Trade}, response)
     end
 
     function get_rate_limit_order(client::RESTClient)
         response = make_request(client, "GET", "/api/v3/rateLimit/order"; signed=true)
-        return JSON3.read(JSON3.write(response), Vector{RateLimit})
+        return to_struct(Vector{RateLimit}, response)
     end
 
     function get_my_prevented_matches(client::RESTClient; symbol::String, preventedMatchId::Union{Int,Nothing}=nothing, orderId::Union{Int,Nothing}=nothing, fromPreventedMatchId::Union{Int,Nothing}=nothing, limit::Union{Int,Nothing}=nothing)
@@ -392,7 +393,7 @@ module Account
             params["limit"] = limit
         end
         response = make_request(client, "GET", "/api/v3/myPreventedMatches"; params=params, signed=true)
-        return JSON3.read(JSON3.write(response), Vector{PreventedMatch})
+        return to_struct(Vector{PreventedMatch}, response)
     end
 
     function get_my_allocations(client::RESTClient; symbol::String, startTime::Union{Int,Nothing}=nothing, endTime::Union{Int,Nothing}=nothing, fromAllocationId::Union{Int,Nothing}=nothing, limit::Union{Int,Nothing}=nothing, orderId::Union{Int,Nothing}=nothing)
@@ -413,13 +414,13 @@ module Account
             params["orderId"] = orderId
         end
         response = make_request(client, "GET", "/api/v3/myAllocations"; params=params, signed=true)
-        return JSON3.read(JSON3.write(response), Vector{Allocation})
+        return to_struct(Vector{Allocation}, response)
     end
 
     function get_account_commission_rates(client::RESTClient; symbol::String)
         params = Dict{String,Any}("symbol" => symbol)
         response = make_request(client, "GET", "/api/v3/account/commission"; params=params, signed=true)
-        return JSON3.read(JSON3.write(response), CommissionRatesDetails)
+        return to_struct(CommissionRatesDetails, response)
     end
 
     function get_order_amendments(
@@ -438,6 +439,6 @@ module Account
             params["limit"] = limit
         end
         response = make_request(client, "GET", "/api/v3/order/amendments"; params=params, signed=true)
-        return JSON3.read(JSON3.write(response), Vector{OrderAmendment})
+        return to_struct(Vector{OrderAmendment}, response)
     end
 end # module Account

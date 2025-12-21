@@ -7,7 +7,16 @@ using FixedPointDecimals
 const DecimalPrice = FixedDecimal{Int64, 8}
 
 # Export decimal types and conversion utilities
-export DecimalPrice, to_decimal_string
+export DecimalPrice, to_decimal_string, to_struct
+
+"""
+    to_struct(T, value)
+
+Construct a `T` instance directly from a JSON3-parsed value without
+round-tripping through a string. This avoids the extra allocations from
+`JSON3.write`/`JSON3.read` when the data is already materialized.
+"""
+@inline to_struct(::Type{T}, value) where {T} = StructTypes.constructfrom(T, value)
 
 """
     to_decimal_string(value)
@@ -358,6 +367,9 @@ mutable struct SymbolInfo
     quoteOrderQtyMarketAllowed::Bool
     isSpotTradingAllowed::Bool
     isMarginTradingAllowed::Bool
+    # Note: Using Vector{AbstractFilter} is required for JSON3/StructTypes polymorphic deserialization.
+    # The abstract type is necessary here as filters come from API responses with varying concrete types.
+    # Performance impact is minimal since filter access is infrequent compared to market data processing.
     filters::Vector{AbstractFilter}
     permissions::Vector{AccountPermissions}
     defaultSelfTradePreventionMode::STPModes
@@ -410,9 +422,9 @@ StructTypes.lower(e::ExchangeInfo) = (
 StructTypes.construct(::Type{ExchangeInfo}, obj) = ExchangeInfo(
     obj["timezone"],
     unix2datetime(obj["serverTime"] / 1000),
-    JSON3.read(JSON3.write(obj["rateLimits"]), Vector{RateLimit}),
-    JSON3.read(JSON3.write(obj["exchangeFilters"]), Vector{AbstractFilter}),
-    JSON3.read(JSON3.write(obj["symbols"]), Vector{SymbolInfo})
+    to_struct(Vector{RateLimit}, obj["rateLimits"]),
+    to_struct(Vector{AbstractFilter}, obj["exchangeFilters"]),
+    to_struct(Vector{SymbolInfo}, obj["symbols"])
 )
 
 function Base.show(io::IO, ::MIME"text/plain", info::ExchangeInfo)
