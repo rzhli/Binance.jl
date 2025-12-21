@@ -106,32 +106,44 @@ function sign_message(signer::Ed25519Signer, message::String)
     end
 end
 
-# HMAC-SHA256 implementation
+# Pre-allocated buffers for HMAC operations (thread-local could be used for multi-threading)
+const HMAC_BLOCK_SIZE = 64
+const HMAC_PADDED_KEY = Vector{UInt8}(undef, HMAC_BLOCK_SIZE)
+const HMAC_INNER_KEY = Vector{UInt8}(undef, HMAC_BLOCK_SIZE)
+const HMAC_OUTER_KEY = Vector{UInt8}(undef, HMAC_BLOCK_SIZE)
+
+# HMAC-SHA256 implementation with pre-allocated buffers
 function hmac_sha256(key::Vector{UInt8}, message::Vector{UInt8})
-    # HMAC algorithm implementation
-    block_size = 64  # SHA256 block size
-
     # If key is longer than block size, hash it
-    if length(key) > block_size
-        key = sha256(key)
+    actual_key = length(key) > HMAC_BLOCK_SIZE ? sha256(key) : key
+    key_len = length(actual_key)
+
+    # Pad key to block size using pre-allocated buffer
+    @inbounds for i in 1:key_len
+        HMAC_PADDED_KEY[i] = actual_key[i]
+    end
+    @inbounds for i in (key_len+1):HMAC_BLOCK_SIZE
+        HMAC_PADDED_KEY[i] = 0x00
     end
 
-    # Pad key to block size
-    if length(key) < block_size
-        key = vcat(key, zeros(UInt8, block_size - length(key)))
+    # XOR key with padding constants into pre-allocated buffers
+    @inbounds for i in 1:HMAC_BLOCK_SIZE
+        HMAC_INNER_KEY[i] = HMAC_PADDED_KEY[i] ⊻ 0x36
+        HMAC_OUTER_KEY[i] = HMAC_PADDED_KEY[i] ⊻ 0x5c
     end
 
-    # Create inner and outer padding
-    ipad = fill(0x36, block_size)
-    opad = fill(0x5c, block_size)
+    # Compute inner hash: SHA256(inner_key || message)
+    inner_data = Vector{UInt8}(undef, HMAC_BLOCK_SIZE + length(message))
+    @inbounds copyto!(inner_data, 1, HMAC_INNER_KEY, 1, HMAC_BLOCK_SIZE)
+    @inbounds copyto!(inner_data, HMAC_BLOCK_SIZE + 1, message, 1, length(message))
+    inner_hash = sha256(inner_data)
 
-    # XOR key with padding
-    inner_key = key .⊻ ipad
-    outer_key = key .⊻ opad
+    # Compute outer hash: SHA256(outer_key || inner_hash)
+    outer_data = Vector{UInt8}(undef, HMAC_BLOCK_SIZE + 32)  # SHA256 output is 32 bytes
+    @inbounds copyto!(outer_data, 1, HMAC_OUTER_KEY, 1, HMAC_BLOCK_SIZE)
+    @inbounds copyto!(outer_data, HMAC_BLOCK_SIZE + 1, inner_hash, 1, 32)
 
-    # Compute HMAC
-    inner_hash = sha256(vcat(inner_key, message))
-    return sha256(vcat(outer_key, inner_hash))
+    return sha256(outer_data)
 end
 
 # Load Ed25519 private key from file
@@ -229,19 +241,19 @@ function load_ed25519_public_key(file_path::String)
     error("Unsupported public key format in file: $file_path")
 end
 
-# Utility function to convert hex string to bytes
+# Utility function to convert hex string to bytes (pre-allocated)
 function hex2bytes(hex_str::String)
-    if length(hex_str) % 2 != 0
+    len = length(hex_str)
+    if len % 2 != 0
         error("Hex string must have even length")
     end
 
-    bytes = UInt8[]
-    for i in 1:2:length(hex_str)
-        hex_pair = hex_str[i:i+1]
-        byte_val = parse(UInt8, hex_pair, base=16)
-        push!(bytes, byte_val)
+    result = Vector{UInt8}(undef, len ÷ 2)
+    @inbounds for i in 1:(len÷2)
+        idx = 2i - 1
+        result[i] = parse(UInt8, SubString(hex_str, idx, idx + 1), base=16)
     end
 
-    return bytes
+    return result
 end
 end # end of module

@@ -126,25 +126,42 @@ end
 # Helper Functions
 # ============================================================================
 
-"""Read little-endian integer from byte array"""
-function read_uint16(data::Vector{UInt8}, offset::Int)
-    return reinterpret(UInt16, data[offset:offset+1])[1]
+"""Read little-endian integer from byte array using unsafe pointer access for performance"""
+@inline function read_uint16(data::Vector{UInt8}, offset::Int)
+    @inbounds begin
+        return UInt16(data[offset]) | (UInt16(data[offset+1]) << 8)
+    end
 end
 
-function read_uint32(data::Vector{UInt8}, offset::Int)
-    return reinterpret(UInt32, data[offset:offset+3])[1]
+@inline function read_uint32(data::Vector{UInt8}, offset::Int)
+    @inbounds begin
+        return UInt32(data[offset]) |
+               (UInt32(data[offset+1]) << 8) |
+               (UInt32(data[offset+2]) << 16) |
+               (UInt32(data[offset+3]) << 24)
+    end
 end
 
-function read_int64(data::Vector{UInt8}, offset::Int)
-    return reinterpret(Int64, data[offset:offset+7])[1]
+@inline function read_int64(data::Vector{UInt8}, offset::Int)
+    @inbounds begin
+        return reinterpret(Int64,
+            UInt64(data[offset]) |
+            (UInt64(data[offset+1]) << 8) |
+            (UInt64(data[offset+2]) << 16) |
+            (UInt64(data[offset+3]) << 24) |
+            (UInt64(data[offset+4]) << 32) |
+            (UInt64(data[offset+5]) << 40) |
+            (UInt64(data[offset+6]) << 48) |
+            (UInt64(data[offset+7]) << 56))
+    end
 end
 
-function read_int8(data::Vector{UInt8}, offset::Int)
-    return reinterpret(Int8, data[offset:offset])[1]
+@inline function read_int8(data::Vector{UInt8}, offset::Int)
+    @inbounds return reinterpret(Int8, data[offset])
 end
 
-function read_uint8(data::Vector{UInt8}, offset::Int)
-    return data[offset]
+@inline function read_uint8(data::Vector{UInt8}, offset::Int)
+    @inbounds return data[offset]
 end
 
 """
@@ -165,13 +182,12 @@ function mantissa_to_float(mantissa::Int64, exponent::Int8)
 end
 
 """Read variable-length UTF-8 string (varString8)"""
-function read_var_string(data::Vector{UInt8}, offset::Int)
-    length = read_uint8(data, offset)
+@inline function read_var_string(data::Vector{UInt8}, offset::Int)
+    @inbounds length = data[offset]
     if length == 0
         return "", offset + 1
     end
-    str_bytes = data[offset+1:offset+length]
-    str = String(str_bytes)
+    @inbounds str = String(view(data, offset+1:offset+length))
     return str, offset + 1 + length
 end
 
@@ -243,39 +259,33 @@ function decode_trades_event(data::Vector{UInt8}, ::SBEMessageHeader)
     # Read trades group
     # Group header: blockLength (uint16) + numInGroup (uint32)
     # Note: blockLength is read but not used as we know the fixed structure
-    _ = read_uint16(data, offset)  # blockLength
-    offset += 2
+    offset += 2  # Skip blockLength
 
     numInGroup = read_uint32(data, offset)
     offset += 4
 
-    trades = TradeData[]
-    for _ in 1:numInGroup
-        trade_offset = offset
-
+    # Pre-allocate vector with exact size
+    trades = Vector{TradeData}(undef, numInGroup)
+    @inbounds for i in 1:numInGroup
         # Each trade: id (8) + price (8) + qty (8) + isBuyerMaker (1)
         # Note: isBestMatch is presence="constant", NOT encoded in message
-        tradeId = read_int64(data, trade_offset)
-        trade_offset += 8
+        tradeId = read_int64(data, offset)
+        offset += 8
 
-        priceMantissa = read_int64(data, trade_offset)
-        trade_offset += 8
+        priceMantissa = read_int64(data, offset)
+        offset += 8
 
-        qtyMantissa = read_int64(data, trade_offset)
-        trade_offset += 8
+        qtyMantissa = read_int64(data, offset)
+        offset += 8
 
-        isBuyerMaker = read_uint8(data, trade_offset) != 0
-        trade_offset += 1
+        isBuyerMaker = read_uint8(data, offset) != 0
+        offset += 1
 
         # isBestMatch is always true (constant field, not in message)
-        isBestMatch = true
-
         price = mantissa_to_float(priceMantissa, priceExponent)
         qty = mantissa_to_float(qtyMantissa, qtyExponent)
 
-        push!(trades, TradeData(tradeId, price, qty, isBuyerMaker, isBestMatch))
-
-        offset = trade_offset
+        trades[i] = TradeData(tradeId, price, qty, isBuyerMaker, true)
     end
 
     # Read symbol (varString8)
@@ -353,15 +363,14 @@ function decode_depth_snapshot_event(data::Vector{UInt8}, ::SBEMessageHeader)
     offset += 1
 
     # Read bids group (smallGroupSize16Encoding: blockLength uint16 + numInGroup uint16)
-    # Note: blockLength is read but not used as we know the fixed structure
-    _ = read_uint16(data, offset)  # bids_blockLength
-    offset += 2
+    offset += 2  # Skip bids_blockLength
 
     bids_numInGroup = read_uint16(data, offset)
     offset += 2
 
-    bids = PriceLevel[]
-    for _ in 1:bids_numInGroup
+    # Pre-allocate bids vector
+    bids = Vector{PriceLevel}(undef, bids_numInGroup)
+    @inbounds for i in 1:bids_numInGroup
         priceMantissa = read_int64(data, offset)
         offset += 8
 
@@ -371,18 +380,18 @@ function decode_depth_snapshot_event(data::Vector{UInt8}, ::SBEMessageHeader)
         price = mantissa_to_float(priceMantissa, priceExponent)
         qty = mantissa_to_float(qtyMantissa, qtyExponent)
 
-        push!(bids, PriceLevel(price, qty))
+        bids[i] = PriceLevel(price, qty)
     end
 
     # Read asks group
-    _ = read_uint16(data, offset)  # asks_blockLength
-    offset += 2
+    offset += 2  # Skip asks_blockLength
 
     asks_numInGroup = read_uint16(data, offset)
     offset += 2
 
-    asks = PriceLevel[]
-    for _ in 1:asks_numInGroup
+    # Pre-allocate asks vector
+    asks = Vector{PriceLevel}(undef, asks_numInGroup)
+    @inbounds for i in 1:asks_numInGroup
         priceMantissa = read_int64(data, offset)
         offset += 8
 
@@ -392,7 +401,7 @@ function decode_depth_snapshot_event(data::Vector{UInt8}, ::SBEMessageHeader)
         price = mantissa_to_float(priceMantissa, priceExponent)
         qty = mantissa_to_float(qtyMantissa, qtyExponent)
 
-        push!(asks, PriceLevel(price, qty))
+        asks[i] = PriceLevel(price, qty)
     end
 
     # Read symbol
@@ -426,15 +435,14 @@ function decode_depth_diff_event(data::Vector{UInt8}, ::SBEMessageHeader)
     offset += 1
 
     # Read bids group
-    # Note: blockLength is read but not used as we know the fixed structure
-    _ = read_uint16(data, offset)  # bids_blockLength
-    offset += 2
+    offset += 2  # Skip bids_blockLength
 
     bids_numInGroup = read_uint16(data, offset)
     offset += 2
 
-    bids = PriceLevel[]
-    for _ in 1:bids_numInGroup
+    # Pre-allocate bids vector
+    bids = Vector{PriceLevel}(undef, bids_numInGroup)
+    @inbounds for i in 1:bids_numInGroup
         priceMantissa = read_int64(data, offset)
         offset += 8
 
@@ -445,18 +453,18 @@ function decode_depth_diff_event(data::Vector{UInt8}, ::SBEMessageHeader)
         # Handle optional MDEntrySize: null value means quantity is not present
         qty = qtyMantissa == INT64_NULL ? NaN : mantissa_to_float(qtyMantissa, qtyExponent)
 
-        push!(bids, PriceLevel(price, qty))
+        bids[i] = PriceLevel(price, qty)
     end
 
     # Read asks group
-    _ = read_uint16(data, offset)  # asks_blockLength
-    offset += 2
+    offset += 2  # Skip asks_blockLength
 
     asks_numInGroup = read_uint16(data, offset)
     offset += 2
 
-    asks = PriceLevel[]
-    for _ in 1:asks_numInGroup
+    # Pre-allocate asks vector
+    asks = Vector{PriceLevel}(undef, asks_numInGroup)
+    @inbounds for i in 1:asks_numInGroup
         priceMantissa = read_int64(data, offset)
         offset += 8
 
@@ -467,7 +475,7 @@ function decode_depth_diff_event(data::Vector{UInt8}, ::SBEMessageHeader)
         # Handle optional MDEntrySize: null value means quantity is not present
         qty = qtyMantissa == INT64_NULL ? NaN : mantissa_to_float(qtyMantissa, qtyExponent)
 
-        push!(asks, PriceLevel(price, qty))
+        asks[i] = PriceLevel(price, qty)
     end
 
     # Read symbol

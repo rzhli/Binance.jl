@@ -5,20 +5,24 @@ module RateLimiter
 
     export BinanceRateLimit, check_and_wait, set_backoff!, update_limits!
 
-    # Struct to hold the state of a single rate limit
-    mutable struct APILimit
-        # e.g., "REQUESTS", "ORDERS"
+    # Store interval as milliseconds for type stability and fast comparison
+    # This avoids the abstract Period type which causes type instability
+    struct APILimit
         limit_type::String
-        # The time window for the limit
-        interval::Period
-        # The maximum number of requests in the interval
+        interval_ms::Int64  # Interval in milliseconds (concrete type)
         limit::Int
-        # A thread-safe vector to store timestamps of recent requests
         requests::Vector{DateTime}
         lock::ReentrantLock
     end
 
-    APILimit(limit_type, interval, limit) = APILimit(limit_type, interval, limit, DateTime[], ReentrantLock())
+    # Convert Period to milliseconds for type-stable storage
+    @inline period_to_ms(p::Second) = Int64(Dates.value(p)) * 1000
+    @inline period_to_ms(p::Minute) = Int64(Dates.value(p)) * 60_000
+    @inline period_to_ms(p::Hour) = Int64(Dates.value(p)) * 3_600_000
+    @inline period_to_ms(p::Day) = Int64(Dates.value(p)) * 86_400_000
+
+    APILimit(limit_type::String, interval::Period, limit::Int) =
+        APILimit(limit_type, period_to_ms(interval), limit, DateTime[], ReentrantLock())
 
     # Main struct to hold all rate limit information
     mutable struct BinanceRateLimit
@@ -29,7 +33,9 @@ module RateLimiter
     end
 
     function BinanceRateLimit(config::BinanceConfig)
-        limits = APILimit[]
+        limits = Vector{APILimit}()
+        sizehint!(limits, 4)  # Pre-allocate for typical number of limits
+
         if config.max_request_weight_per_minute > 0
             push!(limits, APILimit("REQUEST_WEIGHT", Minute(1), config.max_request_weight_per_minute))
         end
@@ -90,7 +96,8 @@ module RateLimiter
 
             lock(limit.lock) do
                 current_time = now(UTC)
-                window_start = current_time - limit.interval
+                # Convert interval_ms to Millisecond for DateTime arithmetic
+                window_start = current_time - Millisecond(limit.interval_ms)
 
                 # Remove requests that are outside the current time window
                 filter!(t -> t > window_start, limit.requests)
@@ -98,15 +105,15 @@ module RateLimiter
                 # If the limit is reached, wait until the oldest request expires
                 if length(limit.requests) >= limit.limit
                     oldest_request_time = first(limit.requests)
-                    time_to_wait = (oldest_request_time + limit.interval) - current_time
-                    sleep_seconds = time_to_wait.value / 1000.0
+                    time_to_wait_ms = (oldest_request_time + Millisecond(limit.interval_ms)) - current_time
+                    sleep_seconds = time_to_wait_ms.value / 1000.0
 
                     if sleep_seconds > 0
                         @debug "Approaching $(limit.limit_type) limit. Sleeping for $(round(sleep_seconds, digits=2)) seconds."
                         sleep(sleep_seconds)
                     end
                     # After sleeping, re-filter the requests
-                    filter!(t -> t > (now(UTC) - limit.interval), limit.requests)
+                    filter!(t -> t > (now(UTC) - Millisecond(limit.interval_ms)), limit.requests)
                 end
 
                 # Add the new request's timestamp
@@ -116,20 +123,20 @@ module RateLimiter
     end
 
 """
-    interval_to_period(interval::String, interval_num::Int) -> Period
+    interval_to_ms(interval::String, interval_num::Int) -> Int64
 
 Converts the interval string and number from a Binance rate limit update
-into a `Dates.Period` object.
+into milliseconds (type-stable Int64).
 """
-function interval_to_period(interval::String, interval_num::Int)
+function interval_to_ms(interval::String, interval_num::Int)::Union{Int64, Nothing}
     if interval == "SECOND"
-        return Second(interval_num)
+        return Int64(interval_num) * 1000
     elseif interval == "MINUTE"
-        return Minute(interval_num)
+        return Int64(interval_num) * 60_000
     elseif interval == "HOUR"
-        return Hour(interval_num)
+        return Int64(interval_num) * 3_600_000
     elseif interval == "DAY"
-        return Day(interval_num)
+        return Int64(interval_num) * 86_400_000
     else
         # Fallback for unknown intervals, though this shouldn't happen with the current API
         @warn "Unknown rate limit interval received: '$interval'. Cannot update this limit."
@@ -155,45 +162,55 @@ function update_limits!(rate_limiter::BinanceRateLimit, new_limits)
                 limit_type = "REQUESTS"
             end
 
-            period = interval_to_period(new_limit.interval, new_limit.intervalNum)
-            if isnothing(period)
+            interval_ms = interval_to_ms(new_limit.interval, new_limit.intervalNum)
+            if isnothing(interval_ms)
                 continue # Skip if the interval was unknown
             end
 
             # Find the corresponding limit in our rate_limiter
-            matching_limit = nothing
-            for limit in rate_limiter.limits
-                if limit.limit_type == limit_type && limit.interval == period
-                    matching_limit = limit
+            matching_idx = 0
+            for (idx, limit) in enumerate(rate_limiter.limits)
+                if limit.limit_type == limit_type && limit.interval_ms == interval_ms
+                    matching_idx = idx
                     break
                 end
             end
 
             # If we don't have this limit tracked, create it
-            if isnothing(matching_limit)
-                matching_limit = APILimit(limit_type, period, new_limit.limit)
-                push!(rate_limiter.limits, matching_limit)
+            if matching_idx == 0
+                new_api_limit = APILimit(limit_type, interval_ms, new_limit.limit, DateTime[], ReentrantLock())
+                push!(rate_limiter.limits, new_api_limit)
+                matching_idx = length(rate_limiter.limits)
             end
 
-            # Update the limit value if it changed
+            matching_limit = rate_limiter.limits[matching_idx]
+
+            # Update the limit value if it changed (need to recreate since struct is immutable)
             if matching_limit.limit != new_limit.limit
-                @debug "Rate limit for $limit_type/$period updated: $(matching_limit.limit) -> $(new_limit.limit)"
-                matching_limit.limit = new_limit.limit
+                @debug "Rate limit for $limit_type/$(interval_ms)ms updated: $(matching_limit.limit) -> $(new_limit.limit)"
+                rate_limiter.limits[matching_idx] = APILimit(
+                    matching_limit.limit_type,
+                    matching_limit.interval_ms,
+                    new_limit.limit,
+                    matching_limit.requests,
+                    matching_limit.lock
+                )
+                matching_limit = rate_limiter.limits[matching_idx]
             end
-            
+
             # Sync request count with server's count
             # This helps maintain accuracy even if there's drift
             lock(matching_limit.lock) do
                 current_time = now(UTC)
-                window_start = current_time - matching_limit.interval
-                
+                window_start = current_time - Millisecond(matching_limit.interval_ms)
+
                 # Clear old requests
                 filter!(t -> t > window_start, matching_limit.requests)
-                
+
                 # Adjust our count to match server's count
                 local_count = length(matching_limit.requests)
                 server_count = new_limit.count
-                
+
                 if server_count > local_count
                     # Server has more requests than we tracked - add dummy timestamps
                     for _ in 1:(server_count - local_count)

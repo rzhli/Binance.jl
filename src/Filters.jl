@@ -3,7 +3,82 @@ module Filters
     using ..Types
 
     export validate_order, validate_symbol, validate_interval, validate_order_type,
-           validate_side, validate_time_in_force
+           validate_side, validate_time_in_force, ParsedPriceFilter, ParsedLotSizeFilter,
+           ParsedNotionalFilter, parse_filter
+
+    # --- Parsed Filter Structs (pre-parsed Float64 values for performance) ---
+
+    """
+    Parsed version of PriceFilter with Float64 values for fast validation.
+    """
+    struct ParsedPriceFilter
+        min_price::Float64
+        max_price::Float64
+        tick_size::Float64
+        tick_precision::Int
+    end
+
+    """
+    Parsed version of LotSizeFilter with Float64 values for fast validation.
+    """
+    struct ParsedLotSizeFilter
+        min_qty::Float64
+        max_qty::Float64
+        step_size::Float64
+    end
+
+    """
+    Parsed version of NotionalFilter with Float64 values for fast validation.
+    """
+    struct ParsedNotionalFilter
+        min_notional::Float64
+        max_notional::Float64
+    end
+
+    # --- Filter Parsing Functions ---
+
+    """
+    Parse a PriceFilter into a ParsedPriceFilter with Float64 values.
+    Call this once when loading symbol info, then reuse for all validations.
+    """
+    function parse_filter(filter::PriceFilter)
+        min_price = parse(Float64, filter.minPrice)
+        max_price = parse(Float64, filter.maxPrice)
+        tick_size = parse(Float64, filter.tickSize)
+        tick_precision = tick_size > 0 ? max(0, -Int(floor(log10(tick_size)))) : 0
+        return ParsedPriceFilter(min_price, max_price, tick_size, tick_precision)
+    end
+
+    """
+    Parse a LotSizeFilter into a ParsedLotSizeFilter with Float64 values.
+    """
+    function parse_filter(filter::LotSizeFilter)
+        return ParsedLotSizeFilter(
+            parse(Float64, filter.minQty),
+            parse(Float64, filter.maxQty),
+            parse(Float64, filter.stepSize)
+        )
+    end
+
+    """
+    Parse a NotionalFilter into a ParsedNotionalFilter with Float64 values.
+    """
+    function parse_filter(filter::NotionalFilter)
+        return ParsedNotionalFilter(
+            parse(Float64, filter.minNotional),
+            parse(Float64, filter.maxNotional)
+        )
+    end
+
+    """
+    Parse a MinNotionalFilter into a ParsedNotionalFilter with Float64 values.
+    """
+    function parse_filter(filter::MinNotionalFilter)
+        return ParsedNotionalFilter(
+            parse(Float64, filter.minNotional),
+            Inf  # No max for MinNotionalFilter
+        )
+    end
 
     # --- Generic Validation Dispatch ---
 
@@ -26,6 +101,71 @@ module Filters
         return true
     end
 
+    # --- Fast validation using parsed filters ---
+
+    """
+    Validate price using pre-parsed filter (faster than parsing each time).
+    """
+    @inline function validate_price(price::Float64, pf::ParsedPriceFilter)
+        if pf.min_price > 0 && price < pf.min_price
+            throw(ArgumentError("Price ($price) is below the minimum allowed price ($(pf.min_price))."))
+        end
+
+        if pf.max_price > 0 && price > pf.max_price
+            throw(ArgumentError("Price ($price) is above the maximum allowed price ($(pf.max_price))."))
+        end
+
+        if pf.tick_size > 0
+            val_to_check = round(price - pf.min_price, digits=pf.tick_precision)
+            if rem(val_to_check, pf.tick_size) > 1e-9
+                throw(ArgumentError("Price ($price) does not meet the tick size ($(pf.tick_size)) requirement."))
+            end
+        end
+
+        return true
+    end
+
+    """
+    Validate quantity using pre-parsed filter (faster than parsing each time).
+    """
+    @inline function validate_quantity(qty::Float64, lf::ParsedLotSizeFilter)
+        if qty < lf.min_qty
+            throw(ArgumentError("Quantity ($qty) is below the minimum allowed quantity ($(lf.min_qty))."))
+        end
+
+        if qty > lf.max_qty
+            throw(ArgumentError("Quantity ($qty) is above the maximum allowed quantity ($(lf.max_qty))."))
+        end
+
+        if lf.step_size > 0
+            steps_from_min = (qty - lf.min_qty) / lf.step_size
+            rounded_steps = round(steps_from_min)
+            tolerance = lf.step_size * 1e-9
+            if abs(steps_from_min - rounded_steps) * lf.step_size > tolerance
+                throw(ArgumentError("Quantity ($qty) does not meet the step size ($(lf.step_size)) requirement."))
+            end
+        end
+
+        return true
+    end
+
+    """
+    Validate notional value using pre-parsed filter.
+    """
+    @inline function validate_notional(notional::Float64, nf::ParsedNotionalFilter)
+        if notional < nf.min_notional
+            throw(ArgumentError("Notional value ($notional) is below the minimum required ($(nf.min_notional))."))
+        end
+
+        if notional > nf.max_notional
+            throw(ArgumentError("Notional value ($notional) is above the maximum allowed ($(nf.max_notional))."))
+        end
+
+        return true
+    end
+
+    # --- Original filter validation (parses on each call - for backward compatibility) ---
+
     """
         validate_filter(params::Dict, filter::PriceFilter)
 
@@ -36,27 +176,8 @@ module Filters
         !isnothing(price) || return true # Only validate if price is present
 
         price_val = parse(Float64, string(price))
-        min_price = parse(Float64, filter.minPrice)
-        max_price = parse(Float64, filter.maxPrice)
-        tick_size = parse(Float64, filter.tickSize)
-
-        if min_price > 0 && price_val < min_price
-            throw(ArgumentError("Price ($price_val) is below the minimum allowed price ($min_price)."))
-        end
-
-        if max_price > 0 && price_val > max_price
-            throw(ArgumentError("Price ($price_val) is above the maximum allowed price ($max_price)."))
-        end
-
-        if tick_size > 0
-            precision = max(0, -Int(floor(log10(tick_size))))
-            val_to_check = round(price_val - min_price, digits=precision)
-            if rem(val_to_check, tick_size) > 1e-9
-                throw(ArgumentError("Price ($price_val) does not meet the tick size ($tick_size) requirement."))
-            end
-        end
-
-        return true
+        pf = parse_filter(filter)
+        return validate_price(price_val, pf)
     end
 
     """
@@ -69,31 +190,8 @@ module Filters
         !isnothing(quantity) || return true # Only validate if quantity is present
 
         qty_val = parse(Float64, string(quantity))
-        min_qty = parse(Float64, filter.minQty)
-        max_qty = parse(Float64, filter.maxQty)
-        step_size = parse(Float64, filter.stepSize)
-
-        if qty_val < min_qty
-            throw(ArgumentError("Quantity ($qty_val) is below the minimum allowed quantity ($min_qty)."))
-        end
-
-        if qty_val > max_qty
-            throw(ArgumentError("Quantity ($qty_val) is above the maximum allowed quantity ($max_qty)."))
-        end
-
-        if step_size > 0
-            # Calculate how many steps from min_qty
-            steps_from_min = (qty_val - min_qty) / step_size
-            rounded_steps = round(steps_from_min)
-
-            # Check if the quantity is within tolerance of a valid step
-            tolerance = step_size * 1e-9
-            if abs(steps_from_min - rounded_steps) * step_size > tolerance
-                throw(ArgumentError("Quantity ($qty_val) does not meet the step size ($step_size) requirement."))
-            end
-        end
-
-        return true
+        lf = parse_filter(filter)
+        return validate_quantity(qty_val, lf)
     end
 
     """
@@ -137,9 +235,8 @@ module Filters
         price = get(params, "price", nothing)
         quantity = get(params, "quantity", nothing)
         quoteOrderQty = get(params, "quoteOrderQty", nothing)
-        
-        min_notional = parse(Float64, filter.minNotional)
-        max_notional = parse(Float64, filter.maxNotional)
+
+        nf = parse_filter(filter)
 
         notional_value = 0.0
 
@@ -155,15 +252,7 @@ module Filters
             return true
         end
 
-        if notional_value < min_notional
-            throw(ArgumentError("Notional value ($notional_value) is below the minimum required ($min_notional)."))
-        end
-
-        if notional_value > max_notional
-            throw(ArgumentError("Notional value ($notional_value) is above the maximum allowed ($max_notional)."))
-        end
-
-        return true
+        return validate_notional(notional_value, nf)
     end
 
     """
