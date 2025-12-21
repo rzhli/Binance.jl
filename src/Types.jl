@@ -22,6 +22,18 @@ round-tripping through a string. This avoids the extra allocations from
     return st isa StructTypes.CustomStruct ? StructTypes.construct(T, value) : StructTypes.constructfrom(T, value)
 end
 
+# Specialized method for Vector of types that might contain CustomStruct elements
+@inline function to_struct(::Type{Vector{T}}, value) where {T}
+    st = StructTypes.StructType(T)
+    if st isa StructTypes.CustomStruct
+        # Element type is CustomStruct, manually construct each element
+        return T[StructTypes.construct(T, elem) for elem in value]
+    else
+        # Use standard constructfrom for the entire vector
+        return StructTypes.constructfrom(Vector{T}, value)
+    end
+end
+
 """
     to_decimal_string(value)
 

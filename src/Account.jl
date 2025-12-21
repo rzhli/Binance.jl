@@ -49,7 +49,43 @@ module Account
         permissions::Vector{String}
         uid::Int64
     end
-    StructTypes.StructType(::Type{AccountInfo}) = StructTypes.Struct()
+    StructTypes.StructType(::Type{AccountInfo}) = StructTypes.CustomStruct()
+    StructTypes.lower(info::AccountInfo) = (
+        makerCommission=info.makerCommission,
+        takerCommission=info.takerCommission,
+        buyerCommission=info.buyerCommission,
+        sellerCommission=info.sellerCommission,
+        commissionRates=info.commissionRates,
+        canTrade=info.canTrade,
+        canWithdraw=info.canWithdraw,
+        canDeposit=info.canDeposit,
+        brokered=info.brokered,
+        requireSelfTradePrevention=info.requireSelfTradePrevention,
+        preventSor=info.preventSor,
+        updateTime=info.updateTime,
+        accountType=info.accountType,
+        balances=[StructTypes.lower(b) for b in info.balances],
+        permissions=info.permissions,
+        uid=info.uid
+    )
+    StructTypes.construct(::Type{AccountInfo}, obj) = AccountInfo(
+        obj["makerCommission"],
+        obj["takerCommission"],
+        obj["buyerCommission"],
+        obj["sellerCommission"],
+        to_struct(CommissionRates, obj["commissionRates"]),
+        obj["canTrade"],
+        obj["canWithdraw"],
+        obj["canDeposit"],
+        obj["brokered"],
+        obj["requireSelfTradePrevention"],
+        obj["preventSor"],
+        obj["updateTime"],
+        obj["accountType"],
+        to_struct(Vector{Balance}, obj["balances"]),
+        Vector{String}(obj["permissions"]),
+        obj["uid"]
+    )
 
     struct RateLimit
         rateLimitType::String
