@@ -96,8 +96,29 @@ end
 Establish WebSocket connection to SBE stream endpoint with API key authentication.
 """
 function connect_sbe!(client::SBEStreamClient)
+    # Check if already connected AND connection is still open
     if !isnothing(client.ws_connection)
-        @info "SBE WebSocket already connected"
+        if !HTTP.WebSockets.isclosed(client.ws_connection)
+            @info "SBE WebSocket already connected"
+            return
+        else
+            # Connection exists but is closed - clear stale reference
+            @debug "Clearing stale SBE WebSocket connection reference"
+            client.ws_connection = nothing
+        end
+    end
+
+    # Check if reconnection task is already running
+    if !isnothing(client.ws_task) && !istaskdone(client.ws_task)
+        @info "SBE WebSocket reconnection already in progress, waiting..."
+        for i in 1:30
+            if !isnothing(client.ws_connection) && !HTTP.WebSockets.isclosed(client.ws_connection)
+                @info "SBE reconnection completed after $(i * 0.5) seconds"
+                return
+            end
+            sleep(0.5)
+        end
+        @warn "SBE reconnection did not complete in time"
         return
     end
 
