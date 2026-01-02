@@ -49,7 +49,7 @@ for efficient real-time market data delivery.
 # Fields
 - `config::BinanceConfig`: Configuration including API key
 - `ws_base_url::String`: WebSocket base URL for SBE streams
-- `ws_connection::Any`: Active WebSocket connection
+- `ws_connection::Union{WebSocket,Nothing}`: Active WebSocket connection
 - `ws_task::Union{Task,Nothing}`: Background task for WebSocket
 - `subscriptions::Dict{String,Function}`: Callbacks for each stream
 - `should_reconnect::Bool`: Reconnection flag
@@ -57,7 +57,7 @@ for efficient real-time market data delivery.
 mutable struct SBEStreamClient
     config::BinanceConfig
     ws_base_url::String
-    ws_connection::Any  # Single WebSocket connection
+    ws_connection::Union{HTTP.WebSockets.WebSocket,Nothing}  # Typed WebSocket connection
     ws_task::Union{Task,Nothing}
     subscriptions::Dict{String,Function}  # stream_name => callback
     should_reconnect::Bool

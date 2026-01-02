@@ -114,6 +114,11 @@ mutable struct OrderBookManager{R,W}
     bids::OrderedDict{Float64,Float64}
     asks::OrderedDict{Float64,Float64}
 
+    # Cached sorted arrays (lazily updated)
+    sorted_bids::Vector{Tuple{Float64,Float64}}  # (price, qty) sorted descending
+    sorted_asks::Vector{Tuple{Float64,Float64}}  # (price, qty) sorted ascending
+    cache_valid::Ref{Bool}  # Invalidated on each update
+
     # Synchronization state
     is_initialized::Ref{Bool}
     event_buffer::Vector{DepthEvent}
@@ -174,6 +179,9 @@ function OrderBookManager(
         Ref{Int64}(0),
         OrderedDict{Float64,Float64}(),
         OrderedDict{Float64,Float64}(),
+        Vector{Tuple{Float64,Float64}}(),  # sorted_bids
+        Vector{Tuple{Float64,Float64}}(),  # sorted_asks
+        Ref{Bool}(false),                  # cache_valid
         Ref{Bool}(false),
         Vector{DepthEvent}(),
         Ref{Union{String,Nothing}}(nothing),
@@ -471,6 +479,7 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
     manager.update_id[] = event_u
     manager.total_updates[] += 1
     manager.last_update_time[] = time()
+    manager.cache_valid[] = false  # Invalidate cache
 
     # Call user callback if provided
     if !isnothing(manager.on_update)
@@ -498,8 +507,46 @@ function restart_sync!(manager::OrderBookManager)
     empty!(manager.bids)
     empty!(manager.asks)
     empty!(manager.event_buffer)
+    empty!(manager.sorted_bids)
+    empty!(manager.sorted_asks)
+    manager.cache_valid[] = false
 
     # Events will start buffering again automatically
+end
+
+# ============================================================================
+# Cache Management
+# ============================================================================
+
+"""
+    rebuild_cache!(manager::OrderBookManager)
+
+Rebuild the sorted cache arrays. Called lazily when cache is invalid.
+"""
+function rebuild_cache!(manager::OrderBookManager)
+    if manager.cache_valid[]
+        return
+    end
+
+    # Rebuild sorted bids (descending by price)
+    resize!(manager.sorted_bids, length(manager.bids))
+    idx = 1
+    @inbounds for (price, qty) in manager.bids
+        manager.sorted_bids[idx] = (price, qty)
+        idx += 1
+    end
+    sort!(manager.sorted_bids, by=x -> x[1], rev=true)
+
+    # Rebuild sorted asks (ascending by price)
+    resize!(manager.sorted_asks, length(manager.asks))
+    idx = 1
+    @inbounds for (price, qty) in manager.asks
+        manager.sorted_asks[idx] = (price, qty)
+        idx += 1
+    end
+    sort!(manager.sorted_asks, by=x -> x[1])
+
+    manager.cache_valid[] = true
 end
 
 # ============================================================================
@@ -519,9 +566,10 @@ function get_best_bid(manager::OrderBookManager)
         return nothing
     end
 
-    # Find the maximum price (best bid)
-    best_price = maximum(keys(manager.bids))
-    return (price=best_price, quantity=manager.bids[best_price])
+    # Use cached sorted array
+    rebuild_cache!(manager)
+    @inbounds price, quantity = manager.sorted_bids[1]
+    return (price=price, quantity=quantity)
 end
 
 """
@@ -537,9 +585,10 @@ function get_best_ask(manager::OrderBookManager)
         return nothing
     end
 
-    # Find the minimum price (best ask)
-    best_price = minimum(keys(manager.asks))
-    return (price=best_price, quantity=manager.asks[best_price])
+    # Use cached sorted array
+    rebuild_cache!(manager)
+    @inbounds price, quantity = manager.sorted_asks[1]
+    return (price=price, quantity=quantity)
 end
 
 """
@@ -590,15 +639,14 @@ function get_bids(manager::OrderBookManager, n::Int=10)
         return PriceQuantity[]
     end
 
-    # Sort by price descending (highest first)
-    sorted_bids = sort(collect(manager.bids), by=x -> x.first, rev=true)
+    # Use cached sorted array
+    rebuild_cache!(manager)
 
-    count = min(n, length(sorted_bids))
-    # Pre-allocate result vector
+    count = min(n, length(manager.sorted_bids))
     result = Vector{PriceQuantity}(undef, count)
 
     @inbounds for i in 1:count
-        price, quantity = sorted_bids[i]
+        price, quantity = manager.sorted_bids[i]
         result[i] = PriceQuantity(price, quantity)
     end
 
@@ -617,15 +665,14 @@ function get_asks(manager::OrderBookManager, n::Int=10)
         return PriceQuantity[]
     end
 
-    # Sort by price ascending (lowest first)
-    sorted_asks = sort(collect(manager.asks), by=x -> x.first)
+    # Use cached sorted array
+    rebuild_cache!(manager)
 
-    count = min(n, length(sorted_asks))
-    # Pre-allocate result vector
+    count = min(n, length(manager.sorted_asks))
     result = Vector{PriceQuantity}(undef, count)
 
     @inbounds for i in 1:count
-        price, quantity = sorted_asks[i]
+        price, quantity = manager.sorted_asks[i]
         result[i] = PriceQuantity(price, quantity)
     end
 
@@ -680,19 +727,14 @@ function calculate_vwap(manager::OrderBookManager, size::Float64, side::Symbol)
         return nothing
     end
 
-    # Get sorted levels
-    if side == :buy
-        # For buying, we consume asks (lowest price first)
-        sorted_levels = sort(collect(manager.asks), by=x -> x.first)
-    else
-        # For selling, we consume bids (highest price first)
-        sorted_levels = sort(collect(manager.bids), by=x -> x.first, rev=true)
-    end
+    # Use cached sorted levels
+    rebuild_cache!(manager)
+    sorted_levels = side == :buy ? manager.sorted_asks : manager.sorted_bids
 
     remaining = size
     total_cost = 0.0
 
-    for (price, quantity) in sorted_levels
+    @inbounds for (price, quantity) in sorted_levels
         if remaining <= 0
             break
         end
@@ -728,24 +770,20 @@ function calculate_depth_imbalance(manager::OrderBookManager; levels::Int=5)
         return nothing
     end
 
-    bid_volume = 0.0
-    ask_volume = 0.0
+    # Use cached sorted arrays
+    rebuild_cache!(manager)
 
-    # Get top N bids (sorted descending)
-    sorted_bids = sort(collect(manager.bids), by=x -> x.first, rev=true)
-    for (i, (_, qty)) in enumerate(sorted_bids)
-        if i > levels
-            break
-        end
+    bid_volume = 0.0
+    count = min(levels, length(manager.sorted_bids))
+    @inbounds for i in 1:count
+        _, qty = manager.sorted_bids[i]
         bid_volume += qty
     end
 
-    # Get top N asks (sorted ascending)
-    sorted_asks = sort(collect(manager.asks), by=x -> x.first)
-    for (i, (_, qty)) in enumerate(sorted_asks)
-        if i > levels
-            break
-        end
+    ask_volume = 0.0
+    count = min(levels, length(manager.sorted_asks))
+    @inbounds for i in 1:count
+        _, qty = manager.sorted_asks[i]
         ask_volume += qty
     end
 

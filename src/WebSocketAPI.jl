@@ -60,7 +60,7 @@ module WebSocketAPI
         config::BinanceConfig
         signer::CryptoSigner
         base_url::String
-        ws_connection::Any # Will hold the WebSocket connection
+        ws_connection::Union{WebSockets.WebSocket,Nothing}  # Typed WebSocket connection
         rate_limiter::BinanceRateLimit
         responses::Dict{String,Channel} # Changed from Int64 to String for UUID keys
         ws_callbacks::Dict{String,Function} # For user data stream events
