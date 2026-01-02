@@ -775,14 +775,14 @@ function calculate_depth_imbalance(manager::OrderBookManager; levels::Int=5)
 
     bid_volume = 0.0
     count = min(levels, length(manager.sorted_bids))
-    @inbounds for i in 1:count
+    @inbounds @simd for i in 1:count
         _, qty = manager.sorted_bids[i]
         bid_volume += qty
     end
 
     ask_volume = 0.0
     count = min(levels, length(manager.sorted_asks))
-    @inbounds for i in 1:count
+    @inbounds @simd for i in 1:count
         _, qty = manager.sorted_asks[i]
         ask_volume += qty
     end
