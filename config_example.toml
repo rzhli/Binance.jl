@@ -11,6 +11,11 @@ private_key_path = "key/ed25519-private.pem"
 # Private key password - Replace with your actual password
 private_key_pass = "YOUR_PRIVATE_KEY_PASS_HERE"
 
+# Testnet API credentials (optional, used if testnet=true)
+testnet_api_key = "YOUR_TESTNET_API_KEY_HERE"
+testnet_private_key_path = "key/testnet-ed25519-private.pem"
+testnet_private_key_pass = "YOUR_TESTNET_PRIVATE_KEY_PASS_HERE"
+
 [connection]
 # Request timeout in seconds
 timeout = 30
@@ -20,7 +25,7 @@ recv_window = 5000
 proxy = "http://127.0.0.1:7890"
 
 [fix]
-  # stunnel proxy settings for FIX API
+  # PROD stunnel proxy settings for FIX API
   # Configure your stunnel to proxy these local ports to the Binance FIX servers
   host = "127.0.0.1"
 

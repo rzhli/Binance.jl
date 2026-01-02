@@ -104,20 +104,33 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
             proxy = fix["proxy"]
         end
         # Standard FIX encoding (port 9000 on remote)
+        default_oe_port = testnet ? 19000 : 9000
+        default_dc_port = testnet ? 19001 : 9001
+        default_md_port = testnet ? 19002 : 9002
+
         fix_order_entry_host = get(fix, "order_entry_host", fix_host)
-        fix_order_entry_port = get(fix, "order_entry_port", 9000)
+        fix_order_entry_port = get(fix, "order_entry_port", default_oe_port)
         fix_drop_copy_host = get(fix, "drop_copy_host", fix_host)
-        fix_drop_copy_port = get(fix, "drop_copy_port", 9001)
+        fix_drop_copy_port = get(fix, "drop_copy_port", default_dc_port)
         fix_market_data_host = get(fix, "market_data_host", fix_host)
-        fix_market_data_port = get(fix, "market_data_port", 9002)
+        fix_market_data_port = get(fix, "market_data_port", default_md_port)
         # FIX SBE Hybrid mode: FIX requests → SBE responses (port 9001 on remote)
-        fix_order_entry_sbe_hybrid_port = get(fix, "order_entry_sbe_hybrid_port", 9010)
-        fix_drop_copy_sbe_hybrid_port = get(fix, "drop_copy_sbe_hybrid_port", 9011)
-        fix_market_data_sbe_hybrid_port = get(fix, "market_data_sbe_hybrid_port", 9012)
+        default_oe_sbe_hybrid = testnet ? 19010 : 9010
+        default_dc_sbe_hybrid = testnet ? 19011 : 9011
+        default_md_sbe_hybrid = testnet ? 19012 : 9012
+
+        fix_order_entry_sbe_hybrid_port = get(fix, "order_entry_sbe_hybrid_port", default_oe_sbe_hybrid)
+        fix_drop_copy_sbe_hybrid_port = get(fix, "drop_copy_sbe_hybrid_port", default_dc_sbe_hybrid)
+        fix_market_data_sbe_hybrid_port = get(fix, "market_data_sbe_hybrid_port", default_md_sbe_hybrid)
+
         # FIX SBE Full mode: SBE requests → SBE responses (port 9002 on remote)
-        fix_order_entry_sbe_full_port = get(fix, "order_entry_sbe_full_port", 9020)
-        fix_drop_copy_sbe_full_port = get(fix, "drop_copy_sbe_full_port", 9021)
-        fix_market_data_sbe_full_port = get(fix, "market_data_sbe_full_port", 9022)
+        default_oe_sbe_full = testnet ? 19020 : 9020
+        default_dc_sbe_full = testnet ? 19021 : 9021
+        default_md_sbe_full = testnet ? 19022 : 9022
+
+        fix_order_entry_sbe_full_port = get(fix, "order_entry_sbe_full_port", default_oe_sbe_full)
+        fix_drop_copy_sbe_full_port = get(fix, "drop_copy_sbe_full_port", default_dc_sbe_full)
+        fix_market_data_sbe_full_port = get(fix, "market_data_sbe_full_port", default_md_sbe_full)
 
         # Extract logging settings
         logging = get(config_data, "logging", Dict())

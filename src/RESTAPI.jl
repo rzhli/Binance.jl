@@ -50,7 +50,7 @@ module RESTAPI
             try
                 server_time_response = get_server_time(client)
                 server_time = Int64(round(datetime2unix(server_time_response) * 1000))
-                local_time = Int(round(datetime2unix(now()) * 1000))
+                local_time = Int(round(datetime2unix(now(Dates.UTC)) * 1000))
                 client.time_offset = server_time - local_time
             catch e
                 @warn "Could not synchronize time with Binance server for REST client. Using local time. Error: $e"
@@ -70,7 +70,7 @@ module RESTAPI
     end
 
     function get_timestamp(client::RESTClient)
-        return Int(round(datetime2unix(now()) * 1000)) + client.time_offset
+        return Int(round(datetime2unix(now(Dates.UTC)) * 1000)) + client.time_offset
     end
 
     function build_headers(client::RESTClient)

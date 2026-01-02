@@ -17,7 +17,8 @@ using Dates
 # - Error handling and reconnection
 # =============================================================================
 
-config = Binance.from_toml("/home/rzhli/文档/投资/Binance/config.toml"; testnet=true)
+config = Binance.from_toml("/home/rzhli/文档/投资/Binance/config.toml")
+
 function random_sender_comp_id()
     chars = vcat('a':'z', 'A':'Z', '0':'9')
     return String(rand(chars, 8))
