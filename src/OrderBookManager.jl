@@ -82,13 +82,14 @@ struct OrderBookSnapshot
 end
 
 """
-    OrderBookManager{R,W}
+    OrderBookManager{R,W,F}
 
 Manages a local order book with automatic synchronization from Binance.
 
 # Type Parameters
 - `R`: REST client type (e.g., RESTClient)
 - `W`: WebSocket client type (e.g., MarketDataStreamClient or SBEStreamClient)
+- `F`: Callback function type (for type stability)
 
 # Fields
 - `symbol::String`: Trading pair symbol (e.g., "BTCUSDT")
@@ -98,13 +99,13 @@ Manages a local order book with automatic synchronization from Binance.
 - `bids::OrderedDict{Float64,Float64}`: Buy orders (price => quantity)
 - `asks::OrderedDict{Float64,Float64}`: Sell orders (price => quantity)
 - `is_initialized::Ref{Bool}`: Whether order book is ready
-- `event_buffer::Vector{Any}`: Buffer for events before initialization
+- `event_buffer::Vector{DepthEvent}`: Buffer for events before initialization
 - `stream_id::Ref{Union{String,Nothing}}`: WebSocket stream ID
-- `on_update::Union{Function,Nothing}`: Optional callback on updates
+- `on_update::F`: Optional callback on updates (parameterized for type stability)
 - `max_depth::Int`: Maximum depth for REST snapshot (default: 5000)
 - `update_speed::String`: Update speed "100ms" or "1000ms" (default: "100ms")
 """
-mutable struct OrderBookManager{R,W}
+mutable struct OrderBookManager{R,W,F}
     symbol::String
     rest_client::R
     ws_client::W
@@ -127,7 +128,7 @@ mutable struct OrderBookManager{R,W}
     stream_id::Ref{Union{String,Nothing}}
 
     # Configuration
-    on_update::Union{Function,Nothing}
+    on_update::F  # Parameterized for type stability (Nothing or concrete function type)
     max_depth::Int
     update_speed::String
 
@@ -160,8 +161,8 @@ function OrderBookManager(
     ws_client::W;
     max_depth::Int=5000,
     update_speed::String="100ms",
-    on_update::Union{Function,Nothing}=nothing
-) where {R,W}
+    on_update::F=nothing
+) where {R,W,F}
     # Validate parameters
     valid_depths = (5, 10, 20, 50, 100, 500, 1000, 5000)
     if !(max_depth in valid_depths)
@@ -172,7 +173,7 @@ function OrderBookManager(
         error("update_speed must be '100ms' or '1000ms'")
     end
 
-    OrderBookManager{R,W}(
+    OrderBookManager{R,W,F}(
         symbol,
         rest_client,
         ws_client,
@@ -454,7 +455,8 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
     end
 
     # Apply bid updates
-    for bid in get_bids_data(event)
+    bids_data = get_bids_data(event)
+    @inbounds for bid in bids_data
         price, quantity = parse_price_qty(bid)
 
         if quantity == 0.0
@@ -465,7 +467,8 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
     end
 
     # Apply ask updates
-    for ask in get_asks_data(event)
+    asks_data = get_asks_data(event)
+    @inbounds for ask in asks_data
         price, quantity = parse_price_qty(ask)
 
         if quantity == 0.0

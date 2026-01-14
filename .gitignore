@@ -48,10 +48,8 @@ single_run_test.jl
 
 # Personal trading strategies
 # Uncomment if Strategy.jl is proprietary
-Strategy.jl
-StrategyCommon.jl
-OrderBookStrategy.jl
-ConvertStrategy.jl
+strategy
+*.jl
 
 # Other files that might contain sensitive data
 # Uncomment as needed

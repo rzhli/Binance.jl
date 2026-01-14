@@ -136,7 +136,7 @@ module RESTAPI
             retry_after_header = filter(h -> lowercase(h[1]) == "retry-after", headers)
             if !isempty(retry_after_header)
                 retry_seconds = parse(Int, first(retry_after_header)[2])
-                set_backoff(client.rate_limiter, retry_seconds)
+                set_backoff!(client.rate_limiter, retry_seconds)
             end
         end
 

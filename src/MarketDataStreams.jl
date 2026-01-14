@@ -196,13 +196,13 @@ module MarketDataStreams
     function subscribe_trade(client::MarketDataStreamClient, symbol::String, callback::Function)
         symbol = lowercase(validate_symbol(symbol))
         stream_name = "$(symbol)@trade"
-        return subscribe(client, stream_name, callback)
+        return subscribe(client, stream_name, callback, struct_type=WebSocketTrade)
     end
 
     function subscribe_agg_trade(client::MarketDataStreamClient, symbol::String, callback::Function)
         symbol = lowercase(validate_symbol(symbol))
         stream_name = "$(symbol)@aggTrade"
-        return subscribe(client, stream_name, callback)
+        return subscribe(client, stream_name, callback, struct_type=AggregateTrade)
     end
 
     function subscribe_avg_price(client::MarketDataStreamClient, symbol::String, callback::Function)

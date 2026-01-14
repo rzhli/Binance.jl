@@ -85,7 +85,7 @@ export WebSocketConnection
 export Order, Trade, Kline, Ticker24hr
 
 # Market Data
-export OrderBook, PriceLevel, MarketTrade, AggregateTrade, AveragePrice, Ticker24hrRest,
+export OrderBook, PriceLevel, MarketTrade, WebSocketTrade, AggregateTrade, AveragePrice, Ticker24hrRest,
     Ticker24hrMini, TradingDayTicker, TradingDayTickerMini, RollingWindowTicker,
     RollingWindowTickerMini, PriceTicker, BookTicker
 
@@ -720,6 +720,47 @@ function Base.show(io::IO, ::MIME"text/plain", t::MarketTrade)
     @printf(io, "  Quote Quantity:  %f\n", parse(Float64, t.quoteQty))
     @printf(io, "  Buyer was Maker: %s\n", t.isBuyerMaker)
     @printf(io, "  Best Match:      %s\n", t.isBestMatch)
+end
+
+# WebSocket Trade Stream struct (different from REST API MarketTrade)
+# Maps the abbreviated field names from Binance WebSocket trade stream
+struct WebSocketTrade
+    eventType::String      # e - Event type ("trade")
+    eventTime::DateTime    # E - Event time
+    symbol::String         # s - Symbol
+    tradeId::Int64         # t - Trade ID
+    price::String          # p - Price
+    quantity::String       # q - Quantity
+    tradeTime::DateTime    # T - Trade time
+    isBuyerMaker::Bool     # m - Is the buyer the market maker?
+    ignore::Bool           # M - Ignore
+end
+StructTypes.StructType(::Type{WebSocketTrade}) = StructTypes.CustomStruct()
+StructTypes.lower(t::WebSocketTrade) = (
+    e=t.eventType, E=Int64(round(datetime2unix(t.eventTime) * 1000)), s=t.symbol,
+    t=t.tradeId, p=t.price, q=t.quantity,
+    T=Int64(round(datetime2unix(t.tradeTime) * 1000)), m=t.isBuyerMaker, M=t.ignore
+)
+StructTypes.construct(::Type{WebSocketTrade}, obj) = WebSocketTrade(
+    obj["e"],
+    unix2datetime(obj["E"] / 1000),
+    obj["s"],
+    obj["t"],
+    obj["p"],
+    obj["q"],
+    unix2datetime(obj["T"] / 1000),
+    obj["m"],
+    obj["M"]
+)
+
+function Base.show(io::IO, ::MIME"text/plain", t::WebSocketTrade)
+    println(io, "WebSocketTrade:")
+    @printf(io, "  Symbol:          %s\n", t.symbol)
+    @printf(io, "  Trade ID:        %d\n", t.tradeId)
+    @printf(io, "  Time:            %s\n", t.tradeTime)
+    @printf(io, "  Price:           %s\n", t.price)
+    @printf(io, "  Quantity:        %s\n", t.quantity)
+    @printf(io, "  Buyer was Maker: %s\n", t.isBuyerMaker)
 end
 
 struct AggregateTrade

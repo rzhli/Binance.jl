@@ -21,7 +21,7 @@ Message Types:
 module SBEDecoder
 
 using ...Types: PriceLevel
-export SBEMessageHeader, TradeEvent, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
+export SBEMessageHeader, TradeEvent, TradeData, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
 export decode_sbe_header, decode_sbe_message, mantissa_to_float
 export SCHEMA_ID, SCHEMA_VERSION_DEPRECATED, SCHEMA_VERSION_CURRENT
 

@@ -38,7 +38,7 @@ export SBEStreamClient, connect_sbe!, sbe_subscribe, sbe_unsubscribe,
     sbe_unsubscribe_depth, sbe_unsubscribe_depth20
 
 # Re-export SBE data types
-export TradeEvent, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
+export TradeEvent, TradeData, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
 
 """
 SBE Market Data Stream Client

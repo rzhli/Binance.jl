@@ -21,8 +21,11 @@ testnet_private_key_pass = "YOUR_TESTNET_PRIVATE_KEY_PASS_HERE"
 timeout = 30
 # Receive window for signed requests (milliseconds)
 recv_window = 5000
-# Proxy for requests (e.g., "http://127.0.0.1:7890")
-proxy = "http://127.0.0.1:7890"
+# Proxy for requests
+# For REST API: HTTP proxy works fine (e.g., "http://127.0.0.1:7890")
+# For WebSocket/SBE streams: Use SOCKS5 proxy (e.g., "socks5://127.0.0.1:7891")
+# Clash/V2Ray typical ports: HTTP=7890, SOCKS5=7891
+proxy = "socks5://127.0.0.1:7891"
 
 [fix]
   # PROD stunnel proxy settings for FIX API

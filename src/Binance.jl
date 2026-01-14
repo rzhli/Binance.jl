@@ -70,7 +70,7 @@ export sbe_subscribe_depth, sbe_unsubscribe_depth, sbe_subscribe_depth20, sbe_un
 export sbe_close_all, sbe_list_streams, connect_sbe!
 
 # Export SBE data types (WebSocket SBE - Schema 3:2)
-export TradeEvent, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
+export TradeEvent, TradeData, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
 
 # Export WebSocket API functions - Authentication
 export connect!, session_logon, session_status, exchangeInfo, session_logout, disconnect!
