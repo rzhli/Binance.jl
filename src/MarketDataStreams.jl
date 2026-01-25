@@ -38,33 +38,18 @@ module MarketDataStreams
 
         uri = client.ws_base_url * stream_name
         proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
-        ws_kwargs = Dict{Symbol,Any}(:suppress_close_error => true)
-        if proxy_url !== nothing
-            ws_kwargs[:proxy] = proxy_url
-        end
 
         task = @async begin
             while get(client.should_reconnect, stream_name, false) # Check reconnection flag
                 try
-                    HTTP.WebSockets.open(uri; ws_kwargs...) do ws
-                        println("✅ Successfully connected to '$stream_name'.")
-                        for msg in ws
-                            if !get(client.should_reconnect, stream_name, false)
-                                break     # Stop processing if unsubscribed
-                            end
-                            try
-                                data = if !isnothing(struct_type)
-                                    JSON3.read(msg, struct_type)
-                                else
-                                    JSON3.read(msg)
-                                end
-                                if haskey(client.ws_callbacks, stream_name)
-                                    client.ws_callbacks[stream_name](data)
-                                end
-                            catch e
-                                println("⚠️ Error processing WebSocket message on stream '$stream_name': $e")
-                                println("   Raw message: $msg")
-                            end
+                    # 根据是否有 proxy 选择不同的调用方式，避免每次创建 Dict
+                    if proxy_url !== nothing
+                        HTTP.WebSockets.open(uri; suppress_close_error=true, proxy=proxy_url) do ws
+                            _handle_ws_messages(client, ws, stream_name, struct_type)
+                        end
+                    else
+                        HTTP.WebSockets.open(uri; suppress_close_error=true) do ws
+                            _handle_ws_messages(client, ws, stream_name, struct_type)
                         end
                     end
 
@@ -89,6 +74,29 @@ module MarketDataStreams
 
         client.ws_connections[stream_name] = task
         return stream_name
+    end
+
+    # 提取消息处理逻辑，避免代码重复
+    function _handle_ws_messages(client::MarketDataStreamClient, ws, stream_name::String, struct_type)
+        println("✅ Successfully connected to '$stream_name'.")
+        for msg in ws
+            if !get(client.should_reconnect, stream_name, false)
+                break     # Stop processing if unsubscribed
+            end
+            try
+                data = if !isnothing(struct_type)
+                    JSON3.read(msg, struct_type)
+                else
+                    JSON3.read(msg)
+                end
+                if haskey(client.ws_callbacks, stream_name)
+                    client.ws_callbacks[stream_name](data)
+                end
+            catch e
+                println("⚠️ Error processing WebSocket message on stream '$stream_name': $e")
+                println("   Raw message: $msg")
+            end
+        end
     end
 
     function subscribe_ticker(client::MarketDataStreamClient, symbol::String, callback::Function)

@@ -30,6 +30,7 @@ module RESTAPI
         rate_limiter::BinanceRateLimit
         time_offset::Int64
         exchange_info::Union{ExchangeInfo, Nothing}
+        symbol_cache::Dict{String, SymbolInfo}  # 缓存 symbol -> SymbolInfo 映射
 
         function RESTClient(config_path::String="config.toml")
             config = from_toml(config_path)
@@ -45,7 +46,7 @@ module RESTAPI
                 error("Unsupported signature method: $(config.signature_method)")
             end
 
-            client = new(config, signer, rate_limiter, 0, nothing)
+            client = new(config, signer, rate_limiter, 0, nothing, Dict{String, SymbolInfo}())
 
             try
                 server_time_response = get_server_time(client)
@@ -74,11 +75,12 @@ module RESTAPI
     end
 
     function build_headers(client::RESTClient)
-        headers = []
+        # 返回类型稳定的 Vector{Pair{String,String}}
         if !isempty(client.config.api_key)
-            push!(headers, "X-MBX-APIKEY" => client.config.api_key)
+            return ["X-MBX-APIKEY" => client.config.api_key]
+        else
+            return Pair{String,String}[]
         end
-        return headers
     end
 
     function build_query_string(params::Dict{String,Any})
@@ -133,10 +135,13 @@ module RESTAPI
         end
 
         if status == 429 || status == 418
-            retry_after_header = filter(h -> lowercase(h[1]) == "retry-after", headers)
-            if !isempty(retry_after_header)
-                retry_seconds = parse(Int, first(retry_after_header)[2])
-                set_backoff!(client.rate_limiter, retry_seconds)
+            # 避免使用 filter 闭包，直接循环查找
+            for h in headers
+                if lowercase(h[1]) == "retry-after"
+                    retry_seconds = parse(Int, h[2])
+                    set_backoff!(client.rate_limiter, retry_seconds)
+                    break
+                end
             end
         end
 
@@ -239,12 +244,28 @@ module RESTAPI
         get_cached_exchange_info!(client::RESTClient)
 
     Fetches and caches the exchange information if it hasn't been already.
+    Also builds a symbol lookup cache for O(1) symbol info retrieval.
     """
     function get_cached_exchange_info!(client::RESTClient)
         if isnothing(client.exchange_info)
             client.exchange_info = get_exchange_info(client)
+            # 构建 symbol 缓存用于 O(1) 查找
+            empty!(client.symbol_cache)
+            for s in client.exchange_info.symbols
+                client.symbol_cache[s.symbol] = s
+            end
         end
         return client.exchange_info
+    end
+
+    """
+        get_symbol_info(client::RESTClient, symbol::String) -> Union{SymbolInfo, Nothing}
+
+    Get SymbolInfo for a symbol using cached lookup (O(1) instead of O(n)).
+    """
+    function get_symbol_info(client::RESTClient, symbol::String)
+        get_cached_exchange_info!(client)
+        return get(client.symbol_cache, symbol, nothing)
     end
 
     # --- Trading Functions ---
@@ -261,15 +282,8 @@ module RESTAPI
         new_order_resp_type::String="ACK"
         )
 
-        # --- Validation ---
-        exchange_info = get_cached_exchange_info!(client)
-        symbol_info = nothing
-        for s in exchange_info.symbols
-            if s.symbol == symbol
-                symbol_info = s
-                break
-            end
-        end
+        # --- Validation (使用 O(1) 缓存查找) ---
+        symbol_info = get_symbol_info(client, symbol)
         if isnothing(symbol_info)
             throw(ArgumentError("Symbol $symbol not found in exchange info."))
         end

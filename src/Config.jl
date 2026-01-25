@@ -2,7 +2,27 @@ module Config
 
 using TOML
 
-export BinanceConfig, from_toml
+export BinanceConfig, FIXConfig, FIXEndpoint, from_toml
+
+# ======================= FIX 配置结构 =======================
+
+"""FIX 端点配置（一个服务的三种编码模式端口）"""
+struct FIXEndpoint
+    host::String
+    standard_port::Int    # 标准 FIX 编码 (远程端口 9000)
+    sbe_hybrid_port::Int  # SBE Hybrid: FIX请求 → SBE响应 (远程端口 9001)
+    sbe_full_port::Int    # SBE Full: SBE请求 → SBE响应 (远程端口 9002)
+end
+
+"""FIX API 完整配置"""
+struct FIXConfig
+    legacy_host::String   # 兼容旧版的默认 host
+    order_entry::FIXEndpoint
+    drop_copy::FIXEndpoint
+    market_data::FIXEndpoint
+end
+
+# ======================= 主配置结构 =======================
 
 struct BinanceConfig
     api_key::String
@@ -26,23 +46,8 @@ struct BinanceConfig
     max_connections_per_5m::Int
     ws_return_rate_limits::Bool
 
-    # FIX API settings (requires stunnel for TLS termination)
-    # Standard FIX encoding (port 9000 on remote)
-    fix_host::String # Legacy/Default host
-    fix_order_entry_host::String
-    fix_order_entry_port::Int
-    fix_drop_copy_host::String
-    fix_drop_copy_port::Int
-    fix_market_data_host::String
-    fix_market_data_port::Int
-    # FIX SBE Hybrid mode: FIX requests → SBE responses (port 9001 on remote)
-    fix_order_entry_sbe_hybrid_port::Int
-    fix_drop_copy_sbe_hybrid_port::Int
-    fix_market_data_sbe_hybrid_port::Int
-    # FIX SBE Full mode: SBE requests → SBE responses (port 9002 on remote)
-    fix_order_entry_sbe_full_port::Int
-    fix_drop_copy_sbe_full_port::Int
-    fix_market_data_sbe_full_port::Int
+    # FIX API settings (嵌套结构)
+    fix::FIXConfig
 
     # Logging
     debug::Bool
@@ -93,44 +98,44 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
 
         # Extract FIX API settings - use testnet section if testnet=true
         fix_section = testnet ? "fix_testnet" : "fix"
-        fix = get(config_data, fix_section, Dict())
+        fix_data = get(config_data, fix_section, Dict())
         # Fallback to [fix] section if testnet section doesn't exist
-        if isempty(fix) && testnet
-            fix = get(config_data, "fix", Dict())
+        if isempty(fix_data) && testnet
+            fix_data = get(config_data, "fix", Dict())
         end
-        fix_host = get(fix, "host", "127.0.0.1")
+        fix_host = get(fix_data, "host", "127.0.0.1")
         # Allow FIX section to override proxy (for testnet which may not need proxy)
-        if haskey(fix, "proxy")
-            proxy = fix["proxy"]
+        if haskey(fix_data, "proxy")
+            proxy = fix_data["proxy"]
         end
-        # Standard FIX encoding (port 9000 on remote)
-        default_oe_port = testnet ? 19000 : 9000
-        default_dc_port = testnet ? 19001 : 9001
-        default_md_port = testnet ? 19002 : 9002
 
-        fix_order_entry_host = get(fix, "order_entry_host", fix_host)
-        fix_order_entry_port = get(fix, "order_entry_port", default_oe_port)
-        fix_drop_copy_host = get(fix, "drop_copy_host", fix_host)
-        fix_drop_copy_port = get(fix, "drop_copy_port", default_dc_port)
-        fix_market_data_host = get(fix, "market_data_host", fix_host)
-        fix_market_data_port = get(fix, "market_data_port", default_md_port)
-        # FIX SBE Hybrid mode: FIX requests → SBE responses (port 9001 on remote)
-        default_oe_sbe_hybrid = testnet ? 19010 : 9010
-        default_dc_sbe_hybrid = testnet ? 19011 : 9011
-        default_md_sbe_hybrid = testnet ? 19012 : 9012
+        # 定义默认端口（testnet 使用 19xxx 系列）
+        base_oe, base_dc, base_md = testnet ? (19000, 19001, 19002) : (9000, 9001, 9002)
+        hybrid_oe, hybrid_dc, hybrid_md = testnet ? (19010, 19011, 19012) : (9010, 9011, 9012)
+        full_oe, full_dc, full_md = testnet ? (19020, 19021, 19022) : (9020, 9021, 9022)
 
-        fix_order_entry_sbe_hybrid_port = get(fix, "order_entry_sbe_hybrid_port", default_oe_sbe_hybrid)
-        fix_drop_copy_sbe_hybrid_port = get(fix, "drop_copy_sbe_hybrid_port", default_dc_sbe_hybrid)
-        fix_market_data_sbe_hybrid_port = get(fix, "market_data_sbe_hybrid_port", default_md_sbe_hybrid)
-
-        # FIX SBE Full mode: SBE requests → SBE responses (port 9002 on remote)
-        default_oe_sbe_full = testnet ? 19020 : 9020
-        default_dc_sbe_full = testnet ? 19021 : 9021
-        default_md_sbe_full = testnet ? 19022 : 9022
-
-        fix_order_entry_sbe_full_port = get(fix, "order_entry_sbe_full_port", default_oe_sbe_full)
-        fix_drop_copy_sbe_full_port = get(fix, "drop_copy_sbe_full_port", default_dc_sbe_full)
-        fix_market_data_sbe_full_port = get(fix, "market_data_sbe_full_port", default_md_sbe_full)
+        # 构建 FIX 端点配置
+        fix_config = FIXConfig(
+            fix_host,
+            FIXEndpoint(
+                get(fix_data, "order_entry_host", fix_host),
+                get(fix_data, "order_entry_port", base_oe),
+                get(fix_data, "order_entry_sbe_hybrid_port", hybrid_oe),
+                get(fix_data, "order_entry_sbe_full_port", full_oe)
+            ),
+            FIXEndpoint(
+                get(fix_data, "drop_copy_host", fix_host),
+                get(fix_data, "drop_copy_port", base_dc),
+                get(fix_data, "drop_copy_sbe_hybrid_port", hybrid_dc),
+                get(fix_data, "drop_copy_sbe_full_port", full_dc)
+            ),
+            FIXEndpoint(
+                get(fix_data, "market_data_host", fix_host),
+                get(fix_data, "market_data_port", base_md),
+                get(fix_data, "market_data_sbe_hybrid_port", hybrid_md),
+                get(fix_data, "market_data_sbe_full_port", full_md)
+            )
+        )
 
         # Extract logging settings
         logging = get(config_data, "logging", Dict())
@@ -168,12 +173,7 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
             api_key, signature_method, api_secret, private_key_path, private_key_pass,
             testnet, timeout, recv_window, proxy, max_reconnect_attempts, reconnect_delay,
             max_request_weight_per_minute, max_orders_per_10s, max_orders_per_day, max_connections_per_5m, ws_return_rate_limits,
-            fix_host,
-            fix_order_entry_host, fix_order_entry_port,
-            fix_drop_copy_host, fix_drop_copy_port,
-            fix_market_data_host, fix_market_data_port,
-            fix_order_entry_sbe_hybrid_port, fix_drop_copy_sbe_hybrid_port, fix_market_data_sbe_hybrid_port,
-            fix_order_entry_sbe_full_port, fix_drop_copy_sbe_full_port, fix_market_data_sbe_full_port,
+            fix_config,
             debug, log_file
         )
 

@@ -3,6 +3,105 @@ module Types
 using Dates, StructTypes, JSON3, DataFrames, Printf
 using FixedPointDecimals
 
+# ======================= 代码生成宏 =======================
+
+"""
+生成单字段 Filter 类型（filterType + 一个值字段）
+"""
+macro define_single_filter(name, field_name, field_type, show_label)
+    esc(quote
+        struct $name <: AbstractFilter
+            filterType::String
+            $field_name::$field_type
+        end
+        StructTypes.StructType(::Type{$name}) = StructTypes.Struct()
+        Base.show(io::IO, f::$name) = print(io, $show_label, ": ", getfield(f, $(QuoteNode(field_name))))
+    end)
+end
+
+"""
+生成三字段 Filter 类型（filterType + min/max/step 或类似字段）
+"""
+macro define_triple_filter(name, f1, f2, f3, show_template)
+    esc(quote
+        struct $name <: AbstractFilter
+            filterType::String
+            $f1::String
+            $f2::String
+            $f3::String
+        end
+        StructTypes.StructType(::Type{$name}) = StructTypes.Struct()
+        Base.show(io::IO, f::$name) = print(io, $show_template,
+            " min: ", getfield(f, $(QuoteNode(f1))),
+            ", max: ", getfield(f, $(QuoteNode(f2))),
+            ", step: ", getfield(f, $(QuoteNode(f3))))
+    end)
+end
+
+"""
+生成 Mini Ticker 类型（共12个字段的精简版）
+"""
+macro define_mini_ticker(name)
+    esc(quote
+        struct $name
+            symbol::String
+            openPrice::String
+            highPrice::String
+            lowPrice::String
+            lastPrice::String
+            volume::String
+            quoteVolume::String
+            openTime::DateTime
+            closeTime::DateTime
+            firstId::Int64
+            lastId::Int64
+            count::Int
+        end
+        StructTypes.StructType(::Type{$name}) = StructTypes.CustomStruct()
+        StructTypes.construct(::Type{$name}, obj) = $name(
+            obj["symbol"], obj["openPrice"], obj["highPrice"], obj["lowPrice"],
+            obj["lastPrice"], obj["volume"], obj["quoteVolume"],
+            unix2datetime(obj["openTime"] / 1000), unix2datetime(obj["closeTime"] / 1000),
+            obj["firstId"], obj["lastId"], obj["count"]
+        )
+    end)
+end
+
+"""
+生成 Full Ticker 类型（共15个字段，含价格变化信息）
+"""
+macro define_full_ticker(name)
+    esc(quote
+        struct $name
+            symbol::String
+            priceChange::String
+            priceChangePercent::String
+            weightedAvgPrice::String
+            openPrice::String
+            highPrice::String
+            lowPrice::String
+            lastPrice::String
+            volume::String
+            quoteVolume::String
+            openTime::DateTime
+            closeTime::DateTime
+            firstId::Int64
+            lastId::Int64
+            count::Int
+        end
+        StructTypes.StructType(::Type{$name}) = StructTypes.CustomStruct()
+        StructTypes.construct(::Type{$name}, obj) = $name(
+            obj["symbol"], obj["priceChange"], obj["priceChangePercent"], obj["weightedAvgPrice"],
+            obj["openPrice"], obj["highPrice"], obj["lowPrice"], obj["lastPrice"],
+            obj["volume"], obj["quoteVolume"],
+            unix2datetime(obj["openTime"] / 1000), unix2datetime(obj["closeTime"] / 1000),
+            obj["firstId"], obj["lastId"], obj["count"]
+        )
+    end)
+end
+
+# ======================= 原有代码 =======================
+
 # Type alias for commonly used decimal precision in cryptocurrency (8 decimal places)
 const DecimalPrice = FixedDecimal{Int64, 8}
 
@@ -47,19 +146,11 @@ to_decimal_string("0.00100000")       # "0.00100000" (preserved as-is)
 to_decimal_string(DecimalPrice(0.001)) # "0.00100000" (exact 8 decimals)
 ```
 """
-function to_decimal_string(value::Union{Float64, String, FixedDecimal, Nothing})
-    if isnothing(value)
-        return nothing
-    elseif isa(value, String)
-        return value  # Pass strings through as-is for user control
-    elseif isa(value, FixedDecimal)
-        return string(value)  # FixedDecimal provides exact string representation
-    elseif isa(value, Float64)
-        # For Float64, use string() which provides reasonable precision
-        # Users should prefer String or FixedDecimal for guaranteed exact values
-        return string(value)
-    end
-end
+# 使用多重派发代替运行时类型检查（类型稳定）
+to_decimal_string(::Nothing) = nothing
+to_decimal_string(value::String) = value
+to_decimal_string(value::FixedDecimal) = string(value)
+to_decimal_string(value::Float64) = string(value)
 
 # Enums
 export SymbolStatus, AccountPermissions, OrderStatus, OrderListStatus, OrderListOrderStatus,
@@ -141,17 +232,10 @@ StructTypes.subtypes(::Type{AbstractFilter}) = (
     MAX_ASSETS = MaxAssetsFilter
 )
 
-struct PriceFilter <: AbstractFilter
-    filterType::String
-    minPrice::String
-    maxPrice::String
-    tickSize::String
-end
-StructTypes.StructType(::Type{PriceFilter}) = StructTypes.Struct()
-
-function Base.show(io::IO, f::PriceFilter)
-    print(io, "Price: min: $(f.minPrice), max: $(f.maxPrice), tick: $(f.tickSize)")
-end
+# --- 三字段 Filter（使用宏生成）---
+@define_triple_filter(PriceFilter, minPrice, maxPrice, tickSize, "Price:")
+@define_triple_filter(LotSizeFilter, minQty, maxQty, stepSize, "LotSize:")
+@define_triple_filter(MarketLotSizeFilter, minQty, maxQty, stepSize, "MarketLotSize:")
 
 struct PercentPriceFilter <: AbstractFilter
     filterType::String
@@ -177,18 +261,6 @@ StructTypes.StructType(::Type{PercentPriceBySideFilter}) = StructTypes.Struct()
 
 function Base.show(io::IO, f::PercentPriceBySideFilter)
     print(io, "PercentPriceBySide: bid: × $(f.bidMultiplierDown) - $(f.bidMultiplierUp), ask: × $(f.askMultiplierDown) - $(f.askMultiplierUp)")
-end
-
-struct LotSizeFilter <: AbstractFilter
-    filterType::String
-    minQty::String
-    maxQty::String
-    stepSize::String
-end
-StructTypes.StructType(::Type{LotSizeFilter}) = StructTypes.Struct()
-
-function Base.show(io::IO, f::LotSizeFilter)
-    print(io, "LotSize: min: $(f.minQty), max: $(f.maxQty), step: $(f.stepSize)")
 end
 
 struct MinNotionalFilter <: AbstractFilter
@@ -217,68 +289,17 @@ function Base.show(io::IO, f::NotionalFilter)
     print(io, "Notional: min: $(f.minNotional), max: $(f.maxNotional)")
 end
 
-struct IcebergPartsFilter <: AbstractFilter
-    filterType::String
-    limit::Int
-end
-StructTypes.StructType(::Type{IcebergPartsFilter}) = StructTypes.Struct()
+# --- 单字段 Filter（使用宏生成）---
+@define_single_filter(IcebergPartsFilter, limit, Int, "IcebergParts")
+@define_single_filter(MaxNumOrdersFilter, maxNumOrders, Int, "MaxNumOrders")
+@define_single_filter(MaxNumAlgoOrdersFilter, maxNumAlgoOrders, Int, "MaxNumAlgoOrders")
+@define_single_filter(MaxNumIcebergOrdersFilter, maxNumIcebergOrders, Int, "MaxNumIcebergOrders")
+@define_single_filter(MaxPositionFilter, maxPosition, String, "MaxPosition")
+@define_single_filter(MaxNumOrderAmendsFilter, maxNumOrderAmends, Int, "MaxNumOrderAmends")
+@define_single_filter(MaxNumOrderListsFilter, maxNumOrderLists, Int, "MaxNumOrderLists")
+@define_single_filter(MaxAssetsFilter, maxAssets, Int, "MaxAssets")
 
-function Base.show(io::IO, f::IcebergPartsFilter)
-    print(io, "IcebergParts: limit: $(f.limit)")
-end
-
-struct MarketLotSizeFilter <: AbstractFilter
-    filterType::String
-    minQty::String
-    maxQty::String
-    stepSize::String
-end
-StructTypes.StructType(::Type{MarketLotSizeFilter}) = StructTypes.Struct()
-
-function Base.show(io::IO, f::MarketLotSizeFilter)
-    print(io, "MarketLotSize: min: $(f.minQty), max: $(f.maxQty), step: $(f.stepSize)")
-end
-
-struct MaxNumOrdersFilter <: AbstractFilter
-    filterType::String
-    maxNumOrders::Int
-end
-StructTypes.StructType(::Type{MaxNumOrdersFilter}) = StructTypes.Struct()
-
-function Base.show(io::IO, f::MaxNumOrdersFilter)
-    print(io, "MaxNumOrders: $(f.maxNumOrders)")
-end
-
-struct MaxNumAlgoOrdersFilter <: AbstractFilter
-    filterType::String
-    maxNumAlgoOrders::Int
-end
-StructTypes.StructType(::Type{MaxNumAlgoOrdersFilter}) = StructTypes.Struct()
-
-function Base.show(io::IO, f::MaxNumAlgoOrdersFilter)
-    print(io, "MaxNumAlgoOrders: $(f.maxNumAlgoOrders)")
-end
-
-struct MaxNumIcebergOrdersFilter <: AbstractFilter
-    filterType::String
-    maxNumIcebergOrders::Int
-end
-StructTypes.StructType(::Type{MaxNumIcebergOrdersFilter}) = StructTypes.Struct()
-
-function Base.show(io::IO, f::MaxNumIcebergOrdersFilter)
-    print(io, "MaxNumIcebergOrders: $(f.maxNumIcebergOrders)")
-end
-
-struct MaxPositionFilter <: AbstractFilter
-    filterType::String
-    maxPosition::String
-end
-StructTypes.StructType(::Type{MaxPositionFilter}) = StructTypes.Struct()
-
-function Base.show(io::IO, f::MaxPositionFilter)
-    print(io, "MaxPosition: $(f.maxPosition)")
-end
-
+# TrailingDeltaFilter 有4个字段，保持手动定义
 struct TrailingDeltaFilter <: AbstractFilter
     filterType::String
     minTrailingAboveDelta::Int
@@ -287,67 +308,14 @@ struct TrailingDeltaFilter <: AbstractFilter
     maxTrailingBelowDelta::Int
 end
 StructTypes.StructType(::Type{TrailingDeltaFilter}) = StructTypes.Struct()
+Base.show(io::IO, f::TrailingDeltaFilter) = print(io,
+    "TrailingDelta: above: $(f.minTrailingAboveDelta)-$(f.maxTrailingAboveDelta), below: $(f.minTrailingBelowDelta)-$(f.maxTrailingBelowDelta)")
 
-function Base.show(io::IO, f::TrailingDeltaFilter)
-    print(
-        io, "TrailingDelta: min-AboveDelta: $(f.minTrailingAboveDelta), max-AboveDelta:$(f.maxTrailingAboveDelta), min-BelowDelta: $(f.minTrailingBelowDelta), max-BelowDelta: $(f.maxTrailingBelowDelta)"
-    )
-end
-
-struct MaxNumOrderAmendsFilter <: AbstractFilter
-    filterType::String
-    maxNumOrderAmends::Int
-end
-StructTypes.StructType(::Type{MaxNumOrderAmendsFilter}) = StructTypes.Struct()
-
-function Base.show(io::IO, f::MaxNumOrderAmendsFilter)
-    print(io, "MaxNumOrderAmends: $(f.maxNumOrderAmends)")
-end
-
-struct MaxNumOrderListsFilter <: AbstractFilter
-    filterType::String
-    maxNumOrderLists::Int
-end
-StructTypes.StructType(::Type{MaxNumOrderListsFilter}) = StructTypes.Struct()
-
-function Base.show(io::IO, f::MaxNumOrderListsFilter)
-    print(io, "MaxNumOrderLists: $(f.maxNumOrderLists)")
-end
-
-struct MaxAssetsFilter <: AbstractFilter
-    filterType::String
-    maxAssets::Int
-end
-StructTypes.StructType(::Type{MaxAssetsFilter}) = StructTypes.Struct()
-
-function Base.show(io::IO, f::MaxAssetsFilter)
-    print(io, "MaxAssets: $(f.maxAssets)")
-end
-
-# --- Exchange Filters ---
-struct ExchangeMaxNumOrdersFilter <: AbstractFilter
-    filterType::String
-    maxNumOrders::Int
-end
-StructTypes.StructType(::Type{ExchangeMaxNumOrdersFilter}) = StructTypes.Struct()
-
-struct ExchangeMaxNumAlgoOrdersFilter <: AbstractFilter
-    filterType::String
-    maxNumAlgoOrders::Int
-end
-StructTypes.StructType(::Type{ExchangeMaxNumAlgoOrdersFilter}) = StructTypes.Struct()
-
-struct ExchangeMaxNumIcebergOrdersFilter <: AbstractFilter
-    filterType::String
-    maxNumIcebergOrders::Int
-end
-StructTypes.StructType(::Type{ExchangeMaxNumIcebergOrdersFilter}) = StructTypes.Struct()
-
-struct ExchangeMaxNumOrderListsFilter <: AbstractFilter
-    filterType::String
-    maxNumOrderLists::Int
-end
-StructTypes.StructType(::Type{ExchangeMaxNumOrderListsFilter}) = StructTypes.Struct()
+# --- Exchange Filters（使用宏生成）---
+@define_single_filter(ExchangeMaxNumOrdersFilter, maxNumOrders, Int, "ExchangeMaxNumOrders")
+@define_single_filter(ExchangeMaxNumAlgoOrdersFilter, maxNumAlgoOrders, Int, "ExchangeMaxNumAlgoOrders")
+@define_single_filter(ExchangeMaxNumIcebergOrdersFilter, maxNumIcebergOrders, Int, "ExchangeMaxNumIcebergOrders")
+@define_single_filter(ExchangeMaxNumOrderListsFilter, maxNumOrderLists, Int, "ExchangeMaxNumOrderLists")
 
 # --- Symbol and Exchange Info Structs ---
 const SymbolFilter = Union{
@@ -871,167 +839,15 @@ StructTypes.construct(::Type{Ticker24hrRest}, obj) = Ticker24hrRest(
     obj["count"]
 )
 
-struct Ticker24hrMini
-    symbol::String
-    openPrice::String
-    highPrice::String
-    lowPrice::String
-    lastPrice::String
-    volume::String
-    quoteVolume::String
-    openTime::DateTime
-    closeTime::DateTime
-    firstId::Int64
-    lastId::Int64
-    count::Int
-end
-StructTypes.StructType(::Type{Ticker24hrMini}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{Ticker24hrMini}, obj) = Ticker24hrMini(
-    obj["symbol"],
-    obj["openPrice"],
-    obj["highPrice"],
-    obj["lowPrice"],
-    obj["lastPrice"],
-    obj["volume"],
-    obj["quoteVolume"],
-    unix2datetime(obj["openTime"] / 1000),
-    unix2datetime(obj["closeTime"] / 1000),
-    obj["firstId"],
-    obj["lastId"],
-    obj["count"]
-)
+# --- Mini Ticker 类型（使用宏生成，12字段精简版）---
+@define_mini_ticker(Ticker24hrMini)
+@define_mini_ticker(TradingDayTickerMini)
+@define_mini_ticker(RollingWindowTickerMini)
 
-struct TradingDayTicker
-    symbol::String
-    priceChange::String
-    priceChangePercent::String
-    weightedAvgPrice::String
-    openPrice::String
-    highPrice::String
-    lowPrice::String
-    lastPrice::String
-    volume::String
-    quoteVolume::String
-    openTime::DateTime
-    closeTime::DateTime
-    firstId::Int64
-    lastId::Int64
-    count::Int
-end
-StructTypes.StructType(::Type{TradingDayTicker}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{TradingDayTicker}, obj) = TradingDayTicker(
-    obj["symbol"],
-    obj["priceChange"],
-    obj["priceChangePercent"],
-    obj["weightedAvgPrice"],
-    obj["openPrice"],
-    obj["highPrice"],
-    obj["lowPrice"],
-    obj["lastPrice"],
-    obj["volume"],
-    obj["quoteVolume"],
-    unix2datetime(obj["openTime"] / 1000),
-    unix2datetime(obj["closeTime"] / 1000),
-    obj["firstId"],
-    obj["lastId"],
-    obj["count"]
-)
+# --- Full Ticker 类型（使用宏生成，15字段含价格变化）---
+@define_full_ticker(TradingDayTicker)
+@define_full_ticker(RollingWindowTicker)
 
-struct TradingDayTickerMini
-    symbol::String
-    openPrice::String
-    highPrice::String
-    lowPrice::String
-    lastPrice::String
-    volume::String
-    quoteVolume::String
-    openTime::DateTime
-    closeTime::DateTime
-    firstId::Int64
-    lastId::Int64
-    count::Int
-end
-StructTypes.StructType(::Type{TradingDayTickerMini}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{TradingDayTickerMini}, obj) = TradingDayTickerMini(
-    obj["symbol"],
-    obj["openPrice"],
-    obj["highPrice"],
-    obj["lowPrice"],
-    obj["lastPrice"],
-    obj["volume"],
-    obj["quoteVolume"],
-    unix2datetime(obj["openTime"] / 1000),
-    unix2datetime(obj["closeTime"] / 1000),
-    obj["firstId"],
-    obj["lastId"],
-    obj["count"]
-)
-
-struct RollingWindowTicker
-    symbol::String
-    priceChange::String
-    priceChangePercent::String
-    weightedAvgPrice::String
-    openPrice::String
-    highPrice::String
-    lowPrice::String
-    lastPrice::String
-    volume::String
-    quoteVolume::String
-    openTime::DateTime
-    closeTime::DateTime
-    firstId::Int64
-    lastId::Int64
-    count::Int
-end
-StructTypes.StructType(::Type{RollingWindowTicker}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{RollingWindowTicker}, obj) = RollingWindowTicker(
-    obj["symbol"],
-    obj["priceChange"],
-    obj["priceChangePercent"],
-    obj["weightedAvgPrice"],
-    obj["openPrice"],
-    obj["highPrice"],
-    obj["lowPrice"],
-    obj["lastPrice"],
-    obj["volume"],
-    obj["quoteVolume"],
-    unix2datetime(obj["openTime"] / 1000),
-    unix2datetime(obj["closeTime"] / 1000),
-    obj["firstId"],
-    obj["lastId"],
-    obj["count"]
-)
-
-struct RollingWindowTickerMini
-    symbol::String
-    openPrice::String
-    highPrice::String
-    lowPrice::String
-    lastPrice::String
-    volume::String
-    quoteVolume::String
-    openTime::DateTime
-    closeTime::DateTime
-    firstId::Int64
-    lastId::Int64
-    count::Int
-end
-StructTypes.StructType(::Type{RollingWindowTickerMini}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{RollingWindowTickerMini}, obj) = RollingWindowTickerMini(
-    obj["symbol"],
-    obj["openPrice"],
-    obj["highPrice"],
-    obj["lowPrice"],
-    obj["lastPrice"],
-    obj["volume"],
-    obj["quoteVolume"],
-    unix2datetime(obj["openTime"] / 1000),
-    unix2datetime(obj["closeTime"] / 1000),
-    obj["firstId"],
-    obj["lastId"],
-    obj["count"]
-)
 
 struct PriceTicker
     symbol::String

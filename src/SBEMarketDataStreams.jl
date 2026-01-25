@@ -90,6 +90,57 @@ end
 # WebSocket Connection Management
 # ============================================================================
 
+# Helper function to handle WebSocket session (extracted to avoid code duplication)
+function _handle_sbe_ws_session(client::SBEStreamClient, ws)
+    client.ws_connection = ws
+    @info "✅ Connected to SBE Market Data Stream"
+
+    # Resubscribe to existing streams
+    if !isempty(client.subscriptions)
+        streams = collect(keys(client.subscriptions))
+        @info "Resubscribing to $(length(streams)) streams..."
+
+        # Send subscription request for all streams
+        subscribe_msg = JSON3.write(Dict(
+            "method" => "SUBSCRIBE",
+            "params" => streams,
+            "id" => next_request_id!(client)
+        ))
+
+        try
+            HTTP.WebSockets.send(ws, subscribe_msg)
+            @info "Sent resubscription request for: $(join(streams, ", "))"
+        catch e
+            @error "Failed to resubscribe: $e"
+        end
+    end
+
+    # Start ping/pong handler
+    ping_task = @async handle_ping_pong(client, ws)
+
+    try
+        for msg in ws
+            if !client.should_reconnect
+                break
+            end
+
+            # Check message type: text (JSON control) or binary (SBE data)
+            if msg isa String
+                handle_control_message(client, msg)
+            elseif msg isa Vector{UInt8}
+                handle_sbe_message(client, msg)
+            else
+                @warn "Unknown message type: $(typeof(msg))"
+            end
+        end
+    finally
+        # Stop ping task
+        if !isnothing(ping_task) && !istaskdone(ping_task)
+            Base.@async Base.throwto(ping_task, InterruptException())
+        end
+    end
+end
+
 """
     connect_sbe!(client::SBEStreamClient)
 
@@ -133,67 +184,25 @@ function connect_sbe!(client::SBEStreamClient)
         "X-MBX-APIKEY" => client.config.api_key
     ]
 
-    # Binance SBE streams require the "stream" subprotocol during handshake
-    ws_kwargs = (; suppress_close_error=true, subprotocols=["stream"])
-
     # Proxy settings
     proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
-    if proxy_url !== nothing
-        ws_kwargs = merge(ws_kwargs, (; proxy=proxy_url,))
-    end
 
     @info "Connecting to SBE stream: $uri"
 
     client.ws_task = @async begin
         while client.should_reconnect
             try
-                HTTP.WebSockets.open(uri; headers=headers, ws_kwargs...) do ws
-                    client.ws_connection = ws
-                    @info "✅ Connected to SBE Market Data Stream"
-
-                    # Resubscribe to existing streams
-                    if !isempty(client.subscriptions)
-                        streams = collect(keys(client.subscriptions))
-                        @info "Resubscribing to $(length(streams)) streams..."
-
-                        # Send subscription request for all streams
-                        subscribe_msg = JSON3.write(Dict(
-                            "method" => "SUBSCRIBE",
-                            "params" => streams,
-                            "id" => next_request_id!(client)
-                        ))
-
-                        try
-                            HTTP.WebSockets.send(ws, subscribe_msg)
-                            @info "Sent resubscription request for: $(join(streams, ", "))"
-                        catch e
-                            @error "Failed to resubscribe: $e"
-                        end
+                # Binance SBE streams require the "stream" subprotocol during handshake
+                # Use direct keyword args to avoid NamedTuple merge overhead
+                if proxy_url !== nothing
+                    HTTP.WebSockets.open(uri; headers=headers, suppress_close_error=true,
+                                         subprotocols=["stream"], proxy=proxy_url) do ws
+                        _handle_sbe_ws_session(client, ws)
                     end
-
-                    # Start ping/pong handler
-                    ping_task = @async handle_ping_pong(client, ws)
-
-                    try
-                        for msg in ws
-                            if !client.should_reconnect
-                                break
-                            end
-
-                            # Check message type: text (JSON control) or binary (SBE data)
-                            if msg isa String
-                                handle_control_message(client, msg)
-                            elseif msg isa Vector{UInt8}
-                                handle_sbe_message(client, msg)
-                            else
-                                @warn "Unknown message type: $(typeof(msg))"
-                            end
-                        end
-                    finally
-                        # Stop ping task
-                        if !isnothing(ping_task) && !istaskdone(ping_task)
-                            Base.@async Base.throwto(ping_task, InterruptException())
-                        end
+                else
+                    HTTP.WebSockets.open(uri; headers=headers, suppress_close_error=true,
+                                         subprotocols=["stream"]) do ws
+                        _handle_sbe_ws_session(client, ws)
                     end
                 end
 
@@ -300,28 +309,33 @@ function handle_sbe_message(client::SBEStreamClient, data::Vector{UInt8})
         decoded = SBEDecoder.decode_sbe_message(data)
 
         # Route to appropriate callback based on message type
+        # Use get() for single lookup instead of haskey() + indexing (avoids double lookup)
         if decoded isa TradeEvent
             stream_name = "$(lowercase(decoded.symbol))@trade"
-            if haskey(client.subscriptions, stream_name)
-                Base.invokelatest(client.subscriptions[stream_name], decoded)
+            callback = get(client.subscriptions, stream_name, nothing)
+            if callback !== nothing
+                Base.invokelatest(callback, decoded)
             end
 
         elseif decoded isa BestBidAskEvent
             stream_name = "$(lowercase(decoded.symbol))@bestBidAsk"
-            if haskey(client.subscriptions, stream_name)
-                Base.invokelatest(client.subscriptions[stream_name], decoded)
+            callback = get(client.subscriptions, stream_name, nothing)
+            if callback !== nothing
+                Base.invokelatest(callback, decoded)
             end
 
         elseif decoded isa DepthSnapshotEvent
             stream_name = "$(lowercase(decoded.symbol))@depth20"
-            if haskey(client.subscriptions, stream_name)
-                Base.invokelatest(client.subscriptions[stream_name], decoded)
+            callback = get(client.subscriptions, stream_name, nothing)
+            if callback !== nothing
+                Base.invokelatest(callback, decoded)
             end
 
         elseif decoded isa DepthDiffEvent
             stream_name = "$(lowercase(decoded.symbol))@depth"
-            if haskey(client.subscriptions, stream_name)
-                Base.invokelatest(client.subscriptions[stream_name], decoded)
+            callback = get(client.subscriptions, stream_name, nothing)
+            if callback !== nothing
+                Base.invokelatest(callback, decoded)
             end
         else
             @warn "Unknown SBE message type: $(typeof(decoded))"

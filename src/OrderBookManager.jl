@@ -538,7 +538,7 @@ function rebuild_cache!(manager::OrderBookManager)
         manager.sorted_bids[idx] = (price, qty)
         idx += 1
     end
-    sort!(manager.sorted_bids, by=x -> x[1], rev=true)
+    sort!(manager.sorted_bids, by=first, rev=true)
 
     # Rebuild sorted asks (ascending by price)
     resize!(manager.sorted_asks, length(manager.asks))
@@ -547,7 +547,7 @@ function rebuild_cache!(manager::OrderBookManager)
         manager.sorted_asks[idx] = (price, qty)
         idx += 1
     end
-    sort!(manager.sorted_asks, by=x -> x[1])
+    sort!(manager.sorted_asks, by=first)
 
     manager.cache_valid[] = true
 end

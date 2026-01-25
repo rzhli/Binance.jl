@@ -126,42 +126,14 @@ end
 # Helper Functions
 # ============================================================================
 
-"""Read little-endian integer from byte array using unsafe pointer access for performance"""
-@inline function read_uint16(data::Vector{UInt8}, offset::Int)
-    @inbounds begin
-        return UInt16(data[offset]) | (UInt16(data[offset+1]) << 8)
+# 预计算的 10^n 查找表（exponent 范围 -20 到 +20）
+# Binance 价格/数量通常使用 -8 到 -2 范围的指数
+const POWER_OF_10_TABLE = let
+    table = zeros(Float64, 41)  # -20 to +20, 索引 1 到 41
+    for i in -20:20
+        table[i + 21] = 10.0^i
     end
-end
-
-@inline function read_uint32(data::Vector{UInt8}, offset::Int)
-    @inbounds begin
-        return UInt32(data[offset]) |
-               (UInt32(data[offset+1]) << 8) |
-               (UInt32(data[offset+2]) << 16) |
-               (UInt32(data[offset+3]) << 24)
-    end
-end
-
-@inline function read_int64(data::Vector{UInt8}, offset::Int)
-    @inbounds begin
-        return reinterpret(Int64,
-            UInt64(data[offset]) |
-            (UInt64(data[offset+1]) << 8) |
-            (UInt64(data[offset+2]) << 16) |
-            (UInt64(data[offset+3]) << 24) |
-            (UInt64(data[offset+4]) << 32) |
-            (UInt64(data[offset+5]) << 40) |
-            (UInt64(data[offset+6]) << 48) |
-            (UInt64(data[offset+7]) << 56))
-    end
-end
-
-@inline function read_int8(data::Vector{UInt8}, offset::Int)
-    @inbounds return reinterpret(Int8, data[offset])
-end
-
-@inline function read_uint8(data::Vector{UInt8}, offset::Int)
-    @inbounds return data[offset]
+    tuple(table...)  # 转换为 tuple 以获得更好的性能
 end
 
 """
@@ -171,14 +143,23 @@ Convert SBE mantissa/exponent representation to floating point number.
 
 Formula: value = mantissa × 10^exponent
 
+Uses a precomputed lookup table for common exponent values (-20 to +20).
+
 # Example
 ```julia
 # Price: mantissa=9553554, exponent=-2 → 95535.54
 price = mantissa_to_float(9553554, -2)
 ```
 """
-function mantissa_to_float(mantissa::Int64, exponent::Int8)
-    return Float64(mantissa) * 10.0^Float64(exponent)
+@inline function mantissa_to_float(mantissa::Int64, exponent::Int8)
+    # 查找表范围：-20 到 +20 (索引 1 到 41)
+    idx = Int(exponent) + 21
+    @inbounds if 1 <= idx <= 41
+        return Float64(mantissa) * POWER_OF_10_TABLE[idx]
+    else
+        # 超出查找表范围时回退到计算
+        return Float64(mantissa) * 10.0^Float64(exponent)
+    end
 end
 
 """Read variable-length UTF-8 string (varString8)"""
@@ -189,6 +170,46 @@ end
     end
     @inbounds str = String(view(data, offset+1:offset+length))
     return str, offset + 1 + length
+end
+
+# ============================================================================
+# Byte Reading Functions (Little Endian)
+# ============================================================================
+
+"""Read UInt8 from byte array"""
+@inline function read_uint8(data::Vector{UInt8}, offset::Int)
+    @inbounds return data[offset]
+end
+
+"""Read Int8 from byte array"""
+@inline function read_int8(data::Vector{UInt8}, offset::Int)
+    @inbounds return reinterpret(Int8, data[offset])
+end
+
+"""Read UInt16 from byte array (little endian)"""
+@inline function read_uint16(data::Vector{UInt8}, offset::Int)
+    @inbounds return UInt16(data[offset]) | (UInt16(data[offset+1]) << 8)
+end
+
+"""Read UInt32 from byte array (little endian)"""
+@inline function read_uint32(data::Vector{UInt8}, offset::Int)
+    @inbounds return UInt32(data[offset]) |
+                    (UInt32(data[offset+1]) << 8) |
+                    (UInt32(data[offset+2]) << 16) |
+                    (UInt32(data[offset+3]) << 24)
+end
+
+"""Read Int64 from byte array (little endian)"""
+@inline function read_int64(data::Vector{UInt8}, offset::Int)
+    @inbounds return reinterpret(Int64,
+        UInt64(data[offset]) |
+        (UInt64(data[offset+1]) << 8) |
+        (UInt64(data[offset+2]) << 16) |
+        (UInt64(data[offset+3]) << 24) |
+        (UInt64(data[offset+4]) << 32) |
+        (UInt64(data[offset+5]) << 40) |
+        (UInt64(data[offset+6]) << 48) |
+        (UInt64(data[offset+7]) << 56))
 end
 
 # ============================================================================
