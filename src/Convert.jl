@@ -816,8 +816,8 @@ Weight: 3000 (UID)
 ```julia
 # Get all open limit orders
 orders = convert_limit_query_open_orders(client)
-for order in orders
-    println("Order $(order.orderId): $(order.fromAsset) → $(order.toAsset) at $(order.ratio)")
+for o in orders
+    println("Order \$(o.orderId): \$(o.fromAsset) -> \$(o.toAsset) at \$(o.ratio)")
 end
 ```
 """
