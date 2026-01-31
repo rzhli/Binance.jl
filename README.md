@@ -24,6 +24,14 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.7.2 - Error Codes & Performance (2025-01-31)
+
+- **50+ new SPOT API error codes** in `Errors.jl` (FIX, SBE, OCO/OPO, parameter errors)
+- **5 new filter failure descriptions** (NOTIONAL, MAX_NUM_ORDER_AMENDS, etc.)
+- **Convert.jl performance optimization** (show methods, tuple-based `in` checks)
+
+---
+
 ### v0.7.0 - SDK Split & BinanceFIX (2025-12-11) 🔧
 
 **Breaking Change**: FIX API separated into standalone `BinanceFIX.jl` package.
