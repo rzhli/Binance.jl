@@ -741,7 +741,7 @@ function convert_limit_place_order(
     base_amount::Union{Float64,Nothing}=nothing,
     quote_amount::Union{Float64,Nothing}=nothing,
     wallet_type::String=WALLET_SPOT
-)
+    )
     # Validate side
     side = uppercase(side)
     if !(side in ("BUY", "SELL"))

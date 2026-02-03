@@ -549,7 +549,7 @@ StructTypes.lower(k::Kline) = [
     Int64(round(datetime2unix(k.close_time) * 1000)), string(k.quote_volume), k.number_of_trades,
     string(k.taker_base_volume), string(k.taker_quote_volume), k.ignore
 ]
-StructTypes.construct(::Type{Kline}, arr::Vector) = Kline(
+StructTypes.construct(::Type{Kline}, arr::AbstractVector) = Kline(
     unix2datetime(arr[1] / 1000),
     parse(Float64, arr[2]),
     parse(Float64, arr[3]),
