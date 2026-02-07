@@ -106,42 +106,36 @@ function sign_message(signer::Ed25519Signer, message::String)
     end
 end
 
-# Pre-allocated buffers for HMAC operations (thread-local could be used for multi-threading)
-const HMAC_BLOCK_SIZE = 64
-const HMAC_PADDED_KEY = Vector{UInt8}(undef, HMAC_BLOCK_SIZE)
-const HMAC_INNER_KEY = Vector{UInt8}(undef, HMAC_BLOCK_SIZE)
-const HMAC_OUTER_KEY = Vector{UInt8}(undef, HMAC_BLOCK_SIZE)
-
-# HMAC-SHA256 implementation with pre-allocated buffers
+# HMAC-SHA256 implementation with local buffers (thread-safe)
 function hmac_sha256(key::Vector{UInt8}, message::Vector{UInt8})
     # If key is longer than block size, hash it
-    actual_key = length(key) > HMAC_BLOCK_SIZE ? sha256(key) : key
+    block_size = 64
+    actual_key = length(key) > block_size ? sha256(key) : key
     key_len = length(actual_key)
 
-    # Pad key to block size using pre-allocated buffer
+    # Pad key to block size
+    padded_key = Vector{UInt8}(undef, block_size)
     @inbounds for i in 1:key_len
-        HMAC_PADDED_KEY[i] = actual_key[i]
+        padded_key[i] = actual_key[i]
     end
-    @inbounds for i in (key_len+1):HMAC_BLOCK_SIZE
-        HMAC_PADDED_KEY[i] = 0x00
-    end
-
-    # XOR key with padding constants into pre-allocated buffers
-    @inbounds for i in 1:HMAC_BLOCK_SIZE
-        HMAC_INNER_KEY[i] = HMAC_PADDED_KEY[i] ⊻ 0x36
-        HMAC_OUTER_KEY[i] = HMAC_PADDED_KEY[i] ⊻ 0x5c
+    @inbounds for i in (key_len+1):block_size
+        padded_key[i] = 0x00
     end
 
-    # Compute inner hash: SHA256(inner_key || message)
-    inner_data = Vector{UInt8}(undef, HMAC_BLOCK_SIZE + length(message))
-    @inbounds copyto!(inner_data, 1, HMAC_INNER_KEY, 1, HMAC_BLOCK_SIZE)
-    @inbounds copyto!(inner_data, HMAC_BLOCK_SIZE + 1, message, 1, length(message))
+    # Compute inner hash: SHA256((key ⊻ 0x36) || message)
+    inner_data = Vector{UInt8}(undef, block_size + length(message))
+    @inbounds for i in 1:block_size
+        inner_data[i] = padded_key[i] ⊻ 0x36
+    end
+    @inbounds copyto!(inner_data, block_size + 1, message, 1, length(message))
     inner_hash = sha256(inner_data)
 
-    # Compute outer hash: SHA256(outer_key || inner_hash)
-    outer_data = Vector{UInt8}(undef, HMAC_BLOCK_SIZE + 32)  # SHA256 output is 32 bytes
-    @inbounds copyto!(outer_data, 1, HMAC_OUTER_KEY, 1, HMAC_BLOCK_SIZE)
-    @inbounds copyto!(outer_data, HMAC_BLOCK_SIZE + 1, inner_hash, 1, 32)
+    # Compute outer hash: SHA256((key ⊻ 0x5c) || inner_hash)
+    outer_data = Vector{UInt8}(undef, block_size + 32)  # SHA256 output is 32 bytes
+    @inbounds for i in 1:block_size
+        outer_data[i] = padded_key[i] ⊻ 0x5c
+    end
+    @inbounds copyto!(outer_data, block_size + 1, inner_hash, 1, 32)
 
     return sha256(outer_data)
 end

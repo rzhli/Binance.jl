@@ -181,7 +181,7 @@ module RESTAPI
             if method == "GET" || method == "DELETE"
                 query_string = build_query_string(params)
                 url *= "?$query_string"
-            elseif method in ["POST", "PUT"]
+            elseif method in ("POST", "PUT")
                 body = build_query_string(params)
                 push!(headers, "Content-Type" => "application/x-www-form-urlencoded")
             end
@@ -189,17 +189,22 @@ module RESTAPI
 
         try
             proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
-            request_kwargs = Dict{Symbol,Any}(:headers => headers)
-            if proxy_url !== nothing
-                request_kwargs[:proxy] = proxy_url
-            end
+            # Use direct keyword args to avoid Dict allocation on every request
             if !isempty(body)
-                request_kwargs[:body] = body
+                if proxy_url !== nothing
+                    response = HTTP.request(method, url; headers=headers, body=body, proxy=proxy_url)
+                else
+                    response = HTTP.request(method, url; headers=headers, body=body)
+                end
+            else
+                if proxy_url !== nothing
+                    response = HTTP.request(method, url; headers=headers, proxy=proxy_url)
+                else
+                    response = HTTP.request(method, url; headers=headers)
+                end
             end
 
-            response = HTTP.request(method, url; request_kwargs...)
-
-            if response.status in [200, 201, 202]
+            if response.status in (200, 201, 202)
                 return JSON3.read(String(response.body))
             else
                 handle_error(client, response)
@@ -300,7 +305,7 @@ module RESTAPI
             "newOrderRespType" => new_order_resp_type
         )
 
-        if order_type in ["LIMIT", "STOP_LOSS_LIMIT", "TAKE_PROFIT_LIMIT", "LIMIT_MAKER"]
+        if order_type in ("LIMIT", "STOP_LOSS_LIMIT", "TAKE_PROFIT_LIMIT", "LIMIT_MAKER")
             params["timeInForce"] = time_in_force
             if isnothing(price)
                 throw(ArgumentError("Price is required for $(order_type) orders"))
@@ -308,7 +313,7 @@ module RESTAPI
             params["price"] = to_decimal_string(price)
         end
 
-        if order_type in ["STOP_LOSS", "STOP_LOSS_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"]
+        if order_type in ("STOP_LOSS", "STOP_LOSS_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT")
             if isnothing(stop_price)
                 throw(ArgumentError("Stop price is required for $(order_type) orders"))
             end
@@ -829,9 +834,8 @@ module RESTAPI
 
     function get_orderbook(client::RESTClient, symbol::String; limit::Int=100, symbolStatus::String="")
         symbol = validate_symbol(symbol)
-        valid_limits = [5, 10, 20, 50, 100, 500, 1000, 5000]
-        if !(limit in valid_limits)
-            throw(ArgumentError("Invalid limit. Valid limits: $(join(valid_limits, ", "))"))
+        if !(limit in (5, 10, 20, 50, 100, 500, 1000, 5000))
+            throw(ArgumentError("Invalid limit. Valid limits: 5, 10, 20, 50, 100, 500, 1000, 5000"))
         end
 
         params = Dict{String,Any}(

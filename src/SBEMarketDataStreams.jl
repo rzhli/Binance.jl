@@ -59,7 +59,7 @@ mutable struct SBEStreamClient
     ws_base_url::String
     ws_connection::Union{HTTP.WebSockets.WebSocket,Nothing}  # Typed WebSocket connection
     ws_task::Union{Task,Nothing}
-    subscriptions::Dict{String,Function}  # stream_name => callback
+    subscriptions::Dict{String,Any}  # stream_name => callback (Any allows concrete closure types)
     should_reconnect::Bool
     next_request_id::Int
 
@@ -76,7 +76,7 @@ mutable struct SBEStreamClient
                       "wss://stream-sbe.testnet.binance.vision:9443" :
                       "wss://stream-sbe.binance.com:9443"
 
-        new(config, ws_base_url, nothing, nothing, Dict{String,Function}(), true, 1)
+        new(config, ws_base_url, nothing, nothing, Dict{String,Any}(), true, 1)
     end
 end
 
@@ -311,31 +311,31 @@ function handle_sbe_message(client::SBEStreamClient, data::Vector{UInt8})
         # Route to appropriate callback based on message type
         # Use get() for single lookup instead of haskey() + indexing (avoids double lookup)
         if decoded isa TradeEvent
-            stream_name = "$(lowercase(decoded.symbol))@trade"
+            stream_name = string(lowercase(decoded.symbol), "@trade")
             callback = get(client.subscriptions, stream_name, nothing)
             if callback !== nothing
-                Base.invokelatest(callback, decoded)
+                callback(decoded)
             end
 
         elseif decoded isa BestBidAskEvent
-            stream_name = "$(lowercase(decoded.symbol))@bestBidAsk"
+            stream_name = string(lowercase(decoded.symbol), "@bestBidAsk")
             callback = get(client.subscriptions, stream_name, nothing)
             if callback !== nothing
-                Base.invokelatest(callback, decoded)
+                callback(decoded)
             end
 
         elseif decoded isa DepthSnapshotEvent
-            stream_name = "$(lowercase(decoded.symbol))@depth20"
+            stream_name = string(lowercase(decoded.symbol), "@depth20")
             callback = get(client.subscriptions, stream_name, nothing)
             if callback !== nothing
-                Base.invokelatest(callback, decoded)
+                callback(decoded)
             end
 
         elseif decoded isa DepthDiffEvent
-            stream_name = "$(lowercase(decoded.symbol))@depth"
+            stream_name = string(lowercase(decoded.symbol), "@depth")
             callback = get(client.subscriptions, stream_name, nothing)
             if callback !== nothing
-                Base.invokelatest(callback, decoded)
+                callback(decoded)
             end
         else
             @warn "Unknown SBE message type: $(typeof(decoded))"
@@ -372,7 +372,7 @@ sbe_subscribe(client, "btcusdt@trade", data -> begin
 end)
 ```
 """
-function sbe_subscribe(client::SBEStreamClient, stream_name::String, callback::Function)
+function sbe_subscribe(client::SBEStreamClient, stream_name::String, callback)
     # Ensure connection is established and open
     if isnothing(client.ws_connection) || HTTP.WebSockets.isclosed(client.ws_connection)
         connect_sbe!(client)
@@ -445,7 +445,7 @@ SBE Message: TradesStreamEvent
 Stream: <symbol>@trade
 Update Speed: Real-time
 """
-function sbe_subscribe_trade(client::SBEStreamClient, symbol::String, callback::Function)
+function sbe_subscribe_trade(client::SBEStreamClient, symbol::String, callback)
     stream_name = "$(lowercase(symbol))@trade"
     return sbe_subscribe(client, stream_name, callback)
 end
@@ -461,7 +461,7 @@ Update Speed: Real-time
 
 Note: Auto-culling means outdated events may be dropped under high load.
 """
-function sbe_subscribe_best_bid_ask(client::SBEStreamClient, symbol::String, callback::Function)
+function sbe_subscribe_best_bid_ask(client::SBEStreamClient, symbol::String, callback)
     stream_name = "$(lowercase(symbol))@bestBidAsk"
     return sbe_subscribe(client, stream_name, callback)
 end
@@ -477,7 +477,7 @@ Update Speed: 50ms
 
 Use this to maintain a local order book with incremental updates.
 """
-function sbe_subscribe_depth(client::SBEStreamClient, symbol::String, callback::Function)
+function sbe_subscribe_depth(client::SBEStreamClient, symbol::String, callback)
     stream_name = "$(lowercase(symbol))@depth"
     return sbe_subscribe(client, stream_name, callback)
 end
@@ -491,7 +491,7 @@ SBE Message: DepthSnapshotStreamEvent
 Stream: <symbol>@depth20
 Update Speed: 50ms
 """
-function sbe_subscribe_depth20(client::SBEStreamClient, symbol::String, callback::Function)
+function sbe_subscribe_depth20(client::SBEStreamClient, symbol::String, callback)
     stream_name = "$(lowercase(symbol))@depth20"
     return sbe_subscribe(client, stream_name, callback)
 end
@@ -547,7 +547,7 @@ streams = ["btcusdt@trade", "ethusdt@trade", "btcusdt@bestBidAsk"]
 sbe_subscribe_combined(client, streams, data -> println(data))
 ```
 """
-function sbe_subscribe_combined(client::SBEStreamClient, streams::Vector{String}, callback::Function)
+function sbe_subscribe_combined(client::SBEStreamClient, streams::Vector{String}, callback)
     for stream in streams
         sbe_subscribe(client, stream, callback)
     end

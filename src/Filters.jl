@@ -267,6 +267,12 @@ module Filters
 
     # --- Utility Functions (from former Utils.jl) ---
 
+    # Pre-allocated validation tuples (avoid per-call array allocation)
+    const VALID_INTERVALS = ("1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M")
+    const VALID_ORDER_TYPES = ("LIMIT", "MARKET", "STOP_LOSS", "STOP_LOSS_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT", "LIMIT_MAKER")
+    const VALID_SIDES = ("BUY", "SELL")
+    const VALID_TIME_IN_FORCE = ("GTC", "IOC", "FOK")
+
     function validate_symbol(symbol::String)
         if isempty(symbol)
             throw(ArgumentError("Symbol cannot be empty"))
@@ -275,33 +281,29 @@ module Filters
     end
 
     function validate_interval(interval::String)
-        valid_intervals = ["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
-        if !(interval in valid_intervals)
-            throw(ArgumentError("Invalid interval. Valid intervals: $(join(valid_intervals, ", "))"))
+        if !(interval in VALID_INTERVALS)
+            throw(ArgumentError("Invalid interval. Valid intervals: $(join(VALID_INTERVALS, ", "))"))
         end
         return interval
     end
 
     function validate_order_type(order_type::String)
-        valid_types = ["LIMIT", "MARKET", "STOP_LOSS", "STOP_LOSS_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT", "LIMIT_MAKER"]
-        if !(order_type in valid_types)
-            throw(ArgumentError("Invalid order type. Valid types: $(join(valid_types, ", "))"))
+        if !(order_type in VALID_ORDER_TYPES)
+            throw(ArgumentError("Invalid order type. Valid types: $(join(VALID_ORDER_TYPES, ", "))"))
         end
         return order_type
     end
 
     function validate_side(side::String)
-        valid_sides = ["BUY", "SELL"]
-        if !(side in valid_sides)
-            throw(ArgumentError("Invalid side. Valid sides: $(join(valid_sides, ", "))"))
+        if !(side in VALID_SIDES)
+            throw(ArgumentError("Invalid side. Valid sides: $(join(VALID_SIDES, ", "))"))
         end
         return side
     end
 
     function validate_time_in_force(tif::String)
-        valid_tifs = ["GTC", "IOC", "FOK"]
-        if !(tif in valid_tifs)
-            throw(ArgumentError("Invalid time in force. Valid values: $(join(valid_tifs, ", "))"))
+        if !(tif in VALID_TIME_IN_FORCE)
+            throw(ArgumentError("Invalid time in force. Valid values: $(join(VALID_TIME_IN_FORCE, ", "))"))
         end
         return tif
     end

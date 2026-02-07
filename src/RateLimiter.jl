@@ -28,9 +28,13 @@ module RateLimiter
     mutable struct BinanceRateLimit
         limits::Vector{APILimit}
         # Timestamp until which all requests should be paused due to a 429/418 response
-        backoff_until::Union{DateTime, Nothing}
+        # typemin(DateTime) means no backoff active (sentinel to avoid Union{DateTime,Nothing})
+        backoff_until::DateTime
         lock::ReentrantLock
     end
+
+    # Sentinel value for "no backoff"
+    const NO_BACKOFF = typemin(DateTime)
 
     function BinanceRateLimit(config::BinanceConfig)
         limits = Vector{APILimit}()
@@ -48,7 +52,7 @@ module RateLimiter
         if config.max_connections_per_5m > 0
             push!(limits, APILimit("CONNECTIONS", Minute(5), config.max_connections_per_5m))
         end
-        return BinanceRateLimit(limits, nothing, ReentrantLock())
+        return BinanceRateLimit(limits, NO_BACKOFF, ReentrantLock())
     end
 
     """
@@ -78,13 +82,13 @@ module RateLimiter
     function check_and_wait(rate_limiter::BinanceRateLimit, request_type::String)
         # 1. Handle reactive backoff from 429/418 errors
         lock(rate_limiter.lock) do
-            if !isnothing(rate_limiter.backoff_until) && now(UTC) < rate_limiter.backoff_until
+            if rate_limiter.backoff_until != NO_BACKOFF && now(UTC) < rate_limiter.backoff_until
                 sleep_duration = (rate_limiter.backoff_until - now(UTC)).value / 1000.0
                 if sleep_duration > 0
                     @info "Sleeping for $(round(sleep_duration, digits=2)) seconds due to rate limit backoff."
                     sleep(sleep_duration)
                 end
-                rate_limiter.backoff_until = nothing # Reset after waiting
+                rate_limiter.backoff_until = NO_BACKOFF # Reset after waiting
             end
         end
 
@@ -128,7 +132,7 @@ module RateLimiter
 Converts the interval string and number from a Binance rate limit update
 into milliseconds (type-stable Int64).
 """
-function interval_to_ms(interval::String, interval_num::Int)::Union{Int64, Nothing}
+function interval_to_ms(interval::String, interval_num::Int)::Int64
     if interval == "SECOND"
         return Int64(interval_num) * 1000
     elseif interval == "MINUTE"
@@ -140,7 +144,7 @@ function interval_to_ms(interval::String, interval_num::Int)::Union{Int64, Nothi
     else
         # Fallback for unknown intervals, though this shouldn't happen with the current API
         @warn "Unknown rate limit interval received: '$interval'. Cannot update this limit."
-        return nothing
+        return Int64(0)
     end
 end
 
@@ -163,7 +167,7 @@ function update_limits!(rate_limiter::BinanceRateLimit, new_limits)
             end
 
             interval_ms = interval_to_ms(new_limit.interval, new_limit.intervalNum)
-            if isnothing(interval_ms)
+            if interval_ms == 0
                 continue # Skip if the interval was unknown
             end
 

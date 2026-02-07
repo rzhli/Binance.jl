@@ -20,19 +20,19 @@ module MarketDataStreams
         config::BinanceConfig
         ws_base_url::String
         ws_connections::Dict{String,Task}
-        ws_callbacks::Dict{String,Function}
+        ws_callbacks::Dict{String,Any}  # Any allows concrete closure types
         should_reconnect::Dict{String,Bool}
 
         function MarketDataStreamClient(config_path::String="config.toml")
             config = from_toml(config_path)
             ws_base_url = config.testnet ? "wss://stream.testnet.binance.vision/ws/" : "wss://stream.binance.com:9443/ws/"
-            new(config, ws_base_url, Dict{String,Task}(), Dict{String,Function}(), Dict{String,Bool}())
+            new(config, ws_base_url, Dict{String,Task}(), Dict{String,Any}(), Dict{String,Bool}())
         end
     end
 
     # --- Websocket Functions ---
 
-    function subscribe(client::MarketDataStreamClient, stream_name::String, callback::Function; struct_type=nothing)
+    function subscribe(client::MarketDataStreamClient, stream_name::String, callback; struct_type=nothing)
         client.ws_callbacks[stream_name] = callback
         client.should_reconnect[stream_name] = true
 
@@ -90,7 +90,8 @@ module MarketDataStreams
                     JSON3.read(msg)
                 end
                 if haskey(client.ws_callbacks, stream_name)
-                    client.ws_callbacks[stream_name](data)
+                    cb = client.ws_callbacks[stream_name]
+                    cb(data)
                 end
             catch e
                 println("⚠️ Error processing WebSocket message on stream '$stream_name': $e")
@@ -99,13 +100,13 @@ module MarketDataStreams
         end
     end
 
-    function subscribe_ticker(client::MarketDataStreamClient, symbol::String, callback::Function)
+    function subscribe_ticker(client::MarketDataStreamClient, symbol::String, callback)
         symbol = lowercase(validate_symbol(symbol))
         stream_name = "$(symbol)@ticker"
         return subscribe(client, stream_name, callback, struct_type=Ticker24hr)
     end
 
-    function subscribe_mini_ticker(client::MarketDataStreamClient, symbol::String, callback::Function)
+    function subscribe_mini_ticker(client::MarketDataStreamClient, symbol::String, callback)
         symbol = lowercase(validate_symbol(symbol))
         stream_name = "$(symbol)@miniTicker"
         return subscribe(client, stream_name, callback)
@@ -125,7 +126,7 @@ module MarketDataStreams
 
     See: https://binance-docs.github.io/apidocs/spot/en/#change-log
     """
-    function subscribe_all_tickers(client::MarketDataStreamClient, callback::Function)
+    function subscribe_all_tickers(client::MarketDataStreamClient, callback)
         @warn """
         DEPRECATION WARNING: subscribe_all_tickers() uses the deprecated !ticker@arr stream.
         This stream has been deprecated by Binance as of 2025-11-14 and will be removed in the future.
@@ -138,24 +139,24 @@ module MarketDataStreams
         return subscribe(client, stream_name, callback)
     end
 
-    function subscribe_all_mini_tickers(client::MarketDataStreamClient, callback::Function)
+    function subscribe_all_mini_tickers(client::MarketDataStreamClient, callback)
         stream_name = "!miniTicker@arr"
         return subscribe(client, stream_name, callback)
     end
 
-    function subscribe_book_ticker(client::MarketDataStreamClient, symbol::String, callback::Function)
+    function subscribe_book_ticker(client::MarketDataStreamClient, symbol::String, callback)
         symbol = lowercase(validate_symbol(symbol))
         stream_name = "$(symbol)@bookTicker"
         return subscribe(client, stream_name, callback)
     end
 
-    function subscribe_all_book_tickers(client::MarketDataStreamClient, callback::Function)
+    function subscribe_all_book_tickers(client::MarketDataStreamClient, callback)
         stream_name = "!bookTicker@arr"
         return subscribe(client, stream_name, callback)
     end
 
     function subscribe_depth(
-        client::MarketDataStreamClient, symbol::String, callback::Function;
+        client::MarketDataStreamClient, symbol::String, callback;
         levels::Union{Int,String}="", update_speed::String="1000ms"
     )
         symbol = lowercase(validate_symbol(symbol))
@@ -163,7 +164,7 @@ module MarketDataStreams
         stream_name = if isempty(string(levels))
             "$(symbol)@depth"
         else
-            if !(levels in [5, 10, 20, "5", "10", "20"])
+            if !(levels in (5, 10, 20, "5", "10", "20"))
                 error("Invalid depth levels. Must be 5, 10, or 20")
             end
             "$(symbol)@depth$(levels)"
@@ -179,7 +180,7 @@ module MarketDataStreams
     end
 
     function subscribe_diff_depth(
-        client::MarketDataStreamClient, symbol::String, callback::Function;
+        client::MarketDataStreamClient, symbol::String, callback;
         update_speed::String="1000ms"
     )
         symbol = lowercase(validate_symbol(symbol))
@@ -194,36 +195,36 @@ module MarketDataStreams
         return subscribe(client, stream_name, callback)
     end
 
-    function subscribe_kline(client::MarketDataStreamClient, symbol::String, interval::String, callback::Function)
+    function subscribe_kline(client::MarketDataStreamClient, symbol::String, interval::String, callback)
         symbol = lowercase(validate_symbol(symbol))
         interval = validate_interval(interval)
         stream_name = "$(symbol)@kline_$(interval)"
         return subscribe(client, stream_name, callback)
     end
 
-    function subscribe_trade(client::MarketDataStreamClient, symbol::String, callback::Function)
+    function subscribe_trade(client::MarketDataStreamClient, symbol::String, callback)
         symbol = lowercase(validate_symbol(symbol))
         stream_name = "$(symbol)@trade"
         return subscribe(client, stream_name, callback, struct_type=WebSocketTrade)
     end
 
-    function subscribe_agg_trade(client::MarketDataStreamClient, symbol::String, callback::Function)
+    function subscribe_agg_trade(client::MarketDataStreamClient, symbol::String, callback)
         symbol = lowercase(validate_symbol(symbol))
         stream_name = "$(symbol)@aggTrade"
         return subscribe(client, stream_name, callback, struct_type=AggregateTrade)
     end
 
-    function subscribe_avg_price(client::MarketDataStreamClient, symbol::String, callback::Function)
+    function subscribe_avg_price(client::MarketDataStreamClient, symbol::String, callback)
         symbol = lowercase(validate_symbol(symbol))
         stream_name = "$(symbol)@avgPrice"
         return subscribe(client, stream_name, callback)
     end
 
-    function subscribe_rolling_ticker(client::MarketDataStreamClient, symbol::String, window_size::String, callback::Function)
+    function subscribe_rolling_ticker(client::MarketDataStreamClient, symbol::String, window_size::String, callback)
 
         symbol = lowercase(validate_symbol(symbol))
 
-        if !(window_size in ["1h", "4h", "1d"])
+        if !(window_size in ("1h", "4h", "1d"))
             error("Invalid window size. Must be '1h', '4h', or '1d'")
         end
 
@@ -231,7 +232,7 @@ module MarketDataStreams
         return subscribe(client, stream_name, callback)
     end
 
-    function subscribe_combined(client::MarketDataStreamClient, streams::Vector{String}, callback::Function)
+    function subscribe_combined(client::MarketDataStreamClient, streams::Vector{String}, callback)
         combined_stream = join(streams, "/")
         return subscribe(client, combined_stream, callback)
     end

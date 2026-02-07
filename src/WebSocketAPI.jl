@@ -788,7 +788,7 @@ module WebSocketAPI
             if !isempty(symbol) || !isnothing(symbols)
                 throw(ArgumentError("symbolStatus cannot be used in combination with symbol or symbols"))
             end
-            if !(symbolStatus in ["TRADING", "HALT", "BREAK"])
+            if !(symbolStatus in ("TRADING", "HALT", "BREAK"))
                 throw(ArgumentError("Invalid symbolStatus. Valid values: TRADING, HALT, BREAK"))
             end
             params["symbolStatus"] = symbolStatus
@@ -804,9 +804,8 @@ module WebSocketAPI
 
     function depth(client::WebSocketClient, symbol::String; limit::Int=100, symbolStatus::String="")
         # Validate limit values
-        valid_limits = [5, 10, 20, 50, 100, 500, 1000, 5000]
-        if !(limit in valid_limits)
-            throw(ArgumentError("Invalid limit for depth. Valid values: $(join(valid_limits, ", "))"))
+        if !(limit in (5, 10, 20, 50, 100, 500, 1000, 5000))
+            throw(ArgumentError("Invalid limit for depth. Valid values: 5, 10, 20, 50, 100, 500, 1000, 5000"))
         end
 
         params = Dict{String,Any}("symbol" => symbol)
@@ -887,9 +886,8 @@ module WebSocketAPI
         time_zone::String="0", limit::Int=500)
         
         # Validate interval
-        valid_intervals = ["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
-        if !(interval in valid_intervals)
-            throw(ArgumentError("Invalid interval. Valid values: $(join(valid_intervals, ", "))"))
+        if !(interval in ("1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"))
+            throw(ArgumentError("Invalid interval. Valid values: 1s, 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M"))
         end
         
         # Validate limit
@@ -978,7 +976,7 @@ module WebSocketAPI
 
     function ticker_24hr(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], type::String="FULL", symbolStatus::String="")
         # Validate type
-        if !(type in ["FULL", "MINI"])
+        if !(type in ("FULL", "MINI"))
             throw(ArgumentError("Invalid type. Valid values: FULL, MINI"))
         end
 
@@ -1020,7 +1018,7 @@ module WebSocketAPI
         end
 
         # Validate type
-        if !(type in ["FULL", "MINI"])
+        if !(type in ("FULL", "MINI"))
             throw(ArgumentError("Invalid type. Valid values: FULL, MINI"))
         end
 
@@ -1056,23 +1054,33 @@ module WebSocketAPI
         end
     end
 
+    # Validate window_size format: 1m-59m, 1h-23h, 1d-7d
+    @inline function _is_valid_window_size(ws::String)::Bool
+        len = length(ws)
+        len < 2 && return false
+        suffix = ws[end]
+        num_str = @view ws[1:end-1]
+        num = tryparse(Int, num_str)
+        num === nothing && return false
+        if suffix == 'm'
+            return 1 <= num <= 59
+        elseif suffix == 'h'
+            return 1 <= num <= 23
+        elseif suffix == 'd'
+            return 1 <= num <= 7
+        end
+        return false
+    end
+
     function ticker(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], window_size::String="1d", type::String="FULL", symbolStatus::String="")
 
         # Validate window size
-        valid_window_sizes = [
-            # Minutes: 1m to 59m
-            ["$(i)m" for i in 1:59]...,
-            # Hours: 1h to 23h
-            ["$(i)h" for i in 1:23]...,
-            # Days: 1d to 7d
-            ["$(i)d" for i in 1:7]...
-        ]
-        if !(window_size in valid_window_sizes)
+        if !_is_valid_window_size(window_size)
             throw(ArgumentError("Invalid window size. Valid formats: 1m-59m, 1h-23h, 1d-7d"))
         end
 
         # Validate type
-        if !(type in ["FULL", "MINI"])
+        if !(type in ("FULL", "MINI"))
             throw(ArgumentError("Invalid type. Valid values: FULL, MINI"))
         end
 
@@ -1202,15 +1210,15 @@ module WebSocketAPI
         kwargs...  # Accept any additional parameters
         )
         # Basic validation only
-        side in ["BUY", "SELL"] || throw(ArgumentError("Invalid side: $side"))
+        side in ("BUY", "SELL") || throw(ArgumentError("Invalid side: $side"))
 
         # Set defaults
-        if type in ["LIMIT", "LIMIT_MAKER"] && isempty(timeInForce)
+        if type in ("LIMIT", "LIMIT_MAKER") && isempty(timeInForce)
             timeInForce = "GTC"
         end
 
         if isempty(newOrderRespType)
-            newOrderRespType = (type in ["MARKET", "LIMIT"]) ? "FULL" : "ACK"
+            newOrderRespType = (type in ("MARKET", "LIMIT")) ? "FULL" : "ACK"
         end
 
         # Build parameters
@@ -1337,17 +1345,17 @@ module WebSocketAPI
         pegPriceType::String="", pegOffsetValue::Union{Int,Nothing}=nothing, pegOffsetType::String=""
         )
         # Validate cancelReplaceMode
-        if !(cancelReplaceMode in ["STOP_ON_FAILURE", "ALLOW_FAILURE"])
+        if !(cancelReplaceMode in ("STOP_ON_FAILURE", "ALLOW_FAILURE"))
             throw(ArgumentError("Invalid cancelReplaceMode. Valid values: STOP_ON_FAILURE, ALLOW_FAILURE"))
         end
         
         # Validate cancelRestrictions if provided
-        if !isempty(cancelRestrictions) && !(cancelRestrictions in ["ONLY_NEW", "ONLY_PARTIALLY_FILLED"])
+        if !isempty(cancelRestrictions) && !(cancelRestrictions in ("ONLY_NEW", "ONLY_PARTIALLY_FILLED"))
             throw(ArgumentError("Invalid cancelRestrictions. Valid values: ONLY_NEW, ONLY_PARTIALLY_FILLED"))
         end
         
         # Validate orderRateLimitExceededMode
-        if !(orderRateLimitExceededMode in ["DO_NOTHING", "CANCEL_ONLY"])
+        if !(orderRateLimitExceededMode in ("DO_NOTHING", "CANCEL_ONLY"))
             throw(ArgumentError("Invalid orderRateLimitExceededMode. Valid values: DO_NOTHING, CANCEL_ONLY"))
         end
 
