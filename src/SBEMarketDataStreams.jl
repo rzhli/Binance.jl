@@ -308,6 +308,11 @@ function handle_sbe_message(client::SBEStreamClient, data::Vector{UInt8})
         # Decode SBE message using the decoder
         decoded = SBEDecoder.decode_sbe_message(data)
 
+        # Skip unknown message types (e.g., NonRepresentableMessage from newer schema versions)
+        if isnothing(decoded)
+            return
+        end
+
         # Route to appropriate callback based on message type
         # Use get() for single lookup instead of haskey() + indexing (avoids double lookup)
         if decoded isa TradeEvent

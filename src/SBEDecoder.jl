@@ -256,7 +256,8 @@ function decode_sbe_message(data::Vector{UInt8})
     elseif header.templateId == TEMPLATE_ID_DEPTH_DIFF
         return decode_depth_diff_event(data, header)
     else
-        error("Unknown template ID: $(header.templateId)")
+        @warn "Unknown SBE template ID: $(header.templateId) (schemaId=$(header.schemaId), version=$(header.version)). Update decoder for new schema."
+        return nothing
     end
 end
 
