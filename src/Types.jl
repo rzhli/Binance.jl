@@ -180,6 +180,10 @@ export OrderBook, PriceLevel, MarketTrade, WebSocketTrade, AggregateTrade, Avera
     Ticker24hrMini, TradingDayTicker, TradingDayTickerMini, RollingWindowTicker,
     RollingWindowTickerMini, PriceTicker, BookTicker
 
+# Execution Rules & Reference Price
+export ExecutionRule, SymbolExecutionRules, ExecutionRulesResponse, ReferencePrice,
+    AbstractReferencePriceCalculation, ArithmeticMeanCalculation, ExternalCalculation
+
 # --- ENUM Definitions ---
 
 @enum SymbolStatus TRADING END_OF_DAY HALT BREAK
@@ -884,5 +888,68 @@ function Base.show(io::IO, ::MIME"text/plain", bt::BookTicker)
     @printf(io, "  Bid: %f @ %f\n", parse(Float64, bt.bidQty), parse(Float64, bt.bidPrice))
     @printf(io, "  Ask: %f @ %f\n", parse(Float64, bt.askQty), parse(Float64, bt.askPrice))
 end
+
+# --- Execution Rules & Reference Price ---
+
+struct ExecutionRule
+    ruleType::String
+    bidLimitMultUp::String
+    bidLimitMultDown::String
+    askLimitMultUp::String
+    askLimitMultDown::String
+end
+StructTypes.StructType(::Type{ExecutionRule}) = StructTypes.Struct()
+
+struct SymbolExecutionRules
+    symbol::String
+    rules::Vector{ExecutionRule}
+end
+StructTypes.StructType(::Type{SymbolExecutionRules}) = StructTypes.Struct()
+
+struct ExecutionRulesResponse
+    symbolRules::Vector{SymbolExecutionRules}
+end
+StructTypes.StructType(::Type{ExecutionRulesResponse}) = StructTypes.Struct()
+
+struct ReferencePrice
+    symbol::String
+    referencePrice::Union{String, Nothing}
+    timestamp::DateTime
+end
+StructTypes.StructType(::Type{ReferencePrice}) = StructTypes.CustomStruct()
+StructTypes.construct(::Type{ReferencePrice}, obj) = ReferencePrice(
+    obj["symbol"],
+    get(obj, "referencePrice", nothing),
+    unix2datetime(obj["timestamp"] / 1000)
+)
+
+abstract type AbstractReferencePriceCalculation end
+
+"""
+    ArithmeticMeanCalculation
+
+Reference price is calculated as a simple moving average of trade prices.
+The time window is `bucketWidthMs * bucketCount` milliseconds.
+"""
+struct ArithmeticMeanCalculation <: AbstractReferencePriceCalculation
+    symbol::String
+    calculationType::String   # "ARITHMETIC_MEAN"
+    bucketCount::Int
+    bucketWidthMs::Int
+end
+StructTypes.StructType(::Type{ArithmeticMeanCalculation}) = StructTypes.Struct()
+
+"""
+    ExternalCalculation
+
+Reference price is calculated outside the matching engine.
+`externalCalculationId` identifies the calculation method (e.g. 0 = set manually by operator).
+"""
+struct ExternalCalculation <: AbstractReferencePriceCalculation
+    symbol::String
+    calculationType::String   # "EXTERNAL"
+    externalCalculationId::Int
+end
+StructTypes.StructType(::Type{ExternalCalculation}) = StructTypes.Struct()
 
 end # end of module

@@ -42,9 +42,11 @@ export BinanceException, BinanceError, MalformedRequestError, UnauthorizedError,
 # Export data types
 export ExchangeInfo, RateLimit, SymbolInfo, Order, Trade, Kline, Ticker24hr
 export DecimalPrice, to_decimal_string
+export ExecutionRule, SymbolExecutionRules, ExecutionRulesResponse, ReferencePrice
+export AbstractReferencePriceCalculation, ArithmeticMeanCalculation, ExternalCalculation
 
 # Export Event types
-export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus
+export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus, ServerShutdown
 
 # Export RESTAPI functions
 export get_server_time, get_exchange_info, ping
@@ -54,6 +56,7 @@ export get_open_orders, get_order, get_all_orders, get_my_trades
 export place_oco_order, place_oto_order, place_otoco_order, place_opo_order, place_opoco_order, cancel_order_list
 export place_sor_order, test_sor_order, get_order_list, get_all_order_lists, get_open_order_lists
 export get_agg_trades, get_klines, get_ui_klines, get_avg_price, get_trading_day_ticker, get_ticker
+export get_execution_rules, get_reference_price, get_reference_price_calculation
 
 # Export MarketDataStreams functions
 export subscribe, subscribe_ticker
@@ -62,6 +65,7 @@ export subscribe_user_data, unsubscribe, close_all_connections, list_active_stre
 export subscribe_mini_ticker, subscribe_all_tickers, subscribe_all_mini_tickers
 export subscribe_book_ticker, subscribe_all_book_tickers, subscribe_diff_depth
 export subscribe_rolling_ticker, subscribe_combined, subscribe_avg_price
+export subscribe_reference_price
 
 # Export SBEMarketDataStreams functions
 export sbe_subscribe, sbe_unsubscribe, sbe_subscribe_trade, sbe_unsubscribe_trade
@@ -69,7 +73,7 @@ export sbe_subscribe_best_bid_ask, sbe_unsubscribe_best_bid_ask, sbe_subscribe_c
 export sbe_subscribe_depth, sbe_unsubscribe_depth, sbe_subscribe_depth20, sbe_unsubscribe_depth20
 export sbe_close_all, sbe_list_streams, connect_sbe!
 
-# Export SBE data types (WebSocket SBE - Schema 3:2)
+# Export SBE data types (WebSocket SBE - Schema 3:3)
 export TradeEvent, TradeData, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
 
 # Export WebSocket API functions - Authentication
@@ -79,6 +83,7 @@ export connect!, session_logon, session_status, exchangeInfo, session_logout, di
 export depth, trades_recent, trades_historical, trades_aggregate
 export klines, ui_klines, avg_price, ticker_24hr, ticker_trading_day
 export ticker, ticker_price, ticker_book
+export execution_rules, reference_price, reference_price_calculation
 
 # Export WebSocket API functions - Trading
 export test_order, cancel_replace_order, amend_order, cancel_all_orders

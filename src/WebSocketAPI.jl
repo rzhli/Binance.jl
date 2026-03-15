@@ -16,8 +16,8 @@ module WebSocketAPI
         "executionReport" => ExecutionReport,
         "balanceUpdate" => BalanceUpdate,
         "listStatus" => ListStatus,
-        "eventStreamTerminated" => EventStreamTerminated
-        # Add other event types here as they are implemented
+        "eventStreamTerminated" => EventStreamTerminated,
+        "serverShutdown" => ServerShutdown
     )
 
     # Client and Connection
@@ -33,7 +33,8 @@ module WebSocketAPI
 
     # Market Data
     export depth, trades_recent, trades_historical, trades_aggregate, klines, ui_klines,
-        avg_price, ticker_24hr, ticker_trading_day, ticker, ticker_price, ticker_book
+        avg_price, ticker_24hr, ticker_trading_day, ticker, ticker_price, ticker_book,
+        execution_rules, reference_price, reference_price_calculation
 
     # Trading
     export test_order, order_status, cancel_replace_order,
@@ -291,6 +292,9 @@ module WebSocketAPI
                                         elseif event_type == "eventStreamTerminated"
                                             event_struct = to_struct(EventStreamTerminated, event_payload)
                                             handle_event_stream_terminated!(client, event_struct)
+                                        elseif event_type == "serverShutdown"
+                                            event_struct = to_struct(ServerShutdown, event_payload)
+                                            handle_server_shutdown!(client, event_struct)
                                         else
                                             @warn "Received unhandled event of type '$(event_type)'"
                                         end
@@ -377,6 +381,11 @@ module WebSocketAPI
         event_time = unix2datetime(event.E / 1000)
         @info "User data stream terminated" event_time event_type=event.e
         @info "Reconnect or resubscribe the user data stream as needed." reconnect_enabled=client.should_reconnect
+    end
+
+    function handle_server_shutdown!(client::WebSocketClient, event::ServerShutdown)
+        event_time = unix2datetime(event.E / 1000)
+        @warn "Server shutdown event received. Reconnect to WebSocket API as soon as possible." event_time
     end
     
     """
@@ -1170,6 +1179,64 @@ module WebSocketAPI
 
         response = send_request(client, "ticker.book", params)
         return single_symbol ? to_struct(BookTicker, response) : to_struct(Vector{BookTicker}, response)
+    end
+
+    """
+        execution_rules(client; symbol, symbols, symbolStatus)
+
+    Query execution rules for symbols via WebSocket API.
+
+    Weight: 2 per symbol, 40 for symbolStatus or no params.
+    Only one parameter may be specified.
+    """
+    function execution_rules(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], symbolStatus::String="")
+        params = Dict{String,Any}()
+        if !isempty(symbol)
+            params["symbol"] = symbol
+        elseif !isempty(symbols)
+            params["symbols"] = symbols
+        elseif !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+        response = send_request(client, "executionRules", params)
+        return to_struct(ExecutionRulesResponse, response)
+    end
+
+    """
+        reference_price(client, symbol)
+
+    Query the reference price for a symbol via WebSocket API.
+
+    Weight: 2
+    """
+    function reference_price(client::WebSocketClient, symbol::String)
+        params = Dict{String,Any}("symbol" => symbol)
+        response = send_request(client, "referencePrice", params)
+        return to_struct(ReferencePrice, response)
+    end
+
+    """
+        reference_price_calculation(client, symbol; symbolStatus)
+
+    Describes how reference price is calculated for a given symbol via WebSocket API.
+
+    Weight: 2
+
+    Returns `ArithmeticMeanCalculation` or `ExternalCalculation` depending on
+    the calculation type configured for the symbol.
+    """
+    function reference_price_calculation(client::WebSocketClient, symbol::String; symbolStatus::String="")
+        params = Dict{String,Any}("symbol" => symbol)
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+        response = send_request(client, "referencePrice.calculation", params)
+        calc_type = string(response[:calculationType])
+        if calc_type == "ARITHMETIC_MEAN"
+            return to_struct(ArithmeticMeanCalculation, response)
+        else
+            return to_struct(ExternalCalculation, response)
+        end
     end
 
     # --- Trading Functions ---

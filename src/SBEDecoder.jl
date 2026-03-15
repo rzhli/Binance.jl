@@ -6,11 +6,12 @@ based on the official SBE schema.
 
 Schema Information:
 - Schema ID: 3
-- Supported Versions: 1 (deprecated), 2 (current as of 2025-12-18)
+- Supported Versions: 1 (deprecated), 2 (deprecated), 3 (current as of 2026-03-09)
 - Byte order: Little Endian
 
-Note: Schema version 3:1 is deprecated as of 2025-12-18. Version 3:2 is the current version.
-Both versions use the same message structure, so this decoder is compatible with both.
+Note: Schema version 3:1 is deprecated. Version 3:2 is deprecated as of 2026-03-09.
+Version 3:3 is the current version. All versions use compatible message structures
+for existing template IDs; new template IDs in 3:3 are handled gracefully.
 
 Message Types:
 - TradesStreamEvent (10000)
@@ -31,7 +32,8 @@ export SCHEMA_ID, SCHEMA_VERSION_DEPRECATED, SCHEMA_VERSION_CURRENT
 
 const SCHEMA_ID = UInt16(3)
 const SCHEMA_VERSION_DEPRECATED = UInt16(1)  # Deprecated as of 2025-12-18
-const SCHEMA_VERSION_CURRENT = UInt16(2)     # Current version as of 2025-12-18
+const SCHEMA_VERSION_V2 = UInt16(2)          # Deprecated as of 2026-03-09
+const SCHEMA_VERSION_CURRENT = UInt16(3)     # Current version as of 2026-03-09
 
 # ============================================================================
 # SBE Null Value Constants (for optional fields)

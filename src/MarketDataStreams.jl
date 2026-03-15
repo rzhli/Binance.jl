@@ -11,7 +11,7 @@ module MarketDataStreams
         subscribe_depth, subscribe_diff_depth, subscribe_kline, subscribe_trade,
         subscribe_agg_trade, subscribe_rolling_ticker, subscribe_user_data,
         subscribe_combined, unsubscribe, close_all_connections, list_active_streams,
-        subscribe_avg_price
+        subscribe_avg_price, subscribe_reference_price
 
     """
     A client for subscribing to Binance Market Data WebSocket streams.
@@ -217,6 +217,12 @@ module MarketDataStreams
     function subscribe_avg_price(client::MarketDataStreamClient, symbol::String, callback)
         symbol = lowercase(validate_symbol(symbol))
         stream_name = "$(symbol)@avgPrice"
+        return subscribe(client, stream_name, callback)
+    end
+
+    function subscribe_reference_price(client::MarketDataStreamClient, symbol::String, callback)
+        symbol = lowercase(validate_symbol(symbol))
+        stream_name = "$(symbol)@referencePrice"
         return subscribe(client, stream_name, callback)
     end
 

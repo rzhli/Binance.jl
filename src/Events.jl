@@ -3,8 +3,8 @@ module Events
 using StructTypes
 using ..Types
 
-export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus, 
-        Balance, PartialBookDepth, EventStreamTerminated
+export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus,
+        Balance, PartialBookDepth, EventStreamTerminated, ServerShutdown
 
 struct Balance
     a::String           # Asset
@@ -116,8 +116,15 @@ struct ExecutionReport
     gOT::Union{String, Nothing}# Pegged offset Type
     gOV::Union{Int, Nothing}   # Pegged Offset Value
     gp::Union{String, Nothing} # Pegged Price
+    eR::Union{String, Nothing} # Expiry Reason
 end
 StructTypes.StructType(::Type{ExecutionReport}) = StructTypes.Struct()
+
+struct ServerShutdown
+    e::String           # Event Type ("serverShutdown")
+    E::Int64            # Event Time (ms)
+end
+StructTypes.StructType(::Type{ServerShutdown}) = StructTypes.Struct()
 
 struct PartialBookDepth
     lastUpdateId::Int64

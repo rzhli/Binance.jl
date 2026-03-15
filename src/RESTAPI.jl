@@ -19,7 +19,8 @@ module RESTAPI
         get_ui_klines, get_avg_price, get_trading_day_ticker, get_ticker,
         test_order, cancel_replace_order, amend_order, place_oco_order,
         place_oto_order, place_otoco_order, place_opo_order, place_opoco_order,
-        cancel_order_list, place_sor_order, test_sor_order, get_my_filters
+        cancel_order_list, place_sor_order, test_sor_order, get_my_filters,
+        get_execution_rules, get_reference_price, get_reference_price_calculation
 
     """
     A client for interacting with the Binance REST API.
@@ -1112,6 +1113,66 @@ module RESTAPI
             response_dict[:openTime] = unix2datetime(response_dict[:openTime] / 1000)
             response_dict[:closeTime] = unix2datetime(response_dict[:closeTime] / 1000)
             return response_dict
+        end
+    end
+
+    # --- Execution Rules & Reference Price ---
+
+    """
+        get_execution_rules(client; symbol, symbols, symbolStatus)
+
+    Query execution rules for symbols.
+
+    Weight: 2 per symbol, 40 for symbolStatus or no params.
+    Only one parameter may be specified.
+    """
+    function get_execution_rules(client::RESTClient; symbol::String="", symbols::Vector{String}=String[], symbolStatus::String="")
+        params = Dict{String,Any}()
+        if !isempty(symbol)
+            params["symbol"] = validate_symbol(symbol)
+        elseif !isempty(symbols)
+            params["symbols"] = JSON3.write(validate_symbol.(symbols))
+        elseif !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+        response = make_request(client, "GET", "/api/v3/executionRules"; params=params)
+        return to_struct(ExecutionRulesResponse, response)
+    end
+
+    """
+        get_reference_price(client, symbol)
+
+    Query the reference price for a symbol.
+
+    Weight: 2
+    """
+    function get_reference_price(client::RESTClient, symbol::String)
+        params = Dict{String,Any}("symbol" => validate_symbol(symbol))
+        response = make_request(client, "GET", "/api/v3/referencePrice"; params=params)
+        return to_struct(ReferencePrice, response)
+    end
+
+    """
+        get_reference_price_calculation(client, symbol; symbolStatus)
+
+    Describes how reference price is calculated for a given symbol.
+
+    Weight: 2
+
+    Returns `ArithmeticMeanCalculation` or `ExternalCalculation` depending on
+    the calculation type configured for the symbol.
+    """
+    function get_reference_price_calculation(client::RESTClient, symbol::String; symbolStatus::String="")
+        params = Dict{String,Any}("symbol" => validate_symbol(symbol))
+        if !isempty(symbolStatus)
+            params["symbolStatus"] = symbolStatus
+        end
+        response = make_request(client, "GET", "/api/v3/referencePrice/calculation"; params=params)
+        calc_type = string(response[:calculationType])
+        if calc_type == "ARITHMETIC_MEAN"
+            return to_struct(ArithmeticMeanCalculation, response)
+        else
+            return to_struct(ExternalCalculation, response)
         end
     end
 

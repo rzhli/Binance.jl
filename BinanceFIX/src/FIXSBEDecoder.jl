@@ -4,15 +4,15 @@ FIX SBE Decoder Module
 Decodes FIX SBE (Simple Binary Encoding) responses from Binance FIX API.
 
 Schema Information:
-- Schema File: spot-fixsbe-1_0.xml
+- Schema Files: spot-fixsbe-1_0.xml (deprecated), spot-fixsbe-1_1.xml (current)
 - Schema ID: 1
-- Schema Version: 0
+- Schema Versions: 0 (deprecated as of 2026-03-09), 1 (current)
 - Byte order: Little Endian
 
 Wire Format:
 <SOFH (6 bytes)> <message header (20 bytes)> <message (N bytes)>
 
-Note: This is different from WebSocket SBE (spot_3_2.xml, Schema ID 3).
+Note: This is different from WebSocket SBE (spot_3_3.xml, Schema ID 3).
 """
 module FIXSBEDecoder
 
@@ -417,6 +417,9 @@ struct SBEExecutionReport
     # Error info
     error_code::Union{Int32,Nothing}
     text::String
+
+    # Schema 1:1 fields
+    expiry_reason::Union{UInt8,Nothing}  # ExpiryReason (TAG 25056)
 end
 
 """ExecutionReportAck (templateId=198) - Mini execution report"""
@@ -752,7 +755,17 @@ function decode_execution_report(header::FIXSBEMessageHeader, body::Vector{UInt8
     error_code_raw = read_int32(body, offset); offset += 4
     error_code = error_code_raw == typemax(Int32) ? nothing : error_code_raw
 
-    # Skip any remaining fixed fields to reach groups
+    # Schema 1:1 field: ExpiryReason (optional UInt8, TAG 25056)
+    # Use blockLength to detect if the new field is present in the fixed block
+    expiry_reason = nothing
+    if offset <= header.blockLength
+        expiry_raw = read_uint8(body, offset); offset += 1
+        expiry_reason = expiry_raw == SBE_UINT8_NULL ? nothing : expiry_raw
+    end
+
+    # Skip any remaining unknown fixed fields to align with blockLength
+    offset = header.blockLength + 1
+
     # Read NoMiscFees group
     fees = SBEMiscFee[]
     if offset + 2 < length(body)
@@ -787,7 +800,7 @@ function decode_execution_report(header::FIXSBEMessageHeader, body::Vector{UInt8
         trade_id, aggressor_indicator, working_indicator,
         self_trade_prevention_mode, prevented_match_id, prevented_qty,
         trigger_price, trigger_price_direction,
-        fees, error_code, text
+        fees, error_code, text, expiry_reason
     )
 end
 

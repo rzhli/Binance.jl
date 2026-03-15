@@ -24,6 +24,18 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.8.0 - Price Range Execution Rules & SBE Schema Updates (2026-03-15)
+
+- **Price Range Execution Rules** - New REST, WebSocket API, and stream endpoints
+  - `get_execution_rules` / `get_reference_price` / `get_reference_price_calculation`
+  - `subscribe_reference_price` for real-time reference price streams
+- **`serverShutdown` WebSocket event** with automatic reconnection warning
+- **`expiryReason` field** in `ExecutionReport` user data stream events
+- **SBE schema 3:3** and **FIX SBE schema 1:1** support
+- **stunnel SNI/TLS hardening** for FIX connections
+
+---
+
 ### v0.7.2 - Error Codes & Performance (2025-01-31)
 
 - **50+ new SPOT API error codes** in `Errors.jl` (FIX, SBE, OCO/OPO, parameter errors)

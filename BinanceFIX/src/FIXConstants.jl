@@ -60,10 +60,12 @@ export # Binance Custom Tags
     TAG_SECONDARY_SYMBOL, TAG_SECURITY_DESC,
     TAG_MESSAGE_HANDLING, TAG_RESPONSE_MODE, TAG_UUID,
     TAG_ORDER_RATE_LIMIT_EXCEEDED_MODE, TAG_OPO,
-    TAG_SBE_SCHEMA_ID, TAG_SBE_SCHEMA_VERSION
+    TAG_SBE_SCHEMA_ID, TAG_SBE_SCHEMA_VERSION,
+    TAG_EXPIRY_REASON
 
 export # FIX SBE Constants
-    SBE_SCHEMA_ID_FIX, SBE_SCHEMA_VERSION_FIX, SBE_ENCODING_TYPE_LE,
+    SBE_SCHEMA_ID_FIX, SBE_SCHEMA_VERSION_FIX, SBE_SCHEMA_VERSION_FIX_V1,
+    SBE_ENCODING_TYPE_LE,
     SBE_SOFH_SIZE, SBE_MESSAGE_HEADER_SIZE,
     SBE_INT8_NULL, SBE_INT16_NULL, SBE_INT32_NULL, SBE_INT64_NULL,
     SBE_UINT8_NULL, SBE_UINT16_NULL, SBE_UINT32_NULL, SBE_UINT64_NULL
@@ -100,7 +102,8 @@ export # Time In Force Values
 
 export # Exec Type Values
     EXEC_TYPE_NEW, EXEC_TYPE_CANCELED, EXEC_TYPE_REPLACED,
-    EXEC_TYPE_REJECTED, EXEC_TYPE_TRADE, EXEC_TYPE_EXPIRED
+    EXEC_TYPE_REJECTED, EXEC_TYPE_TRADE, EXEC_TYPE_EXPIRED,
+    EXEC_TYPE_EXPIRED_IN_MATCH
 
 export # Order Status Values
     ORD_STATUS_NEW, ORD_STATUS_PARTIALLY_FILLED, ORD_STATUS_FILLED,
@@ -381,6 +384,7 @@ const TAG_LAST_BOOK_UPDATE_ID = 25044
 const TAG_OPO = 25046                        # One Party Only flag for order lists
 const TAG_SBE_SCHEMA_ID = 25050              # SBE Schema ID for Logon
 const TAG_SBE_SCHEMA_VERSION = 25051         # SBE Schema Version for Logon
+const TAG_EXPIRY_REASON = 25056              # Expiry Reason in ExecutionReport
 
 # =============================================================================
 # Field Value Enums
@@ -409,6 +413,7 @@ const EXEC_TYPE_REPLACED = "5"
 const EXEC_TYPE_REJECTED = "8"
 const EXEC_TYPE_TRADE = "F"
 const EXEC_TYPE_EXPIRED = "C"
+const EXEC_TYPE_EXPIRED_IN_MATCH = "D"
 
 # OrdStatus (39)
 const ORD_STATUS_NEW = "0"
@@ -552,14 +557,15 @@ const REJECT_INCORRECT_NUMINGROUP = "16"
 const REJECT_OTHER = "99"
 
 # =============================================================================
-# FIX SBE Constants (spot-fixsbe-1_0.xml)
+# FIX SBE Constants (spot-fixsbe-1_0.xml / spot-fixsbe-1_1.xml)
 # =============================================================================
-# Schema ID: 1, Version: 0
+# Schema ID: 1, Version: 0 (deprecated), 1 (current)
 # Wire Format: <SOFH (6 bytes)> <message header (16 bytes)> <message (N bytes)>
 
 # Schema Information
 const SBE_SCHEMA_ID_FIX = UInt16(1)           # FIX SBE schema ID
-const SBE_SCHEMA_VERSION_FIX = UInt16(0)      # FIX SBE schema version
+const SBE_SCHEMA_VERSION_FIX = UInt16(0)      # FIX SBE schema version 1:0 (deprecated as of 2026-03-09)
+const SBE_SCHEMA_VERSION_FIX_V1 = UInt16(1)   # FIX SBE schema version 1:1 (current as of 2026-03-09)
 const SBE_ENCODING_TYPE_LE = UInt16(0xEB50)   # Little-endian encoding
 
 # Header Sizes
