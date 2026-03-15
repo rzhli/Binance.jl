@@ -36,108 +36,13 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ---
 
-### v0.7.2 - Error Codes & Performance (2025-01-31)
+### v0.7.4 - SBE Forward-Compatibility (2026-02-13)
 
-- **50+ new SPOT API error codes** in `Errors.jl` (FIX, SBE, OCO/OPO, parameter errors)
-- **5 new filter failure descriptions** (NOTIONAL, MAX_NUM_ORDER_AMENDS, etc.)
-- **Convert.jl performance optimization** (show methods, tuple-based `in` checks)
+- **SBE decoder resilience** - Unknown SBE template IDs now log a warning instead of crashing the stream connection
 
 ---
 
-### v0.7.0 - SDK Split & BinanceFIX (2025-12-11) 🔧
-
-**Breaking Change**: FIX API separated into standalone `BinanceFIX.jl` package.
-
-**Why?**
-- Cleaner separation of concerns (REST/WebSocket vs FIX protocol)
-- Independent versioning for FIX features
-- Smaller main package for users who don't need FIX
-
-**Migration:**
-```julia
-# Before (v0.6.x)
-using Binance
-session = FIXSession(config, sender_comp_id; session_type=OrderEntry)
-
-# After (v0.7.0)
-using Binance
-using BinanceFIX
-session = FIXSession(config, sender_comp_id; session_type=OrderEntry)
-```
-
-**BinanceFIX.jl v0.1.0 Features:**
-- Complete FIX 4.4 protocol support
-- Session types: OrderEntry, DropCopy, MarketData
-- FIX SBE support (ports 9001/9002)
-- FIX SBE binary decoder
-
-**📖 See:** [BinanceFIX/README.md](BinanceFIX/README.md)
-
----
-
-### v0.6.0 - SBE Market Data Streams (2025-11-19) ⚡
-
-High-performance **Simple Binary Encoding (SBE)** streams for ultra-low latency trading.
-
-**Performance Benefits:**
-- 60-70% less bandwidth vs JSON
-- 30-50% lower latency
-- 2-3x faster parsing
-- Direct binary memory access
-
-**Quick Example:**
-```julia
-using Binance
-
-sbe_client = SBEStreamClient()
-connect_sbe!(sbe_client)
-
-# Subscribe to real-time trades
-sbe_subscribe_trade(sbe_client, "BTCUSDT", event -> begin
-    for trade in event.trades
-        println("$(trade.price) @ $(trade.qty)")
-    end
-end)
-
-# Unsubscribe when done
-sbe_unsubscribe_trade(sbe_client, "BTCUSDT")
-
-# Or close all streams
-sbe_close_all(sbe_client)
-```
-
-**📖 Full documentation:** [docs/SBE.md](docs/SBE.md)
-
----
-
-### v0.5.0 - OrderBookManager (2025-11-16) ⭐
-
-Local order book management with **sub-millisecond latency**.
-
-**Key Features:**
-- < 1ms latency (vs 20-100ms for API calls)
-- Up to 5000 depth levels
-- Built-in VWAP and imbalance analysis
-- Auto-sync with Binance streams
-
-**Quick Example:**
-```julia
-using Binance
-
-orderbook = OrderBookManager("BTCUSDT", rest_client, stream_client;
-                              max_depth=5000)
-start!(orderbook)
-
-# Access instantly
-best_bid = get_best_bid(orderbook)
-imbalance = calculate_depth_imbalance(orderbook; levels=20)
-```
-
-**📖 Full documentation:** [docs/OrderBookManager.md](docs/OrderBookManager.md)
-
----
-
-**📋 Complete version history:** [CHANGELOG.md](CHANGELOG.md)
+**Complete version history:** [CHANGELOG.md](CHANGELOG.md)
 
 ## Features
 
