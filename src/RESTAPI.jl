@@ -168,8 +168,16 @@ module RESTAPI
         client::RESTClient, method::String, endpoint::String;
         params::Dict{String,Any}=Dict{String,Any}(), signed::Bool=false
         )
-        request_type = occursin("/api/v3/order", endpoint) ? "ORDERS" : "REQUEST_WEIGHT"
-        check_and_wait(client.rate_limiter, request_type)
+        # Determine request types for rate limiting
+        # Order endpoints: successful requests have weight 0 (2026-03-27 update)
+        # but failed requests still have documented weight, so we track both
+        is_order_endpoint = occursin("/api/v3/order", endpoint) || occursin("/api/v3/orderList", endpoint) || occursin("/api/v3/sor/order", endpoint)
+        request_types = is_order_endpoint ? ("ORDERS", "RAW_REQUESTS") : ("REQUEST_WEIGHT", "RAW_REQUESTS")
+        
+        # Check all applicable rate limits
+        for request_type in request_types
+            check_and_wait(client.rate_limiter, request_type)
+        end
 
         url = get_base_url(client) * endpoint
         body = ""
@@ -413,6 +421,16 @@ module RESTAPI
         return make_request(client, "POST", "/api/v3/order/cancelReplace"; params=params, signed=true)
     end
 
+    """
+        amend_order(client, symbol, new_qty; order_id, orig_client_order_id, new_client_order_id)
+
+    Reduce the quantity of an existing open order while keeping priority.
+
+    # Weight (Updated 2026-04-02)
+    - Weight becomes 0 ONLY when the order expires due to the amendment
+    - Successful requests that do NOT cause order expiration are charged the documented weight
+    - Failed requests are always charged the documented weight
+    """
     function amend_order(
         client::RESTClient, symbol::String, new_qty::Float64;
         order_id::Union{Int,Nothing}=nothing, orig_client_order_id::String="",
@@ -1125,6 +1143,17 @@ module RESTAPI
 
     Weight: 2 per symbol, 40 for symbolStatus or no params.
     Only one parameter may be specified.
+
+    # Price Range Execution Rule (updated 2026-04-06)
+    When a symbol has a Price Range Execution Rule configured, incoming orders
+    are validated against the reference price at the time of receipt. Orders
+    whose limit price (or stop/trigger price) falls outside the allowed
+    deviation from the reference price are rejected or expired at placement
+    time. The rule is enforced on new orders, amended orders (when the
+    amendment changes price-relevant fields), and orders that would execute
+    outside the range — including trigger activations on stop / stop-limit /
+    take-profit orders. Rule enforcement applies per-symbol and may use
+    different deviation bounds for buy vs. sell sides.
     """
     function get_execution_rules(client::RESTClient; symbol::String="", symbols::Vector{String}=String[], symbolStatus::String="")
         params = Dict{String,Any}()
@@ -1145,6 +1174,10 @@ module RESTAPI
     Query the reference price for a symbol.
 
     Weight: 2
+
+    # Errors
+    - `-2043 NO_REFERENCE_PRICE`: if the symbol has never had a reference price set
+      (documented 2026-04-16)
     """
     function get_reference_price(client::RESTClient, symbol::String)
         params = Dict{String,Any}("symbol" => validate_symbol(symbol))

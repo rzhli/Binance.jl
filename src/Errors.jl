@@ -158,6 +158,7 @@ const ERROR_CODES = Dict{Int,String}(
     -2038 => "ORDER_AMEND_REJECTED: Order amend rejected.",
     -2039 => "CLIENT_ORDER_ID_INVALID: Client order ID is not correct for this order ID.",
     -2042 => "MAXIMUM_SUBSCRIPTION_IDS: Maximum subscription ID reached for this connection.",
+    -2043 => "NO_REFERENCE_PRICE: Reference price has never been set for this symbol.",
 
     # 3xxx-5xxx - SAPI-specific issues
     -3000 => "INNER_FAILURE: Internal server error.",

@@ -24,21 +24,20 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
-### v0.8.0 - Price Range Execution Rules & SBE Schema Updates (2026-03-15)
+### v0.8.2 - Changelog Sync 2026-04-02 → 2026-04-17 (2026-04-19)
 
-- **Price Range Execution Rules** - New REST, WebSocket API, and stream endpoints
-  - `get_execution_rules` / `get_reference_price` / `get_reference_price_calculation`
-  - `subscribe_reference_price` for real-time reference price streams
-- **`serverShutdown` WebSocket event** with automatic reconnection warning
-- **`expiryReason` field** in `ExecutionReport` user data stream events
-- **SBE schema 3:3** and **FIX SBE schema 1:1** support
-- **stunnel SNI/TLS hardening** for FIX connections
-
----
-
-### v0.7.4 - SBE Forward-Compatibility (2026-02-13)
-
-- **SBE decoder resilience** - Unknown SBE template IDs now log a warning instead of crashing the stream connection
+- **SBE Diff Depth update speed** - Documentation updated for the 50ms → 25ms
+  change on 2026-05-05. Affects `sbe_subscribe_depth` (`<symbol>@depth`) and
+  FIX SBE `SBEMarketDataIncrementalDepth` (templateId 207).
+- **Error `-2043 NO_REFERENCE_PRICE`** - Added to `Errors.jl` and documented on
+  `get_reference_price` / `reference_price` — returned when a symbol has never
+  had a reference price set.
+- **Price Range Execution Rule** - `get_execution_rules` / `execution_rules`
+  docstrings expanded with enforcement details (placement, amend, trigger
+  activations).
+- **`amend_order` weight** - Clarified: weight-0 applies ONLY when the
+  amendment causes the order to expire; successful non-expiring and failed
+  requests are still charged the documented weight.
 
 ---
 

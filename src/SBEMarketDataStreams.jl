@@ -8,7 +8,7 @@ which offer more efficient data transmission compared to JSON streams.
 - Binary encoding for reduced bandwidth and latency
 - Real-time trade data
 - Best bid/ask updates with auto-culling
-- Incremental order book updates (50ms)
+- Incremental order book updates (25ms, effective 2026-05-05; 50ms before)
 - Partial book depth snapshots
 
 # Official Documentation
@@ -478,7 +478,7 @@ Subscribe to incremental order book updates (diff depth).
 
 SBE Message: DepthDiffStreamEvent
 Stream: <symbol>@depth
-Update Speed: 50ms
+Update Speed: 25ms (effective 2026-05-05; was 50ms)
 
 Use this to maintain a local order book with incremental updates.
 """

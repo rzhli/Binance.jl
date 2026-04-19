@@ -528,7 +528,20 @@ module WebSocketAPI
         ensure_connected!(client)
 
         # Proactively check rate limits
-        check_and_wait(client.rate_limiter, "REQUEST_WEIGHT")
+        # Order endpoints: successful requests have weight 0 (2026-03-27 update)
+        # Track both ORDERS and RAW_REQUESTS for order methods
+        zero_weight_methods = ("order.place", "sor.order.place", "order.cancel", "openOrders.cancelAll",
+            "order.cancelReplace", "orderList.place", "orderList.place.oco", "orderList.place.oto",
+            "orderList.place.otoco", "orderList.place.opo", "orderList.place.opoco",
+            "orderList.cancel", "order.amend.keepPriority")
+        
+        if method in zero_weight_methods
+            check_and_wait(client.rate_limiter, "ORDERS")
+            check_and_wait(client.rate_limiter, "RAW_REQUESTS")
+        else
+            check_and_wait(client.rate_limiter, "REQUEST_WEIGHT")
+            check_and_wait(client.rate_limiter, "RAW_REQUESTS")
+        end
 
         # Generate request ID based on specified type
         request_id = if request_id_type == :uuid
@@ -1188,6 +1201,17 @@ module WebSocketAPI
 
     Weight: 2 per symbol, 40 for symbolStatus or no params.
     Only one parameter may be specified.
+
+    # Price Range Execution Rule (updated 2026-04-06)
+    When a symbol has a Price Range Execution Rule configured, incoming orders
+    are validated against the reference price at the time of receipt. Orders
+    whose limit price (or stop/trigger price) falls outside the allowed
+    deviation from the reference price are rejected or expired at placement
+    time. The rule is enforced on new orders, amended orders (when the
+    amendment changes price-relevant fields), and orders that would execute
+    outside the range — including trigger activations on stop / stop-limit /
+    take-profit orders. Rule enforcement applies per-symbol and may use
+    different deviation bounds for buy vs. sell sides.
     """
     function execution_rules(client::WebSocketClient; symbol::String="", symbols::Vector{String}=String[], symbolStatus::String="")
         params = Dict{String,Any}()
@@ -1208,6 +1232,10 @@ module WebSocketAPI
     Query the reference price for a symbol via WebSocket API.
 
     Weight: 2
+
+    # Errors
+    - `-2043 NO_REFERENCE_PRICE`: if the symbol has never had a reference price set
+      (documented 2026-04-16)
     """
     function reference_price(client::WebSocketClient, symbol::String)
         params = Dict{String,Any}("symbol" => symbol)
@@ -1470,6 +1498,11 @@ module WebSocketAPI
         order_amend_keep_priority(client, symbol; kwargs...)
 
     Reduce the quantity of an existing open order while keeping priority.
+
+    # Weight (Updated 2026-04-02)
+    - Weight becomes 0 ONLY when the order expires due to the amendment
+    - Successful requests that do NOT cause order expiration are charged the documented weight
+    - Failed requests are always charged the documented weight
     """
     function amend_order(
         client::WebSocketClient, symbol::String; orderId::Union{Int,Nothing}=nothing,

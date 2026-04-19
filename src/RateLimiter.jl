@@ -38,7 +38,7 @@ module RateLimiter
 
     function BinanceRateLimit(config::BinanceConfig)
         limits = Vector{APILimit}()
-        sizehint!(limits, 4)  # Pre-allocate for typical number of limits
+        sizehint!(limits, 5)  # Pre-allocate for typical number of limits
 
         if config.max_request_weight_per_minute > 0
             push!(limits, APILimit("REQUEST_WEIGHT", Minute(1), config.max_request_weight_per_minute))
@@ -51,6 +51,9 @@ module RateLimiter
         end
         if config.max_connections_per_5m > 0
             push!(limits, APILimit("CONNECTIONS", Minute(5), config.max_connections_per_5m))
+        end
+        if config.max_raw_requests_per_5m > 0
+            push!(limits, APILimit("RAW_REQUESTS", Minute(5), config.max_raw_requests_per_5m))
         end
         return BinanceRateLimit(limits, NO_BACKOFF, ReentrantLock())
     end

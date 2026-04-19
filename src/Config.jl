@@ -44,6 +44,7 @@ struct BinanceConfig
     max_orders_per_10s::Int
     max_orders_per_day::Int
     max_connections_per_5m::Int
+    max_raw_requests_per_5m::Int
     ws_return_rate_limits::Bool
 
     # FIX API settings (嵌套结构)
@@ -94,6 +95,7 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
         max_orders_per_10s = get(rate_limiting, "max_orders_per_10s", 50)
         max_orders_per_day = get(rate_limiting, "max_orders_per_day", 160000)
         max_connections_per_5m = get(rate_limiting, "max_connections_per_5m", 300)
+        max_raw_requests_per_5m = get(rate_limiting, "max_raw_requests_per_5m", 300000)
         ws_return_rate_limits = get(rate_limiting, "ws_return_rate_limits", true)
 
         # Extract FIX API settings - use testnet section if testnet=true
@@ -172,7 +174,7 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
         return BinanceConfig(
             api_key, signature_method, api_secret, private_key_path, private_key_pass,
             testnet, timeout, recv_window, proxy, max_reconnect_attempts, reconnect_delay,
-            max_request_weight_per_minute, max_orders_per_10s, max_orders_per_day, max_connections_per_5m, ws_return_rate_limits,
+            max_request_weight_per_minute, max_orders_per_10s, max_orders_per_day, max_connections_per_5m, max_raw_requests_per_5m, ws_return_rate_limits,
             fix_config,
             debug, log_file
         )

@@ -51,10 +51,16 @@ proxy = "socks5://127.0.0.1:7891"
   market_data_sbe_full_port = 9022     # fix-md.binance.com:9002
 
 [rate_limiting]
-# Maximum requests per minute for general endpoints
-max_requests_per_minute = 1200
-# Maximum orders per second
-max_orders_per_second = 10
+# Maximum request weight per minute
+max_request_weight_per_minute = 6000
+# Maximum orders per 10 seconds
+max_orders_per_10s = 50
+# Maximum orders per day
+max_orders_per_day = 160000
+# Maximum connections per 5 minutes
+max_connections_per_5m = 300
+# Maximum raw requests per 5 minutes (updated 2026-04-02)
+max_raw_requests_per_5m = 300000
 
 [logging]
 # Enable debug logging (true/false)

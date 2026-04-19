@@ -566,7 +566,10 @@ struct SBEMarketDataIncrementalBookTicker
     entries::Vector{SBEMDEntry}
 end
 
-"""MarketDataIncrementalDepth (templateId=207)"""
+"""MarketDataIncrementalDepth (templateId=207)
+
+Update Speed: 25ms (effective 2026-05-05; was 50ms)
+"""
 struct SBEMarketDataIncrementalDepth
     seq_num::UInt32
     sending_time::Int64

@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-04-19
+
+### Added
+- **Error code -2043** - `NO_REFERENCE_PRICE` added to `Errors.jl`. Returned
+  when querying the reference price of a symbol that has never had one set
+  (documented 2026-04-16). Applies to:
+  - REST API: `GET /api/v3/referencePrice`
+  - WebSocket API: `referencePrice`
+
+### Changed
+- **SBE Diff Depth stream update speed** - Documentation updated: update speed
+  will change from 50ms → 25ms on 2026-05-05 (announced 2026-04-17). Affects:
+  - `src/SBEMarketDataStreams.jl`: `sbe_subscribe_depth` (`<symbol>@depth`)
+  - `BinanceFIX/src/FIXSBEDecoder.jl`: `SBEMarketDataIncrementalDepth`
+    (templateId=207)
+- **`amend_order` weight semantics** - Docstrings clarified (per 2026-04-02
+  announcement): the weight-0 optimization applies ONLY when the amendment
+  causes the order to expire. Successful requests that do not cause expiry —
+  and failed requests — are still charged the documented weight. Affects:
+  - REST API: `PUT /api/v3/order/amend/keepPriority`
+  - WebSocket API: `order.amend.keepPriority`
+- **Price Range Execution Rule enforcement** - Docstrings on
+  `get_execution_rules` / `execution_rules` expanded to describe when the rule
+  is enforced (placement, amend, trigger activations) per the 2026-04-06
+  update.
+
+## [0.8.1] - 2026-04-13
+
+### Added
+- **STP Transfer on all symbols** - Self-trade prevention mode `TRANSFER` is now allowed on all symbols (effective 2026-04-02)
+- **Request weight optimization** - Successful requests to the following order endpoints now have weight=0 (failed requests still charged):
+  - REST API: `POST /api/v3/order`, `POST /api/v3/sor/order`, `DELETE /api/v3/order`, `DELETE /api/v3/openOrders`, `POST /api/v3/order/cancelReplace`, `POST /api/v3/order/oco`, `POST /api/v3/orderList/oco`, `POST /api/v3/orderList/oto`, `POST /api/v3/orderList/otoco`, `POST /api/v3/orderList/opo`, `POST /api/v3/orderList/opoco`, `DELETE /api/v3/orderList`, `PUT /api/v3/order/amend/keepPriority`
+  - WebSocket API: `order.place`, `sor.order.place`, `order.cancel`, `openOrders.cancelAll`, `order.cancelReplace`, `orderList.place`, `orderList.place.oco`, `orderList.place.oto`, `orderList.place.otoco`, `orderList.place.opo`, `orderList.place.opoco`, `orderList.cancel`, `order.amend.keepPriority`
+- **RAW_REQUESTS limit increase** - Rate limit increased to 300,000 requests per 5 minutes (previously 120,000)
+- **Price Range Execution Rules** - Updated documentation for execution price limits on orders
+
+### Changed
+- **Config.jl** - Updated default `max_raw_requests_per_5m` from 120000 to 300000 to match new API limits
+
 ## [0.8.0] - 2026-03-15
 
 ### Added
