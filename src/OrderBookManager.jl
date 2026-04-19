@@ -298,20 +298,20 @@ is_ready(manager::OrderBookManager) = manager.is_initialized[]
 # ============================================================================
 
 # Helper functions for event access (JSON Dict vs SBE Struct)
-get_first_update_id(event::Dict) = event["U"]
+get_first_update_id(event::Dict{String,Any}) = event["U"]
 get_first_update_id(event::DepthDiffEvent) = event.firstBookUpdateId
 
-get_last_update_id(event::Dict) = event["u"]
+get_last_update_id(event::Dict{String,Any}) = event["u"]
 get_last_update_id(event::DepthDiffEvent) = event.lastBookUpdateId
 
-get_bids_data(event::Dict) = event["b"]
+get_bids_data(event::Dict{String,Any}) = event["b"]
 get_bids_data(event::DepthDiffEvent) = event.bids
 
-get_asks_data(event::Dict) = event["a"]
+get_asks_data(event::Dict{String,Any}) = event["a"]
 get_asks_data(event::DepthDiffEvent) = event.asks
 
 # Helper to parse price/qty
-parse_price_qty(item::Vector) = (parse(Float64, item[1]), parse(Float64, item[2]))
+parse_price_qty(item::AbstractVector) = (parse(Float64, item[1]), parse(Float64, item[2]))
 parse_price_qty(item::PriceLevel) = (item.price, item.quantity)
 
 """

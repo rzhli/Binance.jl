@@ -50,6 +50,7 @@ single_run_test.jl
 # Uncomment if Strategy.jl is proprietary
 strategy
 *.jl
+!test/runtests.jl
 
 # Other files that might contain sensitive data
 # Uncomment as needed

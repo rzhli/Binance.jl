@@ -51,7 +51,7 @@ for efficient real-time market data delivery.
 - `ws_base_url::String`: WebSocket base URL for SBE streams
 - `ws_connection::Union{WebSocket,Nothing}`: Active WebSocket connection
 - `ws_task::Union{Task,Nothing}`: Background task for WebSocket
-- `subscriptions::Dict{String,Function}`: Callbacks for each stream
+- `subscriptions::Dict{String,Any}`: Callbacks for each stream (Any allows heterogeneous closure types)
 - `should_reconnect::Bool`: Reconnection flag
 """
 mutable struct SBEStreamClient
@@ -358,7 +358,7 @@ end
 # ============================================================================
 
 """
-    sbe_subscribe(client::SBEStreamClient, stream_name::String, callback::Function)
+    sbe_subscribe(client::SBEStreamClient, stream_name::String, callback)
 
 Subscribe to an SBE stream.
 
@@ -442,7 +442,7 @@ end
 # ============================================================================
 
 """
-    sbe_subscribe_trade(client::SBEStreamClient, symbol::String, callback::Function)
+    sbe_subscribe_trade(client::SBEStreamClient, symbol::String, callback)
 
 Subscribe to real-time trade stream.
 
@@ -456,7 +456,7 @@ function sbe_subscribe_trade(client::SBEStreamClient, symbol::String, callback)
 end
 
 """
-    sbe_subscribe_best_bid_ask(client::SBEStreamClient, symbol::String, callback::Function)
+    sbe_subscribe_best_bid_ask(client::SBEStreamClient, symbol::String, callback)
 
 Subscribe to best bid/ask stream with auto-culling.
 
@@ -472,7 +472,7 @@ function sbe_subscribe_best_bid_ask(client::SBEStreamClient, symbol::String, cal
 end
 
 """
-    sbe_subscribe_depth(client::SBEStreamClient, symbol::String, callback::Function)
+    sbe_subscribe_depth(client::SBEStreamClient, symbol::String, callback)
 
 Subscribe to incremental order book updates (diff depth).
 
@@ -488,7 +488,7 @@ function sbe_subscribe_depth(client::SBEStreamClient, symbol::String, callback)
 end
 
 """
-    sbe_subscribe_depth20(client::SBEStreamClient, symbol::String, callback::Function)
+    sbe_subscribe_depth20(client::SBEStreamClient, symbol::String, callback)
 
 Subscribe to partial order book snapshots (top 20 levels).
 
@@ -542,7 +542,7 @@ function sbe_unsubscribe_depth20(client::SBEStreamClient, symbol::String)
 end
 
 """
-    sbe_subscribe_combined(client::SBEStreamClient, streams::Vector{String}, callback::Function)
+    sbe_subscribe_combined(client::SBEStreamClient, streams::Vector{String}, callback)
 
 Subscribe to multiple streams with a single callback.
 

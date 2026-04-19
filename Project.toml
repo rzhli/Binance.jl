@@ -1,6 +1,6 @@
 name = "Binance"
-uuid = "12345678-1234-5678-9012-123456789012"
-version = "0.8.0"
+uuid = "cea3082c-a500-42ba-b008-7fc426d310bc"
+version = "0.8.3"
 authors = ["rzhli <tayuebuliuhen@gmail.com>"]
 
 [deps]
@@ -32,3 +32,9 @@ Sockets = "1.11.0"
 StructTypes = "1.11.0"
 URIs = "1.6.1"
 julia = "1.11"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

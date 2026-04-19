@@ -83,11 +83,11 @@ module Filters
     # --- Generic Validation Dispatch ---
 
     """
-        validate_order(params::Dict, filters::Vector{AbstractFilter})
+        validate_order(params::Dict{String,Any}, filters::Vector{AbstractFilter})
 
     Iterates through all symbol filters and applies the appropriate validation logic.
     """
-    function validate_order(params::Dict, filters::Vector{AbstractFilter})
+    function validate_order(params::Dict{String,Any}, filters::Vector{AbstractFilter})
         for filter in filters
             validate_filter(params, filter)
         end
@@ -96,7 +96,7 @@ module Filters
 
     # --- Filter-Specific Validation Functions ---
 
-    function validate_filter(params::Dict, filter::AbstractFilter)
+    function validate_filter(params::Dict{String,Any}, filter::AbstractFilter)
         # Generic fallback for unimplemented filters
         return true
     end
@@ -167,11 +167,11 @@ module Filters
     # --- Original filter validation (parses on each call - for backward compatibility) ---
 
     """
-        validate_filter(params::Dict, filter::PriceFilter)
+        validate_filter(params::Dict{String,Any}, filter::PriceFilter)
 
     Validates an order's price against the PRICE_FILTER rules.
     """
-    function validate_filter(params::Dict, filter::PriceFilter)
+    function validate_filter(params::Dict{String,Any}, filter::PriceFilter)
         price = get(params, "price", nothing)
         !isnothing(price) || return true # Only validate if price is present
 
@@ -181,11 +181,11 @@ module Filters
     end
 
     """
-        validate_filter(params::Dict, filter::LotSizeFilter)
+        validate_filter(params::Dict{String,Any}, filter::LotSizeFilter)
 
     Validates an order's quantity against the LOT_SIZE filter rules.
     """
-    function validate_filter(params::Dict, filter::LotSizeFilter)
+    function validate_filter(params::Dict{String,Any}, filter::LotSizeFilter)
         quantity = get(params, "quantity", nothing)
         !isnothing(quantity) || return true # Only validate if quantity is present
 
@@ -195,11 +195,11 @@ module Filters
     end
 
     """
-        validate_filter(params::Dict, filter::MinNotionalFilter)
+        validate_filter(params::Dict{String,Any}, filter::MinNotionalFilter)
 
     Validates an order's notional value against the MIN_NOTIONAL filter.
     """
-    function validate_filter(params::Dict, filter::MinNotionalFilter)
+    function validate_filter(params::Dict{String,Any}, filter::MinNotionalFilter)
         price = get(params, "price", nothing)
         quantity = get(params, "quantity", nothing)
         quoteOrderQty = get(params, "quoteOrderQty", nothing)
@@ -227,11 +227,11 @@ module Filters
     end
 
     """
-        validate_filter(params::Dict, filter::NotionalFilter)
+        validate_filter(params::Dict{String,Any}, filter::NotionalFilter)
 
     Validates an order's notional value against the NOTIONAL filter rules.
     """
-    function validate_filter(params::Dict, filter::NotionalFilter)
+    function validate_filter(params::Dict{String,Any}, filter::NotionalFilter)
         price = get(params, "price", nothing)
         quantity = get(params, "quantity", nothing)
         quoteOrderQty = get(params, "quoteOrderQty", nothing)
@@ -256,12 +256,12 @@ module Filters
     end
 
     """
-        validate_filter(params::Dict, filter::MaxAssetsFilter)
+        validate_filter(params::Dict{String,Any}, filter::MaxAssetsFilter)
 
     The MAX_ASSET filter defines the maximum amount of an asset that an account can hold.
     This filter is not checked when placing an order.
     """
-    function validate_filter(params::Dict, filter::MaxAssetsFilter)
+    function validate_filter(params::Dict{String,Any}, filter::MaxAssetsFilter)
         return true
     end
 

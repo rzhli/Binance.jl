@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] - 2026-04-19
+
+### Changed
+- **Type-stability fixes per Julia performance guide** - Tightened
+  not-fully-parameterized types to concrete parameters:
+  - `src/OrderBookManager.jl`: `event::Dict` → `event::Dict{String,Any}`
+    on all 4 dispatch helpers; `item::Vector` → `item::AbstractVector` in
+    `parse_price_qty` (hot path called on every depth update)
+  - `src/Filters.jl`: all 13 `params::Dict` signatures → `params::Dict{String,Any}`
+    to match existing caller usage
+- **Drop `::Function` annotations** - Per the Julia style guide ("Julia
+  doesn't auto-specialize on `Function`"), removed `::Function` from
+  docstring signatures of the SBE subscribe family in
+  `src/SBEMarketDataStreams.jl` (`sbe_subscribe`, `sbe_subscribe_trade`,
+  `sbe_subscribe_best_bid_ask`, `sbe_subscribe_depth`, `sbe_subscribe_depth20`,
+  `sbe_subscribe_combined`). Function bodies were already untyped; docstrings
+  now match.
+
+### Added
+- **Test suite infrastructure** - `test/runtests.jl` with smoke tests for
+  module loading, HMAC signing determinism, and core type construction.
+  `Project.toml` now declares `[extras]` / `[targets]` so `pkg> test Binance`
+  works end-to-end.
+
+### Fixed
+- **Project UUID** - Replaced placeholder UUID
+  `12345678-1234-5678-9012-123456789012` with a real v4 UUID
+  (`cea3082c-a500-42ba-b008-7fc426d310bc`). `BinanceFIX/Project.toml`
+  updated in lockstep to preserve the path-dep reference.
+
 ## [0.8.2] - 2026-04-19
 
 ### Added
