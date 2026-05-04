@@ -16,10 +16,12 @@ module RateLimiter
     end
 
     # Convert Period to milliseconds for type-stable storage
-    @inline period_to_ms(p::Second) = Int64(Dates.value(p)) * 1000
-    @inline period_to_ms(p::Minute) = Int64(Dates.value(p)) * 60_000
-    @inline period_to_ms(p::Hour) = Int64(Dates.value(p)) * 3_600_000
-    @inline period_to_ms(p::Day) = Int64(Dates.value(p)) * 86_400_000
+    @inline function period_to_ms(p::Period)::Int64
+        return p isa Second ? Int64(Dates.value(p)) * 1000 :
+               p isa Minute ? Int64(Dates.value(p)) * 60_000 :
+               p isa Hour   ? Int64(Dates.value(p)) * 3_600_000 :
+                             Int64(Dates.value(p)) * 86_400_000
+    end
 
     APILimit(limit_type::String, interval::Period, limit::Int) =
         APILimit(limit_type, period_to_ms(interval), limit, DateTime[], ReentrantLock())

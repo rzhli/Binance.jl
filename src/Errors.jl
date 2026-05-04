@@ -433,6 +433,10 @@ end
 
 abstract type BinanceException <: Exception end
 
+function Base.show(io::IO, e::BinanceException)
+    print(io, string(typeof(e).name.name))
+end
+
 struct BinanceError <: BinanceException
     http_status::Int
     code::Int

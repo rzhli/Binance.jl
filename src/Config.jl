@@ -181,7 +181,7 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
 
     catch e
         if e isa SystemError
-            error("Failed to read configuration file: $config_path - $(e.msg)")
+            error("Failed to read configuration file: $config_path (SystemError)")
         else
             error("Failed to parse configuration file: $e")
         end

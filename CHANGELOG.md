@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Config.jl** — Fixed `SystemError` exception handling: `SystemError` in
+  Julia does not expose a `.msg` field; replaced `$(e.msg)` with a static
+  string literal so the error message is always descriptive regardless of
+  Julia version
+- **RateLimiter.jl** — Replaced four separate `@inline` single-dispatch
+  methods for `period_to_ms(p::Period)` with a single typed function
+  `period_to_ms(p::Period)::Int64` using `isa` checks, giving the inner
+  constructor of `APILimit` a concrete return type to call
+- **Errors.jl** — Added `Base.show(io::IO, ::BinanceException)` fallback
+  so the abstract parent type renders its name instead of a blank line when
+  printed in exception chains
+- **Price Range Execution Rule FAQ** (2026-04-28) — Clarified that the price
+  range rule applies symmetrically to both BUY and SELL orders (previously
+  ambiguous whether sell-side bounds were the same as buy-side). Updated
+  docstrings on `get_execution_rules` (REST API) and `execution_rules`
+  (WebSocket API) to state explicitly: BUY orders are bounded by
+  ``bidLimitMultUp/Down × referencePrice``; SELL orders by
+  ``askLimitMultUp/Down × referencePrice``, with multipliers potentially
+  differing between sides per symbol configuration.
+
 ## [0.8.3] - 2026-04-19
 
 ### Changed

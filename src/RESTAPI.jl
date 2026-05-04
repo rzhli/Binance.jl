@@ -1144,7 +1144,7 @@ module RESTAPI
     Weight: 2 per symbol, 40 for symbolStatus or no params.
     Only one parameter may be specified.
 
-    # Price Range Execution Rule (updated 2026-04-06)
+    # Price Range Execution Rule (updated 2026-04-28)
     When a symbol has a Price Range Execution Rule configured, incoming orders
     are validated against the reference price at the time of receipt. Orders
     whose limit price (or stop/trigger price) falls outside the allowed
@@ -1152,8 +1152,14 @@ module RESTAPI
     time. The rule is enforced on new orders, amended orders (when the
     amendment changes price-relevant fields), and orders that would execute
     outside the range — including trigger activations on stop / stop-limit /
-    take-profit orders. Rule enforcement applies per-symbol and may use
-    different deviation bounds for buy vs. sell sides.
+    take-profit orders.
+
+    The rule applies symmetrically to both sides: a BUY order may not execute
+    at a price more than ``bidLimitMultUp × referencePrice`` or less than
+    ``bidLimitMultDown × referencePrice``; a SELL order may not execute at
+    a price more than ``askLimitMultUp × referencePrice`` or less than
+    ``askLimitMultDown × referencePrice``. The multipliers may differ between
+    buy and sell sides per symbol configuration.
     """
     function get_execution_rules(client::RESTClient; symbol::String="", symbols::Vector{String}=String[], symbolStatus::String="")
         params = Dict{String,Any}()
