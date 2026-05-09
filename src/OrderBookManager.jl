@@ -45,7 +45,7 @@ using ..Config: BinanceConfig
 using ..RESTAPI: get_orderbook
 using ..Types: PriceLevel
 using ..MarketDataStreams: subscribe_diff_depth, unsubscribe, MarketDataStreamClient
-using ..SBEMarketDataStreams: SBEStreamClient, sbe_subscribe_depth, sbe_unsubscribe_depth, DepthDiffEvent
+using ..SBEMarketDataStreams: SBEStreamClient, sbe_subscribe_depth, sbe_subscribe_depth20, sbe_unsubscribe_depth, sbe_unsubscribe_depth20, DepthDiffEvent, DepthSnapshotEvent
 
 export OrderBookManager, start!, stop!, is_ready,
     get_best_bid, get_best_ask, get_spread, get_mid_price,
@@ -132,9 +132,20 @@ mutable struct OrderBookManager{R,W,F}
     max_depth::Int
     update_speed::String
 
+    # When true, subscribe to <symbol>@depth20 (SBE only) which pushes a fresh
+    # top-20 snapshot every 50ms. Replaces local state atomically — no diff
+    # sync, no phantom levels, no crossings. max_depth is forced to 20.
+    use_snapshot_stream::Bool
+
     # Statistics
     total_updates::Ref{Int64}
     last_update_time::Ref{Float64}
+
+    # Health: counts consecutive events where best_bid >= best_ask. SBE diff
+    # events sometimes arrive split (bid-side and ask-side updates in
+    # separate messages), causing transient crosses that self-heal on the
+    # next event. We only warn / suppress callbacks when the cross persists.
+    consecutive_crosses::Ref{Int}
 end
 
 """
@@ -148,9 +159,14 @@ Create a new OrderBookManager.
 - `ws_client::W`: WebSocket market data client
 
 # Keyword Arguments
-- `max_depth::Int=5000`: Maximum depth for snapshot (5, 10, 20, 50, 100, 500, 1000, 5000)
+- `max_depth::Int=5000`: Maximum depth for snapshot (5, 10, 20, 50, 100, 500, 1000, 5000).
+  Ignored when `use_snapshot_stream=true` (forced to 20).
 - `update_speed::String="100ms"`: Update frequency ("100ms" or "1000ms")
 - `on_update::Union{Function,Nothing}=nothing`: Callback function called on each update
+- `use_snapshot_stream::Bool=false`: SBE only. When true, subscribe to
+  `<symbol>@depth20` push stream (top-20 snapshot every 50ms). Replaces local
+  state atomically — no diff sync, no phantom levels, no crossings, no
+  REST resync. Recommended when 20 levels of depth is sufficient.
 
 # Callback Signature
 If provided, `on_update` will be called as: `on_update(manager::OrderBookManager)`
@@ -161,7 +177,8 @@ function OrderBookManager(
     ws_client::W;
     max_depth::Int=5000,
     update_speed::String="100ms",
-    on_update::F=nothing
+    on_update::F=nothing,
+    use_snapshot_stream::Bool=false
 ) where {R,W,F}
     # Validate parameters
     valid_depths = (5, 10, 20, 50, 100, 500, 1000, 5000)
@@ -172,6 +189,13 @@ function OrderBookManager(
     if !(update_speed in ("100ms", "1000ms"))
         error("update_speed must be '100ms' or '1000ms'")
     end
+
+    if use_snapshot_stream && !(ws_client isa SBEStreamClient)
+        error("use_snapshot_stream=true requires an SBEStreamClient (got $(typeof(ws_client)))")
+    end
+
+    # Snapshot stream is fixed at top-20 levels by Binance.
+    effective_depth = use_snapshot_stream ? 20 : max_depth
 
     OrderBookManager{R,W,F}(
         symbol,
@@ -187,10 +211,12 @@ function OrderBookManager(
         Vector{DepthEvent}(),
         Ref{Union{String,Nothing}}(nothing),
         on_update,
-        max_depth,
+        effective_depth,
         update_speed,
+        use_snapshot_stream,
         Ref{Int64}(0),
-        Ref{Float64}(0.0)
+        Ref{Float64}(0.0),
+        Ref{Int}(0)                        # consecutive_crosses
     )
 end
 
@@ -221,7 +247,25 @@ function start!(manager::OrderBookManager)
         return
     end
 
-    # Define event handler
+    # Snapshot-stream mode: subscribe to <symbol>@depth20 push stream.
+    # Each push is a complete top-20 snapshot — replace local state atomically,
+    # skip the buffer/sync/diff path entirely.
+    if manager.use_snapshot_stream
+        function on_snapshot_event(event)
+            try
+                handle_snapshot_event!(manager, event)
+            catch e
+                @error "Error handling snapshot event for $(manager.symbol)" exception = (e, catch_backtrace())
+            end
+        end
+
+        stream_id = sbe_subscribe_depth20(manager.ws_client, manager.symbol, on_snapshot_event)
+        manager.stream_id[] = stream_id
+        println("[OrderBookManager] Started for $(manager.symbol) (SBE @depth20 push, top-20 every 50ms)")
+        return
+    end
+
+    # Diff-stream mode: original buffer + REST snapshot + diff sync.
     function on_depth_event(event)
         try
             handle_depth_event!(manager, event)
@@ -257,6 +301,45 @@ function start!(manager::OrderBookManager)
 end
 
 """
+    handle_snapshot_event!(manager, event::DepthSnapshotEvent)
+
+Atomically replace the local order book state with a fresh top-20 snapshot.
+Used by the SBE `@depth20` push stream when `use_snapshot_stream=true`.
+Bypasses the diff buffer/sync logic — every push is a complete picture.
+"""
+function handle_snapshot_event!(manager::OrderBookManager, event::DepthSnapshotEvent)
+    empty!(manager.bids)
+    empty!(manager.asks)
+
+    @inbounds for level in event.bids
+        if level.quantity > 0.0 && !isnan(level.quantity)
+            manager.bids[level.price] = level.quantity
+        end
+    end
+
+    @inbounds for level in event.asks
+        if level.quantity > 0.0 && !isnan(level.quantity)
+            manager.asks[level.price] = level.quantity
+        end
+    end
+
+    manager.update_id[] = event.bookUpdateId
+    manager.total_updates[] += 1
+    manager.last_update_time[] = time()
+    manager.cache_valid[] = false
+    manager.consecutive_crosses[] = 0
+    manager.is_initialized[] = true
+
+    if !isnothing(manager.on_update)
+        try
+            manager.on_update(manager)
+        catch e
+            @error "Error in user callback" exception = e
+        end
+    end
+end
+
+"""
     stop!(manager::OrderBookManager)
 
 Stop the order book synchronization and clean up resources.
@@ -267,7 +350,11 @@ function stop!(manager::OrderBookManager)
             if manager.ws_client isa MarketDataStreamClient
                 unsubscribe(manager.ws_client, manager.stream_id[])
             elseif manager.ws_client isa SBEStreamClient
-                sbe_unsubscribe_depth(manager.ws_client, manager.symbol)
+                if manager.use_snapshot_stream
+                    sbe_unsubscribe_depth20(manager.ws_client, manager.symbol)
+                else
+                    sbe_unsubscribe_depth(manager.ws_client, manager.symbol)
+                end
             end
         catch e
             @warn "Error unsubscribing from stream" exception = e
@@ -455,11 +542,14 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
     end
 
     # Apply bid updates
+    # NULL-qty (decoded as NaN by SBEDecoder) signals level deletion per the
+    # 2025-12-09 schema change that made MDEntrySize optional. Treat both
+    # qty == 0.0 and NaN as deletes to avoid phantom levels accumulating.
     bids_data = get_bids_data(event)
     @inbounds for bid in bids_data
         price, quantity = parse_price_qty(bid)
 
-        if quantity == 0.0
+        if quantity == 0.0 || isnan(quantity)
             delete!(manager.bids, price)
         else
             manager.bids[price] = quantity
@@ -471,7 +561,7 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
     @inbounds for ask in asks_data
         price, quantity = parse_price_qty(ask)
 
-        if quantity == 0.0
+        if quantity == 0.0 || isnan(quantity)
             delete!(manager.asks, price)
         else
             manager.asks[price] = quantity
@@ -484,8 +574,30 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
     manager.last_update_time[] = time()
     manager.cache_valid[] = false  # Invalidate cache
 
-    # Call user callback if provided
-    if !isnothing(manager.on_update)
+    # Health check: a healthy book has best_bid < best_ask. SBE diffs may
+    # arrive split across messages, so a single-event cross is usually
+    # transient and self-heals on the next event. We suppress the user
+    # callback while crossed (so the strategy doesn't trade on bad data),
+    # and only warn / restart if the cross persists across many events.
+    crossed = false
+    if !isempty(manager.bids) && !isempty(manager.asks)
+        max_bid = maximum(keys(manager.bids))
+        min_ask = minimum(keys(manager.asks))
+        if max_bid >= min_ask
+            crossed = true
+            manager.consecutive_crosses[] += 1
+            # Persistent cross: warn periodically and request resync.
+            if manager.consecutive_crosses[] == 20
+                @warn "Order book persistently crossed; restarting sync" symbol = manager.symbol max_bid min_ask consecutive = manager.consecutive_crosses[]
+                return :restart
+            end
+        else
+            manager.consecutive_crosses[] = 0
+        end
+    end
+
+    # Call user callback if provided (skip while crossed)
+    if !isnothing(manager.on_update) && !crossed
         try
             manager.on_update(manager)
         catch e
@@ -513,6 +625,7 @@ function restart_sync!(manager::OrderBookManager)
     empty!(manager.sorted_bids)
     empty!(manager.sorted_asks)
     manager.cache_valid[] = false
+    manager.consecutive_crosses[] = 0
 
     # Events will start buffering again automatically
 end
