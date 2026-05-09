@@ -84,11 +84,18 @@ module MarketDataStreams
                 break     # Stop processing if unsubscribed
             end
             try
-                data = if !isnothing(struct_type)
-                    JSON3.read(msg, struct_type)
-                else
-                    JSON3.read(msg)
+                # Parse once so we can detect serverShutdown control events (sent ~10
+                # minutes before disconnection as of 2026-05-08). These arrive on
+                # WebSocket Streams in addition to the WebSocket API. Log a warning
+                # and skip the user callback — the connection will drop and the outer
+                # loop will reconnect.
+                raw = JSON3.read(msg)
+                if isa(raw, JSON3.Object) && get(raw, :e, nothing) == "serverShutdown"
+                    event_time = haskey(raw, :E) ? unix2datetime(raw[:E] / 1000) : nothing
+                    @warn "⚠️  serverShutdown received on stream '$stream_name'. Reconnect imminent." event_time
+                    continue
                 end
+                data = isnothing(struct_type) ? raw : to_struct(struct_type, raw)
                 if haskey(client.ws_callbacks, stream_name)
                     cb = client.ws_callbacks[stream_name]
                     cb(data)

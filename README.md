@@ -24,6 +24,25 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.9.0 - Changelog Sync 2026-05-06 → 2026-05-08 (2026-05-09)
+
+- **Historical Block Trades** (REST `/api/v3/historicalBlockTrades`,
+  WS `blockTrades.historical`) — new market-data endpoint for off-book block
+  trades. New `BlockTrade` type and `get_historical_block_trades` /
+  `block_trades_historical` helpers.
+- **`expiryReason` on order query responses** — `Order` struct now exposes
+  `expiryReason::Union{String, Nothing}`, populated for expired orders (e.g.
+  rejected by the price-range execution rule).
+- **`serverShutdown` on WebSocket Streams** — `MarketDataStreams.jl` now
+  detects the control event on stream connections (sent ~10 min before the
+  server drops the connection) and logs a reconnect warning.
+- **SBE schema 3:3 → 3:4** — Constants in `SBEDecoder.jl` updated; 3:3
+  deprecated 2026-05-08 with a 6-month retirement window. Market-data
+  templates (10000–10003) are unchanged across 3:3 and 3:4.
+- **Filter reference-price behavior documented** — `PERCENT_PRICE`,
+  `PERCENT_PRICE_BY_SIDE`, `MIN_NOTIONAL`, `NOTIONAL` server-side now use
+  the reference price when one exists and is non-null; docstrings updated.
+
 ### v0.8.2 - Changelog Sync 2026-04-02 → 2026-04-17 (2026-04-19)
 
 - **SBE Diff Depth update speed** - Documentation updated for the 50ms → 25ms

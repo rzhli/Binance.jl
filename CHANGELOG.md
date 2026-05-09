@@ -7,26 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-09
+
+### Added
+- **Historical Block Trades** (2026-05-08 deployment) — New endpoint for block
+  trade history. Block trades are large off-book trades matched against a
+  separate liquidity pool.
+  - REST API: `get_historical_block_trades(client, symbol, from_id; limit=500)`
+    → `GET /api/v3/historicalBlockTrades` (weight 25, `fromId` mandatory)
+  - WebSocket API: `block_trades_historical(client, symbol, from_id; limit=500)`
+    → `blockTrades.historical` (weight 25)
+  - New type `BlockTrade` in `Types.jl`: `(id, price, qty, quoteQty, time,
+    isBuyerMaker)` — note absence of `isBestMatch` (differs from `MarketTrade`)
+- **`expiryReason` field on order query responses** — Added `expiryReason ::
+  Union{String, Nothing}` to the `Order` struct. Returned only for expired
+  orders, including those expired by the price-range execution rule. Affects
+  `get_order`, `get_open_orders`, `get_all_orders` (REST) and `order.status`,
+  `openOrders.status`, `allOrders` (WS API). Order-list responses pass through
+  raw JSON3 objects so users see the new field automatically.
+- **`serverShutdown` event handling on WebSocket Streams** —
+  `MarketDataStreams.jl` now detects `serverShutdown` control events on stream
+  connections (sent ~10 minutes before disconnection per 2026-05-08 deployment),
+  logs a warning, and lets the existing reconnect loop handle the drop. The
+  WebSocket API path already had this handler.
+
 ### Changed
-- **Config.jl** — Fixed `SystemError` exception handling: `SystemError` in
-  Julia does not expose a `.msg` field; replaced `$(e.msg)` with a static
-  string literal so the error message is always descriptive regardless of
-  Julia version
+- **SBE schema 3:3 → 3:4** — Bumped current schema version constants in
+  `SBEDecoder.jl` (`SCHEMA_VERSION_CURRENT = 4`); 3:3 marked deprecated as of
+  2026-05-08, retiring ~6 months later. Market-data template IDs (10000–10003)
+  used by this decoder are unchanged across 3:3 and 3:4. Schema 3:4 adds:
+  - new message `BlockTradesResponse` (template 219)
+  - new type `blockTradeId`
+  - new optional field `expiryReason` on `OrderResponse` (304) and
+    `OrdersResponse` (308) — note this was already present on order-placement
+    responses (`NewOrderResultResponse`, `NewOrderFullResponse`, list variants)
+    since 3:3
+- **Filter docstrings** — `PERCENT_PRICE`, `PERCENT_PRICE_BY_SIDE`,
+  `MIN_NOTIONAL`, `NOTIONAL` now document the 2026-05-08 server behavior:
+  evaluated against the symbol's reference price when one exists and is
+  non-null, falling back to historical avg-price behavior otherwise. Client-side
+  validators here use the explicit request price/qty, so the server is
+  authoritative when the two diverge.
+
+### Fixed (carried from prior unreleased)
+- **Config.jl** — `SystemError` exception handling: `SystemError` in Julia
+  does not expose a `.msg` field; replaced `$(e.msg)` with a static string
+  literal so the error message is always descriptive regardless of Julia
+  version
 - **RateLimiter.jl** — Replaced four separate `@inline` single-dispatch
   methods for `period_to_ms(p::Period)` with a single typed function
   `period_to_ms(p::Period)::Int64` using `isa` checks, giving the inner
   constructor of `APILimit` a concrete return type to call
-- **Errors.jl** — Added `Base.show(io::IO, ::BinanceException)` fallback
-  so the abstract parent type renders its name instead of a blank line when
+- **Errors.jl** — Added `Base.show(io::IO, ::BinanceException)` fallback so
+  the abstract parent type renders its name instead of a blank line when
   printed in exception chains
 - **Price Range Execution Rule FAQ** (2026-04-28) — Clarified that the price
-  range rule applies symmetrically to both BUY and SELL orders (previously
-  ambiguous whether sell-side bounds were the same as buy-side). Updated
-  docstrings on `get_execution_rules` (REST API) and `execution_rules`
-  (WebSocket API) to state explicitly: BUY orders are bounded by
-  ``bidLimitMultUp/Down × referencePrice``; SELL orders by
-  ``askLimitMultUp/Down × referencePrice``, with multipliers potentially
-  differing between sides per symbol configuration.
+  range rule applies symmetrically to both BUY and SELL orders. Updated
+  docstrings on `get_execution_rules` and `execution_rules` to state
+  explicitly: BUY orders are bounded by ``bidLimitMultUp/Down × referencePrice``;
+  SELL orders by ``askLimitMultUp/Down × referencePrice``, with multipliers
+  potentially differing between sides per symbol configuration.
 
 ## [0.8.3] - 2026-04-19
 

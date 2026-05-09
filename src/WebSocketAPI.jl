@@ -32,7 +32,8 @@ module WebSocketAPI
     export ping, time, exchangeInfo
 
     # Market Data
-    export depth, trades_recent, trades_historical, trades_aggregate, klines, ui_klines,
+    export depth, trades_recent, trades_historical, block_trades_historical,
+        trades_aggregate, klines, ui_klines,
         avg_price, ticker_24hr, ticker_trading_day, ticker, ticker_price, ticker_book,
         execution_rules, reference_price, reference_price_calculation
 
@@ -862,7 +863,7 @@ module WebSocketAPI
         if limit < 1 || limit > 1000
             throw(ArgumentError("Limit must be between 1 and 1000 for historical trades"))
         end
-        
+
         params = Dict{String,Any}("symbol" => symbol)
         if !isnothing(from_id)
             params["fromId"] = from_id
@@ -872,6 +873,40 @@ module WebSocketAPI
         end
         response = send_request(client, "trades.historical", params)
         return to_struct(Vector{MarketTrade}, response)
+    end
+
+    """
+        block_trades_historical(client, symbol, from_id; limit=500)
+
+    Query historical block trades via WebSocket API (`blockTrades.historical`).
+    Block trades are large off-book trades matched against a separate liquidity pool.
+
+    Method introduced 2026-05-08.
+
+    # Required Parameters
+    - `symbol`: Trading pair (e.g., "BTCUSDT")
+    - `from_id`: Block trade ID to fetch from (mandatory)
+
+    # Optional Parameters
+    - `limit`: 1–1000, default 500
+
+    # Weight
+    25
+    """
+    function block_trades_historical(client::WebSocketClient, symbol::String, from_id::Int; limit::Int=500)
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000 for historical block trades"))
+        end
+
+        params = Dict{String,Any}(
+            "symbol" => symbol,
+            "fromId" => from_id
+        )
+        if limit != 500
+            params["limit"] = limit
+        end
+        response = send_request(client, "blockTrades.historical", params)
+        return to_struct(Vector{BlockTrade}, response)
     end
 
     function trades_aggregate(client::WebSocketClient, symbol::String; from_id::Union{Int,Nothing}=nothing,

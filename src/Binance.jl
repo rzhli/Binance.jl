@@ -44,13 +44,14 @@ export ExchangeInfo, RateLimit, SymbolInfo, Order, Trade, Kline, Ticker24hr
 export DecimalPrice, to_decimal_string
 export ExecutionRule, SymbolExecutionRules, ExecutionRulesResponse, ReferencePrice
 export AbstractReferencePriceCalculation, ArithmeticMeanCalculation, ExternalCalculation
+export BlockTrade
 
 # Export Event types
 export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus, ServerShutdown
 
 # Export RESTAPI functions
 export get_server_time, get_exchange_info, ping
-export get_symbol_ticker, get_orderbook, get_recent_trades, get_historical_trades
+export get_symbol_ticker, get_orderbook, get_recent_trades, get_historical_trades, get_historical_block_trades
 export place_order, test_order, cancel_order, cancel_all_orders, cancel_replace_order, amend_order
 export get_open_orders, get_order, get_all_orders, get_my_trades
 export place_oco_order, place_oto_order, place_otoco_order, place_opo_order, place_opoco_order, cancel_order_list
@@ -80,7 +81,7 @@ export TradeEvent, TradeData, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEven
 export connect!, session_logon, session_status, exchangeInfo, session_logout, disconnect!
 
 # Export WebSocket API functions - Market Data
-export depth, trades_recent, trades_historical, trades_aggregate
+export depth, trades_recent, trades_historical, block_trades_historical, trades_aggregate
 export klines, ui_klines, avg_price, ticker_24hr, ticker_trading_day
 export ticker, ticker_price, ticker_book
 export execution_rules, reference_price, reference_price_calculation

@@ -176,7 +176,7 @@ export WebSocketConnection
 export Order, Trade, Kline, Ticker24hr
 
 # Market Data
-export OrderBook, PriceLevel, MarketTrade, WebSocketTrade, AggregateTrade, AveragePrice, Ticker24hrRest,
+export OrderBook, PriceLevel, MarketTrade, BlockTrade, WebSocketTrade, AggregateTrade, AveragePrice, Ticker24hrRest,
     Ticker24hrMini, TradingDayTicker, TradingDayTickerMini, RollingWindowTicker,
     RollingWindowTickerMini, PriceTicker, BookTicker
 
@@ -241,6 +241,14 @@ StructTypes.subtypes(::Type{AbstractFilter}) = (
 @define_triple_filter(LotSizeFilter, minQty, maxQty, stepSize, "LotSize:")
 @define_triple_filter(MarketLotSizeFilter, minQty, maxQty, stepSize, "MarketLotSize:")
 
+"""
+    PercentPriceFilter
+
+`PERCENT_PRICE`: bounds order price by `multiplierUp/Down` times the recent
+`avgPriceMins`-minute average. As of 2026-05-08, the server evaluates this
+filter against the symbol's reference price when one exists and is non-null,
+falling back to the historical avg-price behavior when it does not.
+"""
 struct PercentPriceFilter <: AbstractFilter
     filterType::String
     multiplierUp::String
@@ -253,6 +261,14 @@ function Base.show(io::IO, f::PercentPriceFilter)
     print(io, "PercentPrice: up: × $(f.multiplierUp), down: × $(f.multiplierDown), avg: $(f.avgPriceMins) min")
 end
 
+"""
+    PercentPriceBySideFilter
+
+`PERCENT_PRICE_BY_SIDE`: like `PERCENT_PRICE` but with separate
+bid/ask multipliers. As of 2026-05-08, the server evaluates this filter
+against the symbol's reference price when one exists and is non-null,
+falling back to the historical avg-price behavior when it does not.
+"""
 struct PercentPriceBySideFilter <: AbstractFilter
     filterType::String
     bidMultiplierUp::String
@@ -483,6 +499,9 @@ struct Order
     updateTime::DateTime
     isWorking::Bool
     origQuoteOrderQty::String
+    # Conditional: present only for expired orders, including those expired by the
+    # price-range execution rule. Added in REST/WS API on 2026-05-08.
+    expiryReason::Union{String, Nothing}
 end
 StructTypes.StructType(::Type{Order}) = StructTypes.CustomStruct()
 StructTypes.lower(o::Order) = (
@@ -491,7 +510,7 @@ StructTypes.lower(o::Order) = (
     status=o.status, timeInForce=o.timeInForce, type=o.type, side=o.side, stopPrice=o.stopPrice,
     icebergQty=o.icebergQty, time=Int64(round(datetime2unix(o.time) * 1000)),
     updateTime=Int64(round(datetime2unix(o.updateTime) * 1000)), isWorking=o.isWorking,
-    origQuoteOrderQty=o.origQuoteOrderQty
+    origQuoteOrderQty=o.origQuoteOrderQty, expiryReason=o.expiryReason
 )
 StructTypes.construct(::Type{Order}, obj) = Order(
     obj["symbol"], obj["orderId"], obj["orderListId"], obj["clientOrderId"], obj["price"],
@@ -502,7 +521,8 @@ StructTypes.construct(::Type{Order}, obj) = Order(
     StructTypes.construct(OrderSide, obj["side"]),
     obj["stopPrice"], obj["icebergQty"],
     unix2datetime(obj["time"] / 1000), unix2datetime(obj["updateTime"] / 1000),
-    obj["isWorking"], obj["origQuoteOrderQty"]
+    obj["isWorking"], obj["origQuoteOrderQty"],
+    haskey(obj, "expiryReason") ? obj["expiryReason"] : nothing
 )
 
 struct Trade
@@ -692,6 +712,42 @@ function Base.show(io::IO, ::MIME"text/plain", t::MarketTrade)
     @printf(io, "  Quote Quantity:  %f\n", parse(Float64, t.quoteQty))
     @printf(io, "  Buyer was Maker: %s\n", t.isBuyerMaker)
     @printf(io, "  Best Match:      %s\n", t.isBestMatch)
+end
+
+# Block Trade — large off-book trade matched against a separate liquidity pool.
+# Endpoint introduced 2026-05-08 (REST: GET /api/v3/historicalBlockTrades,
+# WS API: blockTrades.historical). Response shape differs from MarketTrade:
+# no isBestMatch field.
+struct BlockTrade
+    id::Int64
+    price::String
+    qty::String
+    quoteQty::String
+    time::DateTime
+    isBuyerMaker::Bool
+end
+StructTypes.StructType(::Type{BlockTrade}) = StructTypes.CustomStruct()
+StructTypes.lower(t::BlockTrade) = (
+    id=t.id, price=t.price, qty=t.qty, quoteQty=t.quoteQty,
+    time=Int64(round(datetime2unix(t.time) * 1000)), isBuyerMaker=t.isBuyerMaker
+)
+StructTypes.construct(::Type{BlockTrade}, obj) = BlockTrade(
+    obj["id"],
+    obj["price"],
+    obj["qty"],
+    obj["quoteQty"],
+    unix2datetime(obj["time"] / 1000),
+    obj["isBuyerMaker"]
+)
+
+function Base.show(io::IO, ::MIME"text/plain", t::BlockTrade)
+    println(io, "BlockTrade:")
+    @printf(io, "  ID:              %d\n", t.id)
+    @printf(io, "  Time:            %s\n", t.time)
+    @printf(io, "  Price:           %f\n", parse(Float64, t.price))
+    @printf(io, "  Quantity:        %f\n", parse(Float64, t.qty))
+    @printf(io, "  Quote Quantity:  %f\n", parse(Float64, t.quoteQty))
+    @printf(io, "  Buyer was Maker: %s\n", t.isBuyerMaker)
 end
 
 # WebSocket Trade Stream struct (different from REST API MarketTrade)

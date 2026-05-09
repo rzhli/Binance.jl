@@ -65,6 +65,19 @@ function rest_historical_trades_test()
     println("Historical BTCUSDT trades: $(length(trades))")
 end
 
+# REST API: Get historical block trades (2026-05-08, weight 25, fromId mandatory)
+# Block trades are large off-book trades matched against a separate liquidity pool.
+function rest_historical_block_trades_test()
+    println("\n=== RESTAPI: Historical Block Trades ===")
+    client = RESTClient()
+    # fromId is mandatory; pick any starting block-trade ID for the symbol
+    trades = get_historical_block_trades(client, "BTCUSDT", 1; limit=3)
+    println("BTCUSDT block trades returned: $(length(trades))")
+    for t in trades
+        println("  Block trade $(t.id): $(t.qty) @ $(t.price) (buyerMaker=$(t.isBuyerMaker))")
+    end
+end
+
 # REST API: Get Klines (candlestick data)
 function rest_klines_test()
     println("\n=== RESTAPI: Klines ===")
@@ -280,6 +293,10 @@ function websocketapi_market_data_test()
 
     trades = trades_recent(ws_client, "BTCUSDT"; limit=3)
     println("WebSocket API recent trades: $(length(trades))")
+
+    # Block trades — new endpoint added 2026-05-08; fromId is mandatory.
+    block_trades = block_trades_historical(ws_client, "BTCUSDT", 1; limit=3)
+    println("WebSocket API block trades: $(length(block_trades))")
 
     avg_price = avg_price(ws_client, "BTCUSDT")
     println("WebSocket API avg price: $(avg_price.price)")

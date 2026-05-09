@@ -488,6 +488,25 @@ end
 
 ## Technical Details
 
+### Schema Versions
+
+This client tracks the Binance SBE Market Data schema (`schemaId = 3`):
+
+| Version | Status |
+|---------|--------|
+| 3:1 | Deprecated 2025-12-18 |
+| 3:2 | Deprecated 2026-03-09 |
+| 3:3 | Deprecated 2026-05-08 (retiring ~6 months later) |
+| 3:4 | **Current** (since 2026-05-08) |
+
+The market-data template IDs (10000–10003) listed below are unchanged across
+3:3 and 3:4. Schema 3:4's additions — `BlockTradesResponse`, `blockTradeId`,
+and `expiryReason` on `OrderResponse`/`OrdersResponse` — apply to the
+WebSocket API SBE schema, not the market-data streams decoded here. The
+JSON-side equivalents are exposed through `BlockTrade`,
+`get_historical_block_trades`, `block_trades_historical`, and the new
+`Order.expiryReason` field.
+
 ### SBE Message Format
 
 #### Message Header (8 bytes)
@@ -611,6 +630,6 @@ Complete examples in `examples/sbe_stream_example.jl`:
 
 ## References
 
-- [Binance SBE Documentation](https://binance-docs.github.io/apidocs/spot/en/#sbe-market-data-streams)
-- [SBE Schema XML](https://github.com/binance/binance-spot-api-docs/blob/master/sbe/schemas/spot_sbe.xml)
+- [Binance SBE Documentation](https://developers.binance.com/docs/binance-spot-api-docs/faqs/sbe_faq)
+- [SBE Schema XML (3:4)](https://github.com/binance/binance-spot-api-docs/blob/master/sbe/schemas/spot_3_4.xml)
 - [Simple Binary Encoding Spec](https://github.com/real-logic/simple-binary-encoding)

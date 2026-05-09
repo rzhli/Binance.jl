@@ -14,7 +14,8 @@ module RESTAPI
         place_order, cancel_order, cancel_all_orders, get_order,
         get_open_orders, get_all_orders, get_orderbook,
         get_order_list, get_all_order_lists, get_open_order_lists,
-        get_my_trades, get_recent_trades, get_historical_trades, get_agg_trades,
+        get_my_trades, get_recent_trades, get_historical_trades, get_historical_block_trades,
+        get_agg_trades,
         get_klines, get_symbol_ticker, get_ticker_24hr, get_ticker_book,
         get_ui_klines, get_avg_price, get_trading_day_ticker, get_ticker,
         test_order, cancel_replace_order, amend_order, place_oco_order,
@@ -899,6 +900,40 @@ module RESTAPI
 
         response = make_request(client, "GET", "/api/v3/historicalTrades"; params=params)
         return to_struct(Vector{Trade}, response)
+    end
+
+    """
+        get_historical_block_trades(client, symbol, from_id; limit=500)
+
+    Get historical block trades for a symbol (REST: `GET /api/v3/historicalBlockTrades`).
+    Block trades are large off-book trades matched against a separate liquidity pool.
+
+    Endpoint introduced 2026-05-08.
+
+    # Required Parameters
+    - `symbol`: Trading pair (e.g., "BTCUSDT")
+    - `from_id`: Block trade ID to fetch from (mandatory, no most-recent default)
+
+    # Optional Parameters
+    - `limit`: 1–1000, default 500
+
+    # Weight
+    25
+    """
+    function get_historical_block_trades(client::RESTClient, symbol::String, from_id::Int; limit::Int=500)
+        symbol = validate_symbol(symbol)
+        if limit < 1 || limit > 1000
+            throw(ArgumentError("Limit must be between 1 and 1000"))
+        end
+
+        params = Dict{String,Any}(
+            "symbol" => symbol,
+            "fromId" => from_id,
+            "limit" => limit
+        )
+
+        response = make_request(client, "GET", "/api/v3/historicalBlockTrades"; params=params)
+        return to_struct(Vector{BlockTrade}, response)
     end
 
     function get_agg_trades(client::RESTClient, symbol::String;

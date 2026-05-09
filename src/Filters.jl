@@ -198,6 +198,15 @@ module Filters
         validate_filter(params::Dict{String,Any}, filter::MinNotionalFilter)
 
     Validates an order's notional value against the MIN_NOTIONAL filter.
+
+    # Server-side reference price (2026-05-08)
+    On the server side, when a non-null reference price exists for the symbol,
+    Binance evaluates this filter against `referencePrice * quantity` rather
+    than the historical `avgPrice * quantity`. When the reference price is
+    null (or unavailable), behavior falls back to the previous formula. This
+    client-side validator only checks the explicit price/quantity from the
+    request, so client-server results may diverge for orders the server
+    re-evaluates against reference price; the server's verdict is authoritative.
     """
     function validate_filter(params::Dict{String,Any}, filter::MinNotionalFilter)
         price = get(params, "price", nothing)
@@ -230,6 +239,14 @@ module Filters
         validate_filter(params::Dict{String,Any}, filter::NotionalFilter)
 
     Validates an order's notional value against the NOTIONAL filter rules.
+
+    # Server-side reference price (2026-05-08)
+    Like `MIN_NOTIONAL`, the server evaluates `NOTIONAL` against
+    `referencePrice * quantity` when a non-null reference price exists for
+    the symbol; otherwise it falls back to the historical `avgPrice * quantity`
+    behavior. Client-side validation here uses the explicit request price/qty,
+    so the server may accept or reject orders that the client side judged
+    differently — defer to the server's decision.
     """
     function validate_filter(params::Dict{String,Any}, filter::NotionalFilter)
         price = get(params, "price", nothing)
