@@ -220,7 +220,7 @@ module RESTAPI
                 handle_error(client, response)
             end
         catch e
-            if e isa HTTP.ExceptionRequest.StatusError
+            if e isa HTTP.StatusError
                 handle_error(client, e.response)
             else
                 rethrow(e)

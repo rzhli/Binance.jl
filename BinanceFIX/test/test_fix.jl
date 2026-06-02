@@ -2,10 +2,10 @@ using Binance
 using BinanceFIX
 
 # Load config
-config = Binance.from_toml("config.toml")
+config = Binance.from_toml("/home/rzhli/文档/投资/Binance/config.toml")
 sender_comp_id = "liruzhen"
 
-# Create Order Entry session via stunnel
+# Create Order Entry session via stunnel (defaults to 127.0.0.1:9000)
 session = FIXSession(config, sender_comp_id; session_type=OrderEntry)
 
 try
@@ -43,6 +43,6 @@ try
 finally
     stop_monitor(session)
     logout(session)
-    disconnect(session)
+    close_fix(session)   # was: disconnect(session) — that function doesn't exist
     println("Disconnected")
 end

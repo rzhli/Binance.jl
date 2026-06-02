@@ -176,7 +176,7 @@ export WebSocketConnection
 export Order, Trade, Kline, Ticker24hr
 
 # Market Data
-export OrderBook, PriceLevel, MarketTrade, BlockTrade, WebSocketTrade, AggregateTrade, AveragePrice, Ticker24hrRest,
+export OrderBook, PriceLevel, MarketTrade, BlockTrade, WebSocketTrade, WebSocketBlockTrade, AggregateTrade, AveragePrice, Ticker24hrRest,
     Ticker24hrMini, TradingDayTicker, TradingDayTickerMini, RollingWindowTicker,
     RollingWindowTickerMini, PriceTicker, BookTicker
 
@@ -785,6 +785,45 @@ function Base.show(io::IO, ::MIME"text/plain", t::WebSocketTrade)
     println(io, "WebSocketTrade:")
     @printf(io, "  Symbol:          %s\n", t.symbol)
     @printf(io, "  Trade ID:        %d\n", t.tradeId)
+    @printf(io, "  Time:            %s\n", t.tradeTime)
+    @printf(io, "  Price:           %s\n", t.price)
+    @printf(io, "  Quantity:        %s\n", t.quantity)
+    @printf(io, "  Buyer was Maker: %s\n", t.isBuyerMaker)
+end
+
+# WebSocket Block Trade Stream — <symbol>@blockTrade (rollout 2026-05-12).
+# Same shape as WebSocketTrade minus the trailing `M` (best-match) flag.
+struct WebSocketBlockTrade
+    eventType::String      # e - Event type ("blockTrade")
+    eventTime::DateTime    # E - Event time
+    symbol::String         # s - Symbol
+    tradeId::Int64         # t - Block trade ID
+    price::String          # p - Price
+    quantity::String       # q - Quantity
+    tradeTime::DateTime    # T - Trade time
+    isBuyerMaker::Bool     # m - Is the buyer the market maker?
+end
+StructTypes.StructType(::Type{WebSocketBlockTrade}) = StructTypes.CustomStruct()
+StructTypes.lower(t::WebSocketBlockTrade) = (
+    e=t.eventType, E=Int64(round(datetime2unix(t.eventTime) * 1000)), s=t.symbol,
+    t=t.tradeId, p=t.price, q=t.quantity,
+    T=Int64(round(datetime2unix(t.tradeTime) * 1000)), m=t.isBuyerMaker
+)
+StructTypes.construct(::Type{WebSocketBlockTrade}, obj) = WebSocketBlockTrade(
+    obj["e"],
+    unix2datetime(obj["E"] / 1000),
+    obj["s"],
+    obj["t"],
+    obj["p"],
+    obj["q"],
+    unix2datetime(obj["T"] / 1000),
+    obj["m"]
+)
+
+function Base.show(io::IO, ::MIME"text/plain", t::WebSocketBlockTrade)
+    println(io, "WebSocketBlockTrade:")
+    @printf(io, "  Symbol:          %s\n", t.symbol)
+    @printf(io, "  Block Trade ID:  %d\n", t.tradeId)
     @printf(io, "  Time:            %s\n", t.tradeTime)
     @printf(io, "  Price:           %s\n", t.price)
     @printf(io, "  Quantity:        %s\n", t.quantity)

@@ -9,7 +9,7 @@ module MarketDataStreams
         subscribe_all_tickers, subscribe_all_mini_tickers, subscribe_book_ticker,
         subscribe_all_book_tickers,
         subscribe_depth, subscribe_diff_depth, subscribe_kline, subscribe_trade,
-        subscribe_agg_trade, subscribe_rolling_ticker, subscribe_user_data,
+        subscribe_agg_trade, subscribe_block_trade, subscribe_rolling_ticker, subscribe_user_data,
         subscribe_combined, unsubscribe, close_all_connections, list_active_streams,
         subscribe_avg_price, subscribe_reference_price
 
@@ -219,6 +219,14 @@ module MarketDataStreams
         symbol = lowercase(validate_symbol(symbol))
         stream_name = "$(symbol)@aggTrade"
         return subscribe(client, stream_name, callback, struct_type=AggregateTrade)
+    end
+
+    # Block Trade Stream (rollout 2026-05-12). Emits an event per off-book
+    # block trade matched against the separate block-trade liquidity pool.
+    function subscribe_block_trade(client::MarketDataStreamClient, symbol::String, callback)
+        symbol = lowercase(validate_symbol(symbol))
+        stream_name = "$(symbol)@blockTrade"
+        return subscribe(client, stream_name, callback, struct_type=WebSocketBlockTrade)
     end
 
     function subscribe_avg_price(client::MarketDataStreamClient, symbol::String, callback)
