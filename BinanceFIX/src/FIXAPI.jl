@@ -209,6 +209,7 @@ struct ExecutionReportMsg
     # Error info
     error_code::String          # ErrorCode (25016)
     text::String                # Text (58)
+    expiry_reason::String       # ExpiryReason (25056) - reason an order expired
 
     # Raw fields for anything not explicitly parsed
     raw_fields::Dict{Int,String}
@@ -821,13 +822,13 @@ function FIXSession(config::BinanceConfig, sender_comp_id::String;
     # Default target is "SPOT" for all Binance FIX sessions
     target_comp_id = "SPOT"
 
-    # Host and Port based on session type from config
+    # Host and Port based on session type from config (nested under config.fix)
     (host, port) = if session_type == OrderEntry
-        (config.fix_order_entry_host, config.fix_order_entry_port)
+        (config.fix.order_entry.host, config.fix.order_entry.standard_port)
     elseif session_type == DropCopy
-        (config.fix_drop_copy_host, config.fix_drop_copy_port)
+        (config.fix.drop_copy.host, config.fix.drop_copy.standard_port)
     else  # MarketData
-        (config.fix_market_data_host, config.fix_market_data_port)
+        (config.fix.market_data.host, config.fix.market_data.standard_port)
     end
 
     return FIXSession(host, port, sender_comp_id, target_comp_id, config;
@@ -1409,7 +1410,8 @@ Returns the ClOrdID used.
 function order_amend_keep_priority(session::FIXSession, symbol::String, quantity::Float64;
     cl_ord_id::String="",
     orig_cl_ord_id::String="",
-    order_id::String="")
+    order_id::String="",
+    recv_window::Union{Real,Nothing}=nothing)
     if session.session_type != OrderEntry
         error("OrderAmendKeepPriority is only supported on Order Entry sessions")
     end
@@ -1432,6 +1434,9 @@ function order_amend_keep_priority(session::FIXSession, symbol::String, quantity
     end
     if !isempty(order_id)
         fields[TAG_ORDER_ID] = order_id
+    end
+    if !isnothing(recv_window)
+        fields[TAG_RECV_WINDOW] = string(recv_window)
     end
 
     msg = build_message(session, MSG_ORDER_AMEND_KEEP_PRIORITY, fields)
@@ -1493,7 +1498,7 @@ orders. Exceeding unfilled order count results in message rejection.
 
 Returns the ReqID used.
 """
-function limit_query(session::FIXSession; req_id::String="")
+function limit_query(session::FIXSession; req_id::String="", recv_window::Union{Real,Nothing}=nothing)
     if session.session_type != OrderEntry
         error("LimitQuery is only supported on Order Entry sessions")
     end
@@ -1507,6 +1512,9 @@ function limit_query(session::FIXSession; req_id::String="")
 
     fields = Dict{Int,String}()
     fields[TAG_REQ_ID] = req_id
+    if !isnothing(recv_window)
+        fields[TAG_RECV_WINDOW] = string(recv_window)
+    end
 
     msg = build_message(session, MSG_LIMIT_QUERY, fields)
     send_message(session, msg)
@@ -3004,13 +3012,18 @@ function get_msg_type(fields::Dict{Int,String})
 end
 
 """
-    parse_execution_report(fields::Dict{Int,String})
+    parse_execution_report(fields::Dict{Int,String}, msg::AbstractString="")
 
 Parse an ExecutionReport (MsgType=8) message.
+
+The optional `msg` argument is the raw FIX message string. When provided,
+the NoMiscFees repeating group is parsed in tag-order from the raw bytes,
+preserving every entry. When omitted, only the first fee is recovered (the
+rest collide in the field dict).
 """
-function parse_execution_report(fields::Dict{Int,String})
+function parse_execution_report(fields::Dict{Int,String}, msg::AbstractString="")
     # Parse fees repeating group
-    fees = parse_misc_fees(fields)
+    fees = parse_misc_fees(fields, msg)
 
     return ExecutionReportMsg(
         # Order identification
@@ -3095,6 +3108,7 @@ function parse_execution_report(fields::Dict{Int,String})
         # Error info
         get(fields, TAG_ERROR_CODE, ""),
         get(fields, TAG_TEXT, ""),
+        get(fields, TAG_EXPIRY_REASON, ""),
 
         # Raw fields
         fields
@@ -3102,12 +3116,16 @@ function parse_execution_report(fields::Dict{Int,String})
 end
 
 """
-    parse_misc_fees(fields::Dict{Int,String}) -> Vector{MiscFee}
+    parse_misc_fees(fields::Dict{Int,String}, msg::AbstractString="") -> Vector{MiscFee}
 
-Parse the NoMiscFees repeating group from raw FIX fields.
-Note: This is a simplified parser that assumes fees appear sequentially.
+Parse the NoMiscFees repeating group.
+
+If `msg` (the raw FIX message string with SOH separators) is provided, all
+fee entries are extracted by scanning the raw byte stream; this is the only
+way to recover multiple fees because the field dict collapses repeating
+tags. When `msg` is empty, falls back to a single-fee parse from `fields`.
 """
-function parse_misc_fees(fields::Dict{Int,String})
+function parse_misc_fees(fields::Dict{Int,String}, msg::AbstractString="")
     fees = MiscFee[]
     num_fees_str = get(fields, TAG_NO_MISC_FEES, "")
     if isempty(num_fees_str)
@@ -3119,15 +3137,66 @@ function parse_misc_fees(fields::Dict{Int,String})
         return fees
     end
 
-    # For a single fee, the fields appear directly
-    # For multiple fees, we'd need to parse the raw message more carefully
-    # This handles the common case of 1 fee
-    if num_fees >= 1
+    # Without the raw message we can only recover one fee from `fields`,
+    # because repeating tags 137/138/139 collapse in a Dict.
+    if isempty(msg)
         push!(fees, MiscFee(
             get(fields, TAG_MISC_FEE_AMT, ""),
             get(fields, TAG_MISC_FEE_CURR, ""),
             get(fields, TAG_MISC_FEE_TYPE, "")
         ))
+        return fees
+    end
+
+    # Scan raw message in tag order. After the NoMiscFees count tag,
+    # entries arrive as triples of (137, 138, 139). A new MISC_FEE_AMT tag
+    # while we already have one means the previous entry is complete.
+    # A non-fee tag terminates the group.
+    parts = split(msg, '\x01', keepempty=false)
+    in_group = false
+    cur_amt = ""
+    cur_curr = ""
+    cur_type = ""
+    have_entry = false
+
+    for part in parts
+        eq_idx = findfirst('=', part)
+        isnothing(eq_idx) && continue
+        tag = tryparse(Int, part[1:eq_idx-1])
+        isnothing(tag) && continue
+        value = part[eq_idx+1:end]
+
+        if tag == TAG_NO_MISC_FEES
+            in_group = true
+            continue
+        end
+
+        in_group || continue
+
+        if tag == TAG_MISC_FEE_AMT
+            if have_entry
+                push!(fees, MiscFee(cur_amt, cur_curr, cur_type))
+                cur_curr = ""
+                cur_type = ""
+                length(fees) >= num_fees && (in_group = false; continue)
+            end
+            cur_amt = value
+            have_entry = true
+        elseif tag == TAG_MISC_FEE_CURR
+            cur_curr = value
+        elseif tag == TAG_MISC_FEE_TYPE
+            cur_type = value
+        else
+            # Tag outside the group ends the group
+            if have_entry
+                push!(fees, MiscFee(cur_amt, cur_curr, cur_type))
+                have_entry = false
+            end
+            in_group = false
+        end
+    end
+    if have_entry
+        push!(fees, MiscFee(cur_amt, cur_curr, cur_type))
     end
 
     return fees
@@ -3998,7 +4067,7 @@ function process_message(session::FIXSession, msg::String)
         end
         return (:news, news)
     elseif msg_type == MSG_EXECUTION_REPORT
-        return (:execution_report, parse_execution_report(fields))
+        return (:execution_report, parse_execution_report(fields, msg))
     elseif msg_type == MSG_ORDER_CANCEL_REJECT
         return (:order_cancel_reject, parse_order_cancel_reject(fields))
     elseif msg_type == MSG_LIST_STATUS

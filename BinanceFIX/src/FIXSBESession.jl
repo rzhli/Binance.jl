@@ -121,11 +121,11 @@ function SBESession(config::BinanceConfig, sender_comp_id::String;
 
     # Host and Port based on session type - using SBE full mode ports (remote port 9002)
     (host, port) = if session_type == SBEOrderEntry
-        (config.fix_order_entry_host, config.fix_order_entry_sbe_full_port)
+        (config.fix.order_entry.host, config.fix.order_entry.sbe_full_port)
     elseif session_type == SBEDropCopy
-        (config.fix_drop_copy_host, config.fix_drop_copy_sbe_full_port)
+        (config.fix.drop_copy.host, config.fix.drop_copy.sbe_full_port)
     else  # SBEMarketData
-        (config.fix_market_data_host, config.fix_market_data_sbe_full_port)
+        (config.fix.market_data.host, config.fix.market_data.sbe_full_port)
     end
 
     return SBESession(host, port, sender_comp_id, target_comp_id, config;
@@ -220,7 +220,8 @@ function logon_sbe(session::SBESession;
     heartbeat_interval::UInt32=UInt32(30),
     message_handling::UInt8=0x01,
     response_mode::Union{UInt8,Nothing}=nothing,
-    recv_window::Union{UInt64,Nothing}=nothing,
+    execution_report_type::Union{UInt8,Nothing}=nothing,
+    recv_window::Union{Real,Nothing}=nothing,
     timeout_sec::Int=30)
 
     # Validate heartbeat interval
@@ -238,8 +239,8 @@ function logon_sbe(session::SBESession;
     payload = join(["A", session.sender_comp_id, session.target_comp_id, seq_num, timestamp], "\x01")
     signature = Signature.sign_message(session.signer, payload)
 
-    # Set drop copy flag if needed
-    drop_copy_flag = session.session_type == SBEDropCopy ? UInt8(0x59) : nothing  # 'Y'
+    # Set drop copy flag if needed (boolEnum True=1)
+    drop_copy_flag = session.session_type == SBEDropCopy ? UInt8(1) : nothing
 
     # Encode Logon message
     msg = encode_logon(
@@ -250,9 +251,10 @@ function logon_sbe(session::SBESession;
         api_key=session.config.api_key,
         signature=signature,
         message_handling=message_handling,
-        recv_window=recv_window,
         response_mode=response_mode,
-        drop_copy_flag=drop_copy_flag
+        execution_report_type=execution_report_type,
+        drop_copy_flag=drop_copy_flag,
+        recv_window=recv_window
     )
 
     println("Sending SBE Logon...")
@@ -324,15 +326,17 @@ end
 """
     new_order_single_sbe(session, symbol, side; kwargs...)
 
-Send a new order request via SBE.
+Send a new order request via SBE (schema 1.1).
+
+Schema 1.1 NewOrderSingle has no RecvWindow — it's only on Logon. To
+constrain timing, set `recv_window` on `logon_sbe`.
 """
 function new_order_single_sbe(session::SBESession, symbol::String, side::UInt8;
-    quantity::Float64,
+    quantity::Union{Float64,Nothing}=nothing,
     order_type::UInt8=0x02,  # LIMIT
     price::Union{Float64,Nothing}=nothing,
-    time_in_force::UInt8=0x01,  # GTC
+    time_in_force::Union{UInt8,Nothing}=UInt8(0x01),  # GTC
     cl_ord_id::String="",
-    recv_window::Union{UInt64,Nothing}=nothing,
     kwargs...)
 
     if session.session_type != SBEOrderEntry
@@ -351,8 +355,7 @@ function new_order_single_sbe(session::SBESession, symbol::String, side::UInt8;
         quantity=quantity,
         cl_ord_id=cl_ord_id,
         price=price,
-        time_in_force=time_in_force,
-        recv_window=recv_window;
+        time_in_force=time_in_force;
         kwargs...
     )
 
@@ -363,8 +366,10 @@ end
 function order_cancel_request_sbe(session::SBESession, symbol::String;
     cl_ord_id::String="",
     orig_cl_ord_id::String="",
-    order_id::Union{UInt64,Nothing}=nothing,
-    recv_window::Union{UInt64,Nothing}=nothing)
+    order_id::Union{Int64,Nothing}=nothing,
+    orig_cl_list_id::String="",
+    list_id::Union{Int64,Nothing}=nothing,
+    cancel_restrictions::Union{UInt8,Nothing}=nothing)
 
     if session.session_type != SBEOrderEntry
         error("OrderCancelRequest is only supported on Order Entry sessions")
@@ -380,7 +385,9 @@ function order_cancel_request_sbe(session::SBESession, symbol::String;
         cl_ord_id=cl_ord_id,
         orig_cl_ord_id=orig_cl_ord_id,
         order_id=order_id,
-        recv_window=recv_window
+        orig_cl_list_id=orig_cl_list_id,
+        list_id=list_id,
+        cancel_restrictions=cancel_restrictions
     )
 
     send_sbe_message(session, msg)
@@ -388,8 +395,7 @@ function order_cancel_request_sbe(session::SBESession, symbol::String;
 end
 
 function order_mass_cancel_request_sbe(session::SBESession, symbol::String;
-    cl_ord_id::String="",
-    recv_window::Union{UInt64,Nothing}=nothing)
+    cl_ord_id::String="")
 
     if session.session_type != SBEOrderEntry
         error("OrderMassCancelRequest is only supported on Order Entry sessions")
@@ -402,8 +408,7 @@ function order_mass_cancel_request_sbe(session::SBESession, symbol::String;
     msg = encode_order_mass_cancel_request(
         seq_num=session.seq_num,
         symbol=symbol,
-        cl_ord_id=cl_ord_id,
-        recv_window=recv_window
+        cl_ord_id=cl_ord_id
     )
 
     send_sbe_message(session, msg)
@@ -413,8 +418,8 @@ end
 function order_amend_keep_priority_sbe(session::SBESession, symbol::String, order_qty::Float64;
     cl_ord_id::String="",
     orig_cl_ord_id::String="",
-    order_id::Union{UInt64,Nothing}=nothing,
-    recv_window::Union{UInt64,Nothing}=nothing)
+    order_id::Union{Int64,Nothing}=nothing,
+    qty_exponent::Int8=Int8(-8))
 
     if session.session_type != SBEOrderEntry
         error("OrderAmendKeepPriority is only supported on Order Entry sessions")
@@ -431,11 +436,78 @@ function order_amend_keep_priority_sbe(session::SBESession, symbol::String, orde
         order_qty=order_qty,
         orig_cl_ord_id=orig_cl_ord_id,
         order_id=order_id,
-        recv_window=recv_window
+        qty_exponent=qty_exponent
     )
 
     send_sbe_message(session, msg)
     return cl_ord_id
+end
+
+"""
+    new_order_list_sbe(session, cl_list_id, contingency_type, orders; opo=false)
+
+Place an order list (OCO/OTO/OTOCO/OPO) via SBE (schema 1.1).
+
+`orders` is a `Vector{OrderListEntry}` (2 or 3 entries depending on list type).
+"""
+function new_order_list_sbe(session::SBESession, cl_list_id::String,
+    contingency_type::UInt8, orders::Vector{OrderListEntry}; opo::Bool=false)
+
+    if session.session_type != SBEOrderEntry
+        error("NewOrderList is only supported on Order Entry sessions")
+    end
+
+    msg = encode_new_order_list(
+        seq_num=session.seq_num,
+        cl_list_id=cl_list_id,
+        contingency_type=contingency_type,
+        orders=orders,
+        opo=opo
+    )
+
+    send_sbe_message(session, msg)
+    return cl_list_id
+end
+
+"""
+    order_cancel_request_and_new_sbe(session, symbol, side, ord_type, mode; kwargs...)
+
+Atomic cancel-replace via SBE (schema 1.1, XCN, templateId=97).
+
+`mode`: 1=STOP_ON_FAILURE (don't place new order if cancel fails), 2=ALLOW_FAILURE.
+"""
+function order_cancel_request_and_new_sbe(session::SBESession, symbol::String,
+    side::UInt8, ord_type::UInt8, mode::UInt8;
+    cl_ord_id::String="", cancel_cl_ord_id::String="",
+    orig_cl_ord_id::String="", order_id::Union{Int64,Nothing}=nothing,
+    kwargs...)
+
+    if session.session_type != SBEOrderEntry
+        error("OrderCancelRequestAndNew is only supported on Order Entry sessions")
+    end
+
+    if isempty(cl_ord_id)
+        cl_ord_id = "OID-" * string(rand(UInt32), base=16)
+    end
+    if isempty(cancel_cl_ord_id)
+        cancel_cl_ord_id = "CXL-" * string(rand(UInt32), base=16)
+    end
+
+    msg = encode_order_cancel_request_and_new(
+        seq_num=session.seq_num,
+        symbol=symbol,
+        cl_ord_id=cl_ord_id,
+        side=side,
+        ord_type=ord_type,
+        mode=mode,
+        cancel_cl_ord_id=cancel_cl_ord_id,
+        orig_cl_ord_id=orig_cl_ord_id,
+        order_id=order_id;
+        kwargs...
+    )
+
+    send_sbe_message(session, msg)
+    return (cl_ord_id, cancel_cl_ord_id)
 end
 
 function limit_query_sbe(session::SBESession; req_id::String="")
@@ -459,7 +531,8 @@ end
 function market_data_request_sbe(session::SBESession, symbols::Vector{String};
     md_req_id::String="",
     subscription_type::UInt8=0x01,  # Subscribe
-    market_depth::UInt32=UInt32(0),
+    market_depth::Union{Integer,Nothing}=nothing,
+    aggregated_book::Union{Bool,Nothing}=nothing,
     entry_types::Vector{UInt8}=[0x00, 0x01])  # Bid, Offer
 
     if session.session_type != SBEMarketData
@@ -475,7 +548,8 @@ function market_data_request_sbe(session::SBESession, symbols::Vector{String};
         md_req_id=md_req_id,
         subscription_request_type=subscription_type,
         symbols=symbols,
-        market_depth=market_depth,
+        market_depth=isnothing(market_depth) ? nothing : UInt16(market_depth),
+        aggregated_book=aggregated_book,
         md_entry_types=entry_types
     )
 

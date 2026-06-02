@@ -124,6 +124,12 @@ export RESPONSE_MODE_EVERYTHING, RESPONSE_MODE_ONLY_ACKS
 # Trigger Direction Values
 export TRIGGER_UP, TRIGGER_DOWN
 
+# ExpiryReason Values
+export EXPIRY_REJECTED, EXPIRY_EXCHANGE_CANCELED, EXPIRY_OCO_TRIGGER,
+    EXPIRY_OTO_PHASE_ONE_EXPIRED, EXPIRY_UNFILLED_IOC_QUANTITY_EXPIRED,
+    EXPIRY_UNFILLED_FOK_ORDER_EXPIRED, EXPIRY_INSUFFICIENT_LIQUIDITY,
+    EXPIRY_EXECUTION_RULE_PRICE_RANGE_EXCEEDED
+
 # ExecInst Values
 export EXEC_INST_PARTICIPATE_DONT_INITIATE
 
@@ -267,8 +273,12 @@ export encode_logon, encode_logout, encode_heartbeat, encode_test_request
 
 # SBE Encoder functions - Order Entry messages
 export encode_new_order_single, encode_order_cancel_request
+export encode_new_order_list, encode_order_cancel_request_and_new
 export encode_order_mass_cancel_request, encode_order_amend_keep_priority
 export encode_limit_query
+
+# SBE encoder helpers
+export OrderListEntry, mark_block_end!
 
 # SBE Encoder functions - Market Data messages
 export encode_market_data_request, encode_instrument_list_request
@@ -288,6 +298,7 @@ export start_sbe_monitor, stop_sbe_monitor, reconnect_sbe
 
 # SBE Order Entry functions
 export new_order_single_sbe, order_cancel_request_sbe
+export new_order_list_sbe, order_cancel_request_and_new_sbe
 export order_mass_cancel_request_sbe, order_amend_keep_priority_sbe
 export limit_query_sbe
 

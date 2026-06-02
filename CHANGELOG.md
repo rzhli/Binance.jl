@@ -5,7 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] - 2026-06-02
+
+### Added
+- **Block Trade WebSocket Stream** (2026-05-12 rollout) — New
+  `<symbol>@blockTrade` market data stream pushing one event per off-book
+  block trade. Public entry point:
+  `subscribe_block_trade(client, symbol, callback)`; payload deserialized
+  to a new `WebSocketBlockTrade` struct (same fields as `WebSocketTrade`
+  minus the `M` best-match flag).
+
+### Added — BinanceFIX
+- **SBE encoder NewOrderList (templateId=100)** — was previously decode-only;
+  OCO/OTO/OTOCO/OPO order lists can now be placed over an SBE Order Entry
+  session. New `OrderListEntry` keyword struct mirrors the per-order fields
+  including nested `ListTriggeringInstructions`. Public entry point:
+  `new_order_list_sbe(session, cl_list_id, contingency_type, orders; opo)`.
+- **SBE encoder OrderCancelRequestAndNew/XCN (templateId=97)** — atomic
+  cancel-replace at SBE latency; previously only available on the text-FIX
+  path. Public entry point: `order_cancel_request_and_new_sbe(...)`.
+- **`expiry_reason` field on text-FIX `ExecutionReportMsg`** — new struct
+  field plus parser extraction for tag 25056 (was already present in the SBE
+  decoder since 0.9.0). Eight enum constants exported:
+  `EXPIRY_REJECTED` … `EXPIRY_EXECUTION_RULE_PRICE_RANGE_EXCEEDED`.
+- **`recv_window` keyword on text-FIX `order_amend_keep_priority` and
+  `limit_query`** — parity with the SBE encoders.
+- **`aggregated_book` keyword on `encode_market_data_request`** — exposes the
+  optional AggregatedBook field (tag 266) defined by the spec but missing
+  from the previous encoder.
+- **Regression tests** — `BinanceFIX/test/test_sbe_schema11.jl` covers
+  blockLength values, schema-version stamping, multi-fee parsing, and the
+  expiry_reason extraction path.
+
+### Changed — BinanceFIX
+- **SBE encoder migrated from schema 1:0 to 1:1 (current)**.
+  `SBE_SCHEMA_VERSION_FIX` bumped from 0 → 1; messages now advertise version 1
+  in the header. Schema 1:0 was deprecated 2026-03-09 and is expected to
+  retire ~6 months later. All encoders rewritten to match the 1:1 layout:
+  - `encode_new_order_single` (id=99): root block now leads with
+    `PriceExponent`/`QtyExponent`, `OrderQty` is optional, `Side` and
+    `TimeInForce` move past the trigger/peg blocks, `PegOffsetValue` is
+    `uint8` (was `int64`), `RecvWindow` removed (it's only on Logon in 1:1).
+    New keywords for full peg coverage: `peg_move_type`, `peg_offset_type`,
+    `trigger_type`, `trigger_action`, `trigger_price_type`.
+  - `encode_logon` (id=20008): added `execution_report_type`, `RecvWindow`
+    moved last and changed to `uint32 durationUs`, `Username`/`RawData`
+    promoted to `varString` (uint16 prefix), data field order corrected,
+    `UUID` removed (it's on `LogonAck` in the schema).
+  - `encode_order_amend_keep_priority` (id=105): now writes the `QtyExponent`
+    that 1:1 requires; `RecvWindow` removed.
+  - `encode_order_cancel_request` / `encode_order_mass_cancel_request`:
+    `RecvWindow` removed (not in 1:1).
+  - `encode_market_data_request`: `MarketDepth` is `uint16` (was `uint32`),
+    `RelatedSym` group entries no longer interleaved with `MDEntryTypes`.
+- **`SBEBuffer.block_length`** — explicit field set by `mark_block_end!(buf)`
+  after writing fixed fields. `encode_message_header!` writes that as the
+  root `blockLength`. The previous encoder reported the entire body as
+  `blockLength`, which would misalign a strict SBE decoder on every message
+  with groups or var data.
+- **`parse_misc_fees(fields, msg)`** — now takes the raw FIX message string
+  and recovers every entry in the NoMiscFees group (tag 136). Previously a
+  message with N>1 fees collapsed into a single dict slot and the parser
+  emitted only one fee. The 1-arg call still works as a single-fee fallback.
+
+### Migration notes
+- Callers of `encode_*_sbe` should drop the `recv_window` keyword on
+  `order_cancel_request_sbe`, `order_mass_cancel_request_sbe`,
+  `order_amend_keep_priority_sbe`, and `new_order_single_sbe` — it has been
+  removed (set `recv_window` on `logon_sbe` once per session instead).
+- `quantity` on `new_order_single_sbe` is now `Union{Float64,Nothing}` so
+  callers can pass `cash_order_qty=...` for reverse-quote market orders.
+- `OrderID`-shaped keywords on cancel/amend/XCN encoders are now `Int64`
+  (was `UInt64`) to match the schema's `ordId` type.
 
 ## [0.9.0] - 2026-05-09
 

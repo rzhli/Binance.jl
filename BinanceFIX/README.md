@@ -10,6 +10,21 @@ BinanceFIX.jl provides complete FIX protocol support for Binance Spot trading:
 - **Market Data** sessions for FIX-based market data streams
 - **FIX SBE** support for high-performance binary encoding (ports 9001/9002)
 
+## Recent Updates
+
+### v0.3.0 - FIX SBE schema 1:1 encoder support (2026-06-02)
+
+- SBE request encoders now target FIX SBE schema 1:1 and stamp version 1 in
+  message headers.
+- Added SBE `NewOrderList` support via `new_order_list_sbe` for
+  OCO/OTO/OTOCO/OPO order lists.
+- Added SBE atomic cancel-replace support via
+  `order_cancel_request_and_new_sbe`.
+- Text-FIX `ExecutionReportMsg` now carries `expiry_reason`, and multi-fee
+  execution reports preserve every fee entry.
+- `recv_window` is now available on text-FIX `order_amend_keep_priority` and
+  `limit_query`; SBE request `recv_window` is set on `logon_sbe`.
+
 ## Installation
 
 BinanceFIX.jl is a sub-package of Binance.jl:
@@ -138,6 +153,11 @@ start_sbe_monitor(session)
 cl_ord_id = new_order_single_sbe(session, "BTCUSDT", UInt8(1);  # 1=BUY
     quantity=0.001, price=50000.0, order_type=UInt8(2))  # 2=LIMIT
 
+# Atomic cancel-replace
+order_cancel_request_and_new_sbe(session, "BTCUSDT", UInt8(1), UInt8(2), UInt8(1);
+    orig_cl_ord_id=cl_ord_id, quantity=0.001, price=50100.0,
+    time_in_force=UInt8(1))
+
 # Cancel order
 order_cancel_request_sbe(session, "BTCUSDT"; orig_cl_ord_id=cl_ord_id)
 
@@ -183,6 +203,21 @@ market_data_request_sbe(session, ["BTCUSDT", "ETHUSDT"];
 instrument_list_request_sbe(session)
 ```
 
+### SBE Order Lists
+
+```julia
+orders = [
+    OrderListEntry(cl_ord_id="oco-limit", symbol="BTCUSDT", side=UInt8(2),
+        ord_type=UInt8(2), quantity=0.001, price=52000.0,
+        time_in_force=UInt8(1)),
+    OrderListEntry(cl_ord_id="oco-stop", symbol="BTCUSDT", side=UInt8(2),
+        ord_type=UInt8(4), quantity=0.001, price=47900.0,
+        trigger_price=48000.0, time_in_force=UInt8(1))
+]
+
+new_order_list_sbe(session, "list-1", UInt8(1), orders)
+```
+
 ### FIX SBE Decoder (for Hybrid Mode)
 
 When using standard FIX text requests with SBE responses (port 9001):
@@ -217,7 +252,7 @@ Message Header:
 - blockLength: uint16
 - templateId: uint16
 - schemaId: uint16 (1 for FIX SBE)
-- version: uint16 (0 for v1.0)
+- version: uint16 (1 for schema 1:1)
 - seqNum: uint32
 - sendingTime: int64 (microseconds since epoch)
 ```

@@ -61,7 +61,7 @@ export get_execution_rules, get_reference_price, get_reference_price_calculation
 
 # Export MarketDataStreams functions
 export subscribe, subscribe_ticker
-export subscribe_depth, subscribe_kline, subscribe_trade, subscribe_agg_trade
+export subscribe_depth, subscribe_kline, subscribe_trade, subscribe_agg_trade, subscribe_block_trade
 export subscribe_user_data, unsubscribe, close_all_connections, list_active_streams
 export subscribe_mini_ticker, subscribe_all_tickers, subscribe_all_mini_tickers
 export subscribe_book_ticker, subscribe_all_book_tickers, subscribe_diff_depth

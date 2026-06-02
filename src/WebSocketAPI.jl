@@ -184,7 +184,11 @@ module WebSocketAPI
                 end
 
                 try
-                    WebSockets.open(client.base_url; connect_timeout=30, proxy=client.config.proxy) do ws
+                    proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
+                    open_kwargs = proxy_url === nothing ?
+                        (; connect_timeout=30) :
+                        (; connect_timeout=30, proxy=proxy_url)
+                    WebSockets.open(client.base_url; open_kwargs...) do ws
                         client.ws_connection = ws
                         @info "Successfully connected to WebSocket API."
                         

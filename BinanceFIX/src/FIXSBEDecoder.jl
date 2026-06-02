@@ -69,7 +69,7 @@ Fields:
 - blockLength: uint16 - Length of message body (excluding groups and var data)
 - templateId: uint16 - Message type identifier
 - schemaId: uint16 - Schema identifier (must be 1 for FIX SBE)
-- version: uint16 - Schema version (must be 0 for FIX SBE 1.0)
+- version: uint16 - Schema version (1 for FIX SBE 1:1; 0 for the deprecated 1:0 schema)
 - seqNum: uint32 - Message sequence number
 - sendingTime: int64 - Sending time in microseconds since epoch (utcTimestampUs)
 """

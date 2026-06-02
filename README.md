@@ -24,6 +24,22 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.10.0 - Changelog Sync 2026-05-12 / FIX SBE 1:1 (2026-06-02)
+
+- **Block Trade WebSocket Stream** — Added `<symbol>@blockTrade` market data
+  streams via `subscribe_block_trade`, with payloads decoded into
+  `WebSocketBlockTrade`.
+- **FIX SBE encoder schema 1:0 → 1:1** — Request encoders now advertise FIX
+  SBE schema version 1 and use the current 1:1 field layout and block lengths.
+- **FIX SBE order list and cancel-replace requests** — Added SBE support for
+  `new_order_list_sbe` (template 100) and `order_cancel_request_and_new_sbe`
+  (template 97).
+- **Text-FIX parity fixes** — `ExecutionReportMsg` now exposes
+  `expiry_reason`; `order_amend_keep_priority` and `limit_query` accept
+  `recv_window`.
+- **FIX SBE regression coverage** — Added schema 1.1 tests for block lengths,
+  header version stamping, multi-fee parsing, and `expiry_reason`.
+
 ### v0.9.0 - Changelog Sync 2026-05-06 → 2026-05-08 (2026-05-09)
 
 - **Historical Block Trades** (REST `/api/v3/historicalBlockTrades`,
