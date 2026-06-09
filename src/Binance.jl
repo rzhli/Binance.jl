@@ -117,7 +117,7 @@ export convert_order_status, convert_trade_flow, convert_limit_place_order
 export convert_limit_cancel_order, convert_limit_query_open_orders
 
 # Export Signature functions
-export HmacSigner, Ed25519Signer
+export HmacSigner, Ed25519Signer, RsaSigner, BinanceSigner, create_signer
 
 # Export OrderBookManager types and functions
 export OrderBookManager, PriceQuantity, OrderBookSnapshot
@@ -128,9 +128,5 @@ export calculate_vwap, calculate_depth_imbalance
 
 # Export Config functions (for BinanceFIX to use)
 export load_config
-
-function __init__()
-    ENV["DATAFRAMES_FLOAT_FORMAT"] = "%.0f"
-end
 
 end # module Binance

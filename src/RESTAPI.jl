@@ -28,7 +28,7 @@ module RESTAPI
     """
     mutable struct RESTClient
         config::BinanceConfig
-        signer::CryptoSigner
+        signer::Signature.BinanceSigner
         rate_limiter::BinanceRateLimit
         time_offset::Int64
         exchange_info::Union{ExchangeInfo, Nothing}
@@ -38,15 +38,7 @@ module RESTAPI
             config = from_toml(config_path)
             rate_limiter = BinanceRateLimit(config)
 
-            signer = if config.signature_method == HMAC_SHA256
-                HmacSigner(config.api_secret)
-            elseif config.signature_method == ED25519
-                Ed25519Signer(config.private_key_path, config.private_key_pass)
-            elseif config.signature_method == RSA
-                RsaSigner(config.private_key_path)
-            else
-                error("Unsupported signature method: $(config.signature_method)")
-            end
+            signer = Signature.create_signer(config)
 
             client = new(config, signer, rate_limiter, 0, nothing, Dict{String, SymbolInfo}())
 

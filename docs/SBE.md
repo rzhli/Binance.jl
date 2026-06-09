@@ -488,6 +488,13 @@ end
 
 ## Technical Details
 
+### JSON Control Frames
+
+SBE market data payloads are binary, but Binance can also send JSON control
+events in WebSocket text frames. The SDK handles `serverShutdown` by closing the
+current socket so the reconnect loop can open a new connection and resubscribe.
+Treat the event as an immediate reconnect signal.
+
 ### Schema Versions
 
 This client tracks the Binance SBE Market Data schema (`schemaId = 3`):

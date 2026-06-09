@@ -61,6 +61,16 @@ end
 # SBE Session Structure
 # =============================================================================
 
+struct SBESessionCallback
+    callback::Any
+end
+
+@inline (callback::SBESessionCallback)(args...) = callback.callback(args...)
+
+wrap_sbe_session_callback(::Nothing) = nothing
+wrap_sbe_session_callback(callback::SBESessionCallback) = callback
+wrap_sbe_session_callback(callback) = SBESessionCallback(callback)
+
 mutable struct SBESession
     host::String
     port::Int
@@ -69,7 +79,7 @@ mutable struct SBESession
     sender_comp_id::String
     target_comp_id::String
     config::BinanceConfig
-    signer::Any
+    signer::Signature.BinanceSigner
     session_type::SBESessionType
     is_logged_in::Bool
     recv_buffer::Vector{UInt8}
@@ -85,16 +95,16 @@ mutable struct SBESession
     should_stop::Ref{Bool}
 
     # Callbacks for connection events
-    on_maintenance::Union{Function,Nothing}
-    on_disconnect::Union{Function,Nothing}
-    on_message::Union{Function,Nothing}
+    on_maintenance::Union{SBESessionCallback,Nothing}
+    on_disconnect::Union{SBESessionCallback,Nothing}
+    on_message::Union{SBESessionCallback,Nothing}
 
     function SBESession(host::String, port::Int, sender_comp_id::String,
         target_comp_id::String, config::BinanceConfig;
         session_type::SBESessionType=SBEOrderEntry,
-        on_maintenance::Union{Function,Nothing}=nothing,
-        on_disconnect::Union{Function,Nothing}=nothing,
-        on_message::Union{Function,Nothing}=nothing)
+        on_maintenance=nothing,
+        on_disconnect=nothing,
+        on_message=nothing)
 
         # Validate CompIDs (1-8 chars, alphanumeric + hyphen + underscore)
         if isempty(sender_comp_id) || length(sender_comp_id) > 8
@@ -106,16 +116,18 @@ mutable struct SBESession
         new(host, port, nothing, UInt32(1), sender_comp_id, target_comp_id, config, signer,
             session_type, false, UInt8[],
             UInt32(30), now_time, now_time, "", nothing, false, nothing, Ref(false),
-            on_maintenance, on_disconnect, on_message)
+            wrap_sbe_session_callback(on_maintenance),
+            wrap_sbe_session_callback(on_disconnect),
+            wrap_sbe_session_callback(on_message))
     end
 end
 
 # Convenience constructor using config defaults
 function SBESession(config::BinanceConfig, sender_comp_id::String;
     session_type::SBESessionType=SBEOrderEntry,
-    on_maintenance::Union{Function,Nothing}=nothing,
-    on_disconnect::Union{Function,Nothing}=nothing,
-    on_message::Union{Function,Nothing}=nothing)
+    on_maintenance=nothing,
+    on_disconnect=nothing,
+    on_message=nothing)
 
     target_comp_id = "SPOT"
 

@@ -23,7 +23,7 @@ println("=" ^ 80)
         println("Raw: ", replace(fix_msg, "\x01" => "|"))
 
         # Parse using the raw parser
-        list_status = parse_list_status_from_raw(fix_msg)
+        list_status = parse_list_status(fix_msg)
 
         # Verify basic fields
         @test list_status.symbol == "BTCUSDT"

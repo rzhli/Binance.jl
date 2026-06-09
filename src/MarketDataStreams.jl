@@ -13,6 +13,12 @@ module MarketDataStreams
         subscribe_combined, unsubscribe, close_all_connections, list_active_streams,
         subscribe_avg_price, subscribe_reference_price
 
+    struct StreamCallback
+        callback::Any
+    end
+
+    @inline (callback::StreamCallback)(data) = callback.callback(data)
+
     """
     A client for subscribing to Binance Market Data WebSocket streams.
     """
@@ -20,20 +26,20 @@ module MarketDataStreams
         config::BinanceConfig
         ws_base_url::String
         ws_connections::Dict{String,Task}
-        ws_callbacks::Dict{String,Any}  # Any allows concrete closure types
+        ws_callbacks::Dict{String,StreamCallback}
         should_reconnect::Dict{String,Bool}
 
         function MarketDataStreamClient(config_path::String="config.toml")
             config = from_toml(config_path)
             ws_base_url = config.testnet ? "wss://stream.testnet.binance.vision/ws/" : "wss://stream.binance.com:9443/ws/"
-            new(config, ws_base_url, Dict{String,Task}(), Dict{String,Any}(), Dict{String,Bool}())
+            new(config, ws_base_url, Dict{String,Task}(), Dict{String,StreamCallback}(), Dict{String,Bool}())
         end
     end
 
     # --- Websocket Functions ---
 
     function subscribe(client::MarketDataStreamClient, stream_name::String, callback; struct_type=nothing)
-        client.ws_callbacks[stream_name] = callback
+        client.ws_callbacks[stream_name] = StreamCallback(callback)
         client.should_reconnect[stream_name] = true
 
         uri = client.ws_base_url * stream_name
@@ -84,16 +90,19 @@ module MarketDataStreams
                 break     # Stop processing if unsubscribed
             end
             try
-                # Parse once so we can detect serverShutdown control events (sent ~10
-                # minutes before disconnection as of 2026-05-08). These arrive on
-                # WebSocket Streams in addition to the WebSocket API. Log a warning
-                # and skip the user callback — the connection will drop and the outer
-                # loop will reconnect.
+                # Parse once so we can detect serverShutdown control events. These
+                # arrive on WebSocket Streams in addition to the WebSocket API. Close
+                # the current socket so the outer loop opens a fresh connection.
                 raw = JSON3.read(msg)
                 if isa(raw, JSON3.Object) && get(raw, :e, nothing) == "serverShutdown"
                     event_time = haskey(raw, :E) ? unix2datetime(raw[:E] / 1000) : nothing
-                    @warn "⚠️  serverShutdown received on stream '$stream_name'. Reconnect imminent." event_time
-                    continue
+                    @warn "⚠️  serverShutdown received on stream '$stream_name'. Closing connection for reconnect." event_time
+                    try
+                        close(ws)
+                    catch close_error
+                        @warn "Error while closing WebSocket after serverShutdown: $close_error"
+                    end
+                    break
                 end
                 data = isnothing(struct_type) ? raw : to_struct(struct_type, raw)
                 if haskey(client.ws_callbacks, stream_name)

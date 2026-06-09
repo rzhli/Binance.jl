@@ -4,11 +4,7 @@ using BinanceFIX
 using Dates
 
 # Mock Config
-config = BinanceConfig(
-    "test_api_key", "HMAC_SHA256", "test_secret", "", "",
-    false, 30, 60000, "", 5, 5,
-    6000, 50, 160000, 300, true, false, ""
-)
+config = test_binance_config()
 
 @testset "FIX Client Logic" begin
 

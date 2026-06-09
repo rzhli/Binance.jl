@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-06-09
+
+### Changed
+- **`serverShutdown` reconnect behavior** — WebSocket API, JSON market-data
+  streams, and SBE market-data streams now close the current socket when
+  `serverShutdown` is received, allowing existing reconnect loops to open a new
+  connection promptly. Documentation treats the event as an immediate reconnect
+  signal.
+- **SBE market-data stream docs** — Documented that `serverShutdown` arrives as
+  JSON in WebSocket text frames even on SBE connections.
+- **Reference-price calculation docs** — `ExternalCalculation` now treats
+  `externalCalculationId` as an extensible Binance-defined method identifier so
+  newly documented external calculation methods do not imply a client schema
+  change.
+- **Package dependencies** — Removed the unused `DataFrames` dependency from
+  the main package and added regression coverage to ensure WebSocket kline rows
+  use plain `NamedTuple` values without loading DataFrames.
+
 ## [0.10.0] - 2026-06-02
 
 ### Added
@@ -98,9 +116,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raw JSON3 objects so users see the new field automatically.
 - **`serverShutdown` event handling on WebSocket Streams** —
   `MarketDataStreams.jl` now detects `serverShutdown` control events on stream
-  connections (sent ~10 minutes before disconnection per 2026-05-08 deployment),
-  logs a warning, and lets the existing reconnect loop handle the drop. The
-  WebSocket API path already had this handler.
+  connections, logs a warning, and lets reconnect handling refresh the
+  connection. The WebSocket API path already had this event type.
 
 ### Changed
 - **SBE schema 3:3 → 3:4** — Bumped current schema version constants in
@@ -119,7 +136,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-null, falling back to historical avg-price behavior otherwise. Client-side
   validators here use the explicit request price/qty, so the server is
   authoritative when the two diverge.
-
 ### Fixed (carried from prior unreleased)
 - **Config.jl** — `SystemError` exception handling: `SystemError` in Julia
   does not expose a `.msg` field; replaced `$(e.msg)` with a static string

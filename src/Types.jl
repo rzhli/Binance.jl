@@ -1,6 +1,6 @@
 module Types
 
-using Dates, StructTypes, JSON3, DataFrames, Printf
+using Dates, StructTypes, JSON3, Printf
 using FixedPointDecimals
 
 # ======================= 代码生成宏 =======================
@@ -437,23 +437,40 @@ function Base.show(io::IO, ::MIME"text/plain", info::ExchangeInfo)
     println(io, "  Server Time: ", info.serverTime)
 
     println(io, "\n  Rate Limits:")
-    rate_limits_df = DataFrame(info.rateLimits)
-    show(io, rate_limits_df)
+    print_rate_limits(io, info.rateLimits)
 
     # exchangeFilters为空，filters在symbols字段里
 
     println(io, "\n\n  Symbols (showing first 10 of ", length(info.symbols), "):")
-    symbols_df = DataFrame(
-        [(
-        symbol=s.symbol,
-        status=s.status,
-        baseAsset=s.baseAsset,
-        quoteAsset=s.quoteAsset,
-        spot=s.isSpotTradingAllowed,
-        margin=s.isMarginTradingAllowed
-    ) for s in info.symbols]
-    )
-    show(io, first(symbols_df, 10))
+    print_symbol_summary(io, info.symbols, 10)
+end
+
+function print_rate_limits(io::IO, rate_limits::Vector{RateLimit})
+    if isempty(rate_limits)
+        println(io, "    (none)")
+        return
+    end
+
+    @printf(io, "    %-16s %-10s %8s %8s\n", "type", "interval", "num", "limit")
+    for limit in rate_limits
+        @printf(io, "    %-16s %-10s %8d %8d\n",
+            limit.rateLimitType, limit.interval, limit.intervalNum, limit.limit)
+    end
+end
+
+function print_symbol_summary(io::IO, symbols::Vector{SymbolInfo}, max_rows::Int)
+    if isempty(symbols)
+        println(io, "    (none)")
+        return
+    end
+
+    @printf(io, "    %-14s %-10s %-8s %-8s %-5s %-6s\n",
+        "symbol", "status", "base", "quote", "spot", "margin")
+    for symbol in Iterators.take(symbols, max_rows)
+        @printf(io, "    %-14s %-10s %-8s %-8s %-5s %-6s\n",
+            symbol.symbol, string(symbol.status), symbol.baseAsset, symbol.quoteAsset,
+            string(symbol.isSpotTradingAllowed), string(symbol.isMarginTradingAllowed))
+    end
 end
 
 # --- Structs for WebSocket Information ---
@@ -669,13 +686,23 @@ StructTypes.StructType(::Type{OrderBook}) = StructTypes.Struct()
 function Base.show(io::IO, ::MIME"text/plain", ob::OrderBook)
     println(io, "OrderBook (lastUpdateId: ", ob.lastUpdateId, ")")
     
-    bids_df = DataFrame(price=[p.price for p in ob.bids], quantity=[p.quantity for p in ob.bids])
     println(io, "\nBids:")
-    show(io, bids_df)
+    print_price_levels(io, ob.bids)
 
-    asks_df = DataFrame(price=[p.price for p in ob.asks], quantity=[p.quantity for p in ob.asks])
     println(io, "\n\nAsks:")
-    show(io, asks_df)
+    print_price_levels(io, ob.asks)
+end
+
+function print_price_levels(io::IO, levels::Vector{PriceLevel})
+    if isempty(levels)
+        println(io, "  (empty)")
+        return
+    end
+
+    @printf(io, "  %14s %14s\n", "price", "quantity")
+    for level in levels
+        @printf(io, "  %14.8f %14.8f\n", level.price, level.quantity)
+    end
 end
 
 struct MarketTrade
@@ -1038,7 +1065,9 @@ StructTypes.StructType(::Type{ArithmeticMeanCalculation}) = StructTypes.Struct()
     ExternalCalculation
 
 Reference price is calculated outside the matching engine.
-`externalCalculationId` identifies the calculation method (e.g. 0 = set manually by operator).
+`externalCalculationId` identifies the Binance-defined calculation method.
+Treat it as an extensible identifier: Binance may add external methods without
+requiring a client schema change.
 """
 struct ExternalCalculation <: AbstractReferencePriceCalculation
     symbol::String

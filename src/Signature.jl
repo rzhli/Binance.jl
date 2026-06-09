@@ -1,10 +1,11 @@
 module Signature
 
-using SHA, Base64, Random
+using SHA, Base64, OpenSSL
 
 using ..Config: BinanceConfig
 
-export CryptoSigner, HMAC_SHA256, ED25519, RSA, HmacSigner, Ed25519Signer, RsaSigner, sign_message
+export CryptoSigner, BinanceSigner, HMAC_SHA256, ED25519, RSA,
+    HmacSigner, Ed25519Signer, RsaSigner, create_signer, sign_message
 
 const HMAC_SHA256 = "HMAC_SHA256"
 const ED25519 = "ED25519"
@@ -21,32 +22,46 @@ end
 struct Ed25519Signer <: CryptoSigner
     private_key_path::String
     private_key_pass::String
+    private_key::OpenSSL.EvpPKey
     public_key::Vector{UInt8}
 
     function Ed25519Signer(private_key_path::String, private_key_pass::String)
         if isempty(private_key_path)
             error("Private key path is required for Ed25519 signature")
         end
+        private_key = load_private_key(private_key_path, private_key_pass)
+
         # Derive public key path from private key path
         public_key_path = replace(private_key_path, "-private.pem" => "-public.pem")
-        if !isfile(public_key_path)
+        public_key = if isfile(public_key_path)
+            load_ed25519_public_key(public_key_path)
+        else
             # Fallback for different naming conventions, e.g. id_ed25519 and id_ed25519.pub
             public_key_path_pub = private_key_path * ".pub"
             if isfile(public_key_path_pub)
-                public_key_path = public_key_path_pub
+                load_ed25519_public_key(public_key_path_pub)
             else
-                error("Could not find public key file. Tried: $public_key_path and $public_key_path_pub")
+                UInt8[]
             end
         end
-        public_key = load_ed25519_public_key(public_key_path)
-        new(private_key_path, private_key_pass, public_key)
+        new(private_key_path, private_key_pass, private_key, public_key)
     end
 end
 
 # RSA Signer
 struct RsaSigner <: CryptoSigner
     private_key_path::String
+    private_key::OpenSSL.EvpPKey
+
+    function RsaSigner(private_key_path::String, private_key_pass::String="")
+        if isempty(private_key_path)
+            error("Private key path is required for RSA signature")
+        end
+        new(private_key_path, load_private_key(private_key_path, private_key_pass))
+    end
 end
+
+const BinanceSigner = Union{HmacSigner,Ed25519Signer,RsaSigner}
 
 # Create signer based on configuration
 function create_signer(config::BinanceConfig)
@@ -60,6 +75,11 @@ function create_signer(config::BinanceConfig)
             error("Private key path is required for Ed25519 signature")
         end
         return Ed25519Signer(config.private_key_path, config.private_key_pass)
+    elseif config.signature_method == RSA
+        if isempty(config.private_key_path)
+            error("Private key path is required for RSA signature")
+        end
+        return RsaSigner(config.private_key_path, config.private_key_pass)
     else
         error("Unsupported signature method: $(config.signature_method)")
     end
@@ -68,12 +88,9 @@ end
 # RSA signature implementation
 function sign_message(signer::RsaSigner, message::String)
     try
-        # Use openssl to sign and then base64 encode, as shown in Binance docs
-        cmd = pipeline(`echo -n $message`, `openssl dgst -sha256 -sign $(signer.private_key_path)`, `openssl enc -base64 -A`)
-        signature_b64 = read(cmd, String)
-        return strip(signature_b64) # remove any trailing newline
+        return base64encode(evp_digest_sign(signer.private_key, Vector{UInt8}(message), OpenSSL.EvpSHA256()))
     catch e
-        error("Failed to sign message with RSA private key using OpenSSL. Ensure OpenSSL is installed and the key path is correct. Error: $e")
+        error("Failed to sign message with RSA private key using OpenSSL. Ensure the key path is correct. Error: $e")
     end
 end
 
@@ -93,16 +110,106 @@ end
 # Ed25519 signature implementation using OpenSSL
 function sign_message(signer::Ed25519Signer, message::String)
     try
-        # Ed25519 is a "pure" signature algorithm, meaning it performs its own hashing internally.
-        # Therefore, unlike RSA, we do not specify a separate digest algorithm (e.g., -sha256)
-        # when using `openssl dgst`. The signing algorithm is determined from the key type.
-        # The command signs the message and then Base64 encodes the raw signature.
-        cmd = pipeline(`echo -n $message`, `openssl dgst -sign $(signer.private_key_path) -passin pass:$(signer.private_key_pass)`, `openssl enc -base64 -A`)
-        signature_b64 = read(cmd, String)
-
-        return strip(signature_b64)  # Remove any trailing newline
+        return base64encode(evp_digest_sign(signer.private_key, Vector{UInt8}(message), nothing))
     catch e
-        error("Failed to sign message with Ed25519 private key using OpenSSL. Ensure OpenSSL is installed and the key path is correct. Error: $e")
+        error("Failed to sign message with Ed25519 private key using OpenSSL. Ensure the key path and passphrase are correct. Error: $e")
+    end
+end
+
+function load_private_key(file_path::String, password::String="")
+    if !isfile(file_path)
+        error("Private key file not found: $file_path")
+    end
+
+    pem = read(file_path)
+    GC.@preserve pem password begin
+        bio = ccall(
+            (:BIO_new_mem_buf, OpenSSL.libcrypto),
+            Ptr{Cvoid},
+            (Ptr{UInt8}, Cint),
+            pointer(pem),
+            length(pem),
+        )
+        bio == C_NULL && throw(OpenSSL.OpenSSLError())
+
+        try
+            key = ccall(
+                (:PEM_read_bio_PrivateKey, OpenSSL.libcrypto),
+                Ptr{Cvoid},
+                (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cstring),
+                bio,
+                C_NULL,
+                C_NULL,
+                password,
+            )
+            key == C_NULL && throw(OpenSSL.OpenSSLError())
+            return OpenSSL.EvpPKey(key)
+        finally
+            ccall((:BIO_free, OpenSSL.libcrypto), Cint, (Ptr{Cvoid},), bio)
+        end
+    end
+end
+
+function evp_digest_sign(private_key::OpenSSL.EvpPKey, message::Vector{UInt8}, digest::Union{OpenSSL.EvpDigest,Nothing})
+    ctx = OpenSSL.EvpDigestContext()
+    try
+        if digest === nothing
+            result = ccall(
+                (:EVP_DigestSignInit, OpenSSL.libcrypto),
+                Cint,
+                (OpenSSL.EvpDigestContext, Ptr{Ptr{Cvoid}}, Ptr{Cvoid}, Ptr{Cvoid}, OpenSSL.EvpPKey),
+                ctx,
+                C_NULL,
+                C_NULL,
+                C_NULL,
+                private_key,
+            )
+        else
+            result = ccall(
+                (:EVP_DigestSignInit, OpenSSL.libcrypto),
+                Cint,
+                (OpenSSL.EvpDigestContext, Ptr{Ptr{Cvoid}}, OpenSSL.EvpDigest, Ptr{Cvoid}, OpenSSL.EvpPKey),
+                ctx,
+                C_NULL,
+                digest,
+                C_NULL,
+                private_key,
+            )
+        end
+        result == 1 || throw(OpenSSL.OpenSSLError())
+
+        signature_length = Ref{Csize_t}(0)
+        GC.@preserve message signature_length begin
+            message_ptr = isempty(message) ? Ptr{UInt8}(C_NULL) : pointer(message)
+            result = ccall(
+                (:EVP_DigestSign, OpenSSL.libcrypto),
+                Cint,
+                (OpenSSL.EvpDigestContext, Ptr{UInt8}, Ref{Csize_t}, Ptr{UInt8}, Csize_t),
+                ctx,
+                C_NULL,
+                signature_length,
+                message_ptr,
+                length(message),
+            )
+            result == 1 || throw(OpenSSL.OpenSSLError())
+
+            signature = Vector{UInt8}(undef, signature_length[])
+            result = ccall(
+                (:EVP_DigestSign, OpenSSL.libcrypto),
+                Cint,
+                (OpenSSL.EvpDigestContext, Ptr{UInt8}, Ref{Csize_t}, Ptr{UInt8}, Csize_t),
+                ctx,
+                pointer(signature),
+                signature_length,
+                message_ptr,
+                length(message),
+            )
+            result == 1 || throw(OpenSSL.OpenSSLError())
+            resize!(signature, signature_length[])
+            return signature
+        end
+    finally
+        finalize(ctx)
     end
 end
 
@@ -138,56 +245,6 @@ function hmac_sha256(key::Vector{UInt8}, message::Vector{UInt8})
     @inbounds copyto!(outer_data, block_size + 1, inner_hash, 1, 32)
 
     return sha256(outer_data)
-end
-
-# Load Ed25519 private key from file
-function load_ed25519_private_key(file_path::String, password::String="")
-    if !isfile(file_path)
-        error("Ed25519 private key file not found: $file_path")
-    end
-
-    try
-        # Try to extract key using OpenSSL
-        if isempty(password)
-            # Unencrypted key
-            result = read(`openssl pkey -in $file_path -text -noout`, String)
-        else
-            # Encrypted key
-            result = read(pipeline(`echo $password`, `openssl pkey -in $file_path -passin stdin -text -noout`), String)
-        end
-
-        # Extract the raw private key bytes from OpenSSL output
-        # This is a simplified extraction - in production use proper ASN.1 parsing
-        lines = split(result, '\n')
-        key_lines = String[]
-        in_key_section = false
-
-        for line in lines
-            if contains(line, "priv:")
-                in_key_section = true
-                continue
-            elseif in_key_section && contains(line, "pub:")
-                break
-            elseif in_key_section
-                # Extract hex bytes
-                hex_matches = collect(eachmatch(r"[0-9a-f]{2}", line))
-                if !isempty(hex_matches)
-                    push!(key_lines, join([m.match for m in hex_matches], ""))
-                end
-            end
-        end
-
-        if isempty(key_lines)
-            error("Could not extract Ed25519 private key from file")
-        end
-
-        # Convert hex string to bytes
-        hex_string = join(key_lines, "")
-        return hex2bytes(hex_string[1:64])  # Ed25519 private key is 32 bytes (64 hex chars)
-
-    catch e
-        error("Failed to load Ed25519 private key: $e")
-    end
 end
 
 # Load Ed25519 public key from file
@@ -233,21 +290,5 @@ function load_ed25519_public_key(file_path::String)
     end
 
     error("Unsupported public key format in file: $file_path")
-end
-
-# Utility function to convert hex string to bytes (pre-allocated)
-function hex2bytes(hex_str::String)
-    len = length(hex_str)
-    if len % 2 != 0
-        error("Hex string must have even length")
-    end
-
-    result = Vector{UInt8}(undef, len ÷ 2)
-    @inbounds for i in 1:(len÷2)
-        idx = 2i - 1
-        result[i] = parse(UInt8, SubString(hex_str, idx, idx + 1), base=16)
-    end
-
-    return result
 end
 end # end of module

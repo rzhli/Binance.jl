@@ -1,6 +1,6 @@
 module WebSocketAPI
 
-    using HTTP, JSON3, Dates, SHA, URIs, StructTypes, DataFrames, UUIDs
+    using HTTP, JSON3, Dates, SHA, URIs, StructTypes, UUIDs
     using FixedPointDecimals
     import HTTP.WebSockets
 
@@ -19,6 +19,29 @@ module WebSocketAPI
         "eventStreamTerminated" => EventStreamTerminated,
         "serverShutdown" => ServerShutdown
     )
+
+    struct EventCallback
+        callback::Any
+    end
+
+    @inline (callback::EventCallback)(event) = callback.callback(event)
+
+    kline_row(k::Kline) = (
+        open_time = floor(k.open_time, Second),
+        open = k.open,
+        high = k.high,
+        low = k.low,
+        close = k.close,
+        base_volume = k.base_volume,
+        close_time = floor(k.close_time, Second),
+        quote_volume = k.quote_volume,
+        number_of_trades = k.number_of_trades,
+        taker_base_volume = k.taker_base_volume,
+        taker_quote_volume = k.taker_quote_volume,
+        ignore = k.ignore,
+    )
+
+    kline_rows(klines::Vector{Kline}) = [kline_row(kline) for kline in klines]
 
     # Client and Connection
     export WebSocketClient, connect!, disconnect!, on_event, ensure_connected!,
@@ -60,12 +83,12 @@ module WebSocketAPI
 
     mutable struct WebSocketClient
         config::BinanceConfig
-        signer::CryptoSigner
+        signer::Signature.BinanceSigner
         base_url::String
         ws_connection::Union{WebSockets.WebSocket,Nothing}  # Typed WebSocket connection
         rate_limiter::BinanceRateLimit
-        responses::Dict{String,Channel} # Changed from Int64 to String for UUID keys
-        ws_callbacks::Dict{String,Function} # For user data stream events
+        responses::Dict{String,Channel{Any}} # Changed from Int64 to String for UUID keys
+        ws_callbacks::Dict{String,EventCallback} # For user data stream events
         time_offset::Int64
         is_authenticated::Bool
         should_reconnect::Bool
@@ -77,15 +100,7 @@ module WebSocketAPI
         function WebSocketClient(config_path::String="config.toml")
             config = from_toml(config_path)
 
-            signer = if config.signature_method == HMAC_SHA256
-                HmacSigner(config.api_secret)
-            elseif config.signature_method == ED25519
-                Ed25519Signer(config.private_key_path, config.private_key_pass)
-            elseif config.signature_method == RSA
-                RsaSigner(config.private_key_path)
-            else
-                error("Unsupported signature method: $(config.signature_method)")
-            end
+            signer = Signature.create_signer(config)
 
             base_url = config.testnet ? "wss://ws-api.testnet.binance.vision/ws-api/v3" : "wss://ws-api.binance.com:443/ws-api/v3"
             if !config.ws_return_rate_limits
@@ -93,7 +108,7 @@ module WebSocketAPI
             end
 
             rate_limiter = BinanceRateLimit(config)
-            client = new(config, signer, base_url, nothing, rate_limiter, Dict{String,Channel}(), Dict{String,Function}(), 0, false, true, nothing, ReentrantLock(), nothing, 60)
+            client = new(config, signer, base_url, nothing, rate_limiter, Dict{String,Channel{Any}}(), Dict{String,EventCallback}(), 0, false, true, nothing, ReentrantLock(), nothing, 60)
 
             # Initialize time offset to 0. This will be synchronized with the server after the WebSocket connection is established.
             # We don't assume any timezone offset, letting the synchronization handle the actual difference
@@ -287,7 +302,17 @@ module WebSocketAPI
 
                                     if !isnothing(event_payload)
                                         event_type = string(event_payload[:e])
-                                        if haskey(client.ws_callbacks, event_type)
+                                        if event_type == "serverShutdown"
+                                            event_struct = to_struct(ServerShutdown, event_payload)
+                                            if haskey(client.ws_callbacks, event_type)
+                                                try
+                                                    client.ws_callbacks[event_type](event_struct)
+                                                catch e
+                                                    @error "Error in event callback for '$event_type': $e"
+                                                end
+                                            end
+                                            handle_server_shutdown!(client, event_struct)
+                                        elseif haskey(client.ws_callbacks, event_type)
                                             try
                                                 event_struct = to_struct(EVENT_TYPE_MAP[event_type], event_payload)
                                                 client.ws_callbacks[event_type](event_struct)
@@ -297,9 +322,6 @@ module WebSocketAPI
                                         elseif event_type == "eventStreamTerminated"
                                             event_struct = to_struct(EventStreamTerminated, event_payload)
                                             handle_event_stream_terminated!(client, event_struct)
-                                        elseif event_type == "serverShutdown"
-                                            event_struct = to_struct(ServerShutdown, event_payload)
-                                            handle_server_shutdown!(client, event_struct)
                                         else
                                             @warn "Received unhandled event of type '$(event_type)'"
                                         end
@@ -378,7 +400,7 @@ module WebSocketAPI
     See Binance documentation for complete list of event types.
     """
     function on_event(client::WebSocketClient, event_type::String, callback::Function)
-        client.ws_callbacks[event_type] = callback
+        client.ws_callbacks[event_type] = EventCallback(callback)
         @info "Registered callback for event type '$event_type'."
     end
     
@@ -390,7 +412,14 @@ module WebSocketAPI
 
     function handle_server_shutdown!(client::WebSocketClient, event::ServerShutdown)
         event_time = unix2datetime(event.E / 1000)
-        @warn "Server shutdown event received. Reconnect to WebSocket API as soon as possible." event_time
+        @warn "Server shutdown event received. Closing WebSocket API connection for reconnect." event_time
+        if !isnothing(client.ws_connection) && !WebSockets.isclosed(client.ws_connection)
+            try
+                close(client.ws_connection)
+            catch close_error
+                @warn "Error while closing WebSocket API connection after serverShutdown: $close_error"
+            end
+        end
     end
     
     """
@@ -563,7 +592,7 @@ module WebSocketAPI
         full_method = isempty(api_version) ? method : "$api_version/$method"
 
         # Create a channel to wait for the response
-        response_channel = Channel(1)
+        response_channel = Channel{Any}(1)
         client.responses[request_id] = response_channel
 
         # Add returnRateLimits parameter if specified
@@ -979,10 +1008,7 @@ module WebSocketAPI
         end
         response = send_request(client, "klines", params)
         klines_vector = to_struct(Vector{Kline}, response)
-        df = DataFrame(klines_vector)
-        df.open_time = floor.(df.open_time, Second)
-        df.close_time = floor.(df.close_time, Second)
-        return df
+        return kline_rows(klines_vector)
     end
 
     function ui_klines(client::WebSocketClient, symbol::String, interval::String;
@@ -1023,10 +1049,7 @@ module WebSocketAPI
         end
         response = send_request(client, "uiKlines", params)
         klines_vector = to_struct(Vector{Kline}, response)
-        df = DataFrame(klines_vector)
-        df.open_time = floor.(df.open_time, Second)
-        df.close_time = floor.(df.close_time, Second)
-        return df
+        return kline_rows(klines_vector)
     end
 
     function avg_price(client::WebSocketClient, symbol::String)

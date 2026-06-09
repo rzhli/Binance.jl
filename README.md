@@ -24,55 +24,17 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
-### v0.10.0 - Changelog Sync 2026-05-12 / FIX SBE 1:1 (2026-06-02)
+### v0.10.1 - Changelog Sync 2026-06-09
 
-- **Block Trade WebSocket Stream** — Added `<symbol>@blockTrade` market data
-  streams via `subscribe_block_trade`, with payloads decoded into
-  `WebSocketBlockTrade`.
-- **FIX SBE encoder schema 1:0 → 1:1** — Request encoders now advertise FIX
-  SBE schema version 1 and use the current 1:1 field layout and block lengths.
-- **FIX SBE order list and cancel-replace requests** — Added SBE support for
-  `new_order_list_sbe` (template 100) and `order_cancel_request_and_new_sbe`
-  (template 97).
-- **Text-FIX parity fixes** — `ExecutionReportMsg` now exposes
-  `expiry_reason`; `order_amend_keep_priority` and `limit_query` accept
-  `recv_window`.
-- **FIX SBE regression coverage** — Added schema 1.1 tests for block lengths,
-  header version stamping, multi-fee parsing, and `expiry_reason`.
-
-### v0.9.0 - Changelog Sync 2026-05-06 → 2026-05-08 (2026-05-09)
-
-- **Historical Block Trades** (REST `/api/v3/historicalBlockTrades`,
-  WS `blockTrades.historical`) — new market-data endpoint for off-book block
-  trades. New `BlockTrade` type and `get_historical_block_trades` /
-  `block_trades_historical` helpers.
-- **`expiryReason` on order query responses** — `Order` struct now exposes
-  `expiryReason::Union{String, Nothing}`, populated for expired orders (e.g.
-  rejected by the price-range execution rule).
-- **`serverShutdown` on WebSocket Streams** — `MarketDataStreams.jl` now
-  detects the control event on stream connections (sent ~10 min before the
-  server drops the connection) and logs a reconnect warning.
-- **SBE schema 3:3 → 3:4** — Constants in `SBEDecoder.jl` updated; 3:3
-  deprecated 2026-05-08 with a 6-month retirement window. Market-data
-  templates (10000–10003) are unchanged across 3:3 and 3:4.
-- **Filter reference-price behavior documented** — `PERCENT_PRICE`,
-  `PERCENT_PRICE_BY_SIDE`, `MIN_NOTIONAL`, `NOTIONAL` server-side now use
-  the reference price when one exists and is non-null; docstrings updated.
-
-### v0.8.2 - Changelog Sync 2026-04-02 → 2026-04-17 (2026-04-19)
-
-- **SBE Diff Depth update speed** - Documentation updated for the 50ms → 25ms
-  change on 2026-05-05. Affects `sbe_subscribe_depth` (`<symbol>@depth`) and
-  FIX SBE `SBEMarketDataIncrementalDepth` (templateId 207).
-- **Error `-2043 NO_REFERENCE_PRICE`** - Added to `Errors.jl` and documented on
-  `get_reference_price` / `reference_price` — returned when a symbol has never
-  had a reference price set.
-- **Price Range Execution Rule** - `get_execution_rules` / `execution_rules`
-  docstrings expanded with enforcement details (placement, amend, trigger
-  activations).
-- **`amend_order` weight** - Clarified: weight-0 applies ONLY when the
-  amendment causes the order to expire; successful non-expiring and failed
-  requests are still charged the documented weight.
+- **`serverShutdown` reconnect behavior** — WebSocket API, JSON market-data
+  streams, and SBE market-data streams now close the current socket when
+  `serverShutdown` is received so reconnect loops open a fresh connection.
+- **SBE control event docs** — Documented that `serverShutdown` is delivered as
+  JSON in WebSocket text frames on SBE market-data connections.
+- **Reference-price calculation docs** — External calculation IDs are treated as
+  extensible Binance-defined method identifiers.
+- **Dependency cleanup** — Removed the unused main-package DataFrames
+  dependency; WebSocket kline helpers now return plain `NamedTuple` rows.
 
 ---
 

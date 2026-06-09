@@ -98,6 +98,8 @@ Manages a local order book with automatic synchronization from Binance.
 - `update_id::Ref{Int64}`: Current order book update ID
 - `bids::OrderedDict{Float64,Float64}`: Buy orders (price => quantity)
 - `asks::OrderedDict{Float64,Float64}`: Sell orders (price => quantity)
+- `best_bid_price::Ref{Float64}`: Cached highest bid price
+- `best_ask_price::Ref{Float64}`: Cached lowest ask price
 - `is_initialized::Ref{Bool}`: Whether order book is ready
 - `event_buffer::Vector{DepthEvent}`: Buffer for events before initialization
 - `stream_id::Ref{Union{String,Nothing}}`: WebSocket stream ID
@@ -114,6 +116,8 @@ mutable struct OrderBookManager{R,W,F}
     update_id::Ref{Int64}
     bids::OrderedDict{Float64,Float64}
     asks::OrderedDict{Float64,Float64}
+    best_bid_price::Ref{Float64}
+    best_ask_price::Ref{Float64}
 
     # Cached sorted arrays (lazily updated)
     sorted_bids::Vector{Tuple{Float64,Float64}}  # (price, qty) sorted descending
@@ -204,6 +208,8 @@ function OrderBookManager(
         Ref{Int64}(0),
         OrderedDict{Float64,Float64}(),
         OrderedDict{Float64,Float64}(),
+        Ref{Float64}(NaN),
+        Ref{Float64}(NaN),
         Vector{Tuple{Float64,Float64}}(),  # sorted_bids
         Vector{Tuple{Float64,Float64}}(),  # sorted_asks
         Ref{Bool}(false),                  # cache_valid
@@ -310,16 +316,17 @@ Bypasses the diff buffer/sync logic — every push is a complete picture.
 function handle_snapshot_event!(manager::OrderBookManager, event::DepthSnapshotEvent)
     empty!(manager.bids)
     empty!(manager.asks)
+    clear_best_prices!(manager)
 
     @inbounds for level in event.bids
         if level.quantity > 0.0 && !isnan(level.quantity)
-            manager.bids[level.price] = level.quantity
+            apply_bid_level!(manager, level.price, level.quantity)
         end
     end
 
     @inbounds for level in event.asks
         if level.quantity > 0.0 && !isnan(level.quantity)
-            manager.asks[level.price] = level.quantity
+            apply_ask_level!(manager, level.price, level.quantity)
         end
     end
 
@@ -366,6 +373,7 @@ function stop!(manager::OrderBookManager)
     manager.is_initialized[] = false
     empty!(manager.bids)
     empty!(manager.asks)
+    clear_best_prices!(manager)
     empty!(manager.event_buffer)
     manager.update_id[] = 0
     manager.total_updates[] = 0
@@ -400,6 +408,68 @@ get_asks_data(event::DepthDiffEvent) = event.asks
 # Helper to parse price/qty
 parse_price_qty(item::AbstractVector) = (parse(Float64, item[1]), parse(Float64, item[2]))
 parse_price_qty(item::PriceLevel) = (item.price, item.quantity)
+
+function clear_best_prices!(manager::OrderBookManager)
+    manager.best_bid_price[] = NaN
+    manager.best_ask_price[] = NaN
+    return nothing
+end
+
+function recompute_best_bid!(manager::OrderBookManager)
+    best = NaN
+    @inbounds for price in keys(manager.bids)
+        if isnan(best) || price > best
+            best = price
+        end
+    end
+    manager.best_bid_price[] = best
+    return best
+end
+
+function recompute_best_ask!(manager::OrderBookManager)
+    best = NaN
+    @inbounds for price in keys(manager.asks)
+        if isnan(best) || price < best
+            best = price
+        end
+    end
+    manager.best_ask_price[] = best
+    return best
+end
+
+function apply_bid_level!(manager::OrderBookManager, price::Float64, quantity::Float64)
+    if quantity == 0.0 || isnan(quantity)
+        had_level = haskey(manager.bids, price)
+        delete!(manager.bids, price)
+        if had_level && price == manager.best_bid_price[]
+            recompute_best_bid!(manager)
+        end
+    else
+        manager.bids[price] = quantity
+        best = manager.best_bid_price[]
+        if isnan(best) || price > best
+            manager.best_bid_price[] = price
+        end
+    end
+    return nothing
+end
+
+function apply_ask_level!(manager::OrderBookManager, price::Float64, quantity::Float64)
+    if quantity == 0.0 || isnan(quantity)
+        had_level = haskey(manager.asks, price)
+        delete!(manager.asks, price)
+        if had_level && price == manager.best_ask_price[]
+            recompute_best_ask!(manager)
+        end
+    else
+        manager.asks[price] = quantity
+        best = manager.best_ask_price[]
+        if isnan(best) || price < best
+            manager.best_ask_price[] = price
+        end
+    end
+    return nothing
+end
 
 """
     handle_depth_event!(manager, event)
@@ -469,17 +539,18 @@ function initialize_from_snapshot!(manager::OrderBookManager)
     manager.update_id[] = snapshot_last_update_id
     empty!(manager.bids)
     empty!(manager.asks)
+    clear_best_prices!(manager)
 
     for bid in snapshot["bids"]
         price = parse(Float64, bid[1])
         quantity = parse(Float64, bid[2])
-        manager.bids[price] = quantity
+        apply_bid_level!(manager, price, quantity)
     end
 
     for ask in snapshot["asks"]
         price = parse(Float64, ask[1])
         quantity = parse(Float64, ask[2])
-        manager.asks[price] = quantity
+        apply_ask_level!(manager, price, quantity)
     end
 
     # Step 5: Discard outdated buffered events (where u <= lastUpdateId)
@@ -548,24 +619,14 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
     bids_data = get_bids_data(event)
     @inbounds for bid in bids_data
         price, quantity = parse_price_qty(bid)
-
-        if quantity == 0.0 || isnan(quantity)
-            delete!(manager.bids, price)
-        else
-            manager.bids[price] = quantity
-        end
+        apply_bid_level!(manager, price, quantity)
     end
 
     # Apply ask updates
     asks_data = get_asks_data(event)
     @inbounds for ask in asks_data
         price, quantity = parse_price_qty(ask)
-
-        if quantity == 0.0 || isnan(quantity)
-            delete!(manager.asks, price)
-        else
-            manager.asks[price] = quantity
-        end
+        apply_ask_level!(manager, price, quantity)
     end
 
     # Update state
@@ -580,9 +641,9 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
     # callback while crossed (so the strategy doesn't trade on bad data),
     # and only warn / restart if the cross persists across many events.
     crossed = false
-    if !isempty(manager.bids) && !isempty(manager.asks)
-        max_bid = maximum(keys(manager.bids))
-        min_ask = minimum(keys(manager.asks))
+    max_bid = manager.best_bid_price[]
+    min_ask = manager.best_ask_price[]
+    if !isnan(max_bid) && !isnan(min_ask)
         if max_bid >= min_ask
             crossed = true
             manager.consecutive_crosses[] += 1
@@ -621,6 +682,7 @@ function restart_sync!(manager::OrderBookManager)
     manager.update_id[] = 0
     empty!(manager.bids)
     empty!(manager.asks)
+    clear_best_prices!(manager)
     empty!(manager.event_buffer)
     empty!(manager.sorted_bids)
     empty!(manager.sorted_asks)
@@ -678,13 +740,22 @@ Returns `nothing` if order book is not ready or has no bids.
 Returns `(price=Float64, quantity=Float64)` otherwise.
 """
 function get_best_bid(manager::OrderBookManager)
-    if !manager.is_initialized[] || isempty(manager.bids)
+    if !manager.is_initialized[]
         return nothing
     end
 
-    # Use cached sorted array
-    rebuild_cache!(manager)
-    @inbounds price, quantity = manager.sorted_bids[1]
+    price = manager.best_bid_price[]
+    if isnan(price)
+        return nothing
+    end
+
+    quantity = get(manager.bids, price, NaN)
+    if isnan(quantity)
+        price = recompute_best_bid!(manager)
+        isnan(price) && return nothing
+        quantity = manager.bids[price]
+    end
+
     return (price=price, quantity=quantity)
 end
 
@@ -697,13 +768,22 @@ Returns `nothing` if order book is not ready or has no asks.
 Returns `(price=Float64, quantity=Float64)` otherwise.
 """
 function get_best_ask(manager::OrderBookManager)
-    if !manager.is_initialized[] || isempty(manager.asks)
+    if !manager.is_initialized[]
         return nothing
     end
 
-    # Use cached sorted array
-    rebuild_cache!(manager)
-    @inbounds price, quantity = manager.sorted_asks[1]
+    price = manager.best_ask_price[]
+    if isnan(price)
+        return nothing
+    end
+
+    quantity = get(manager.asks, price, NaN)
+    if isnan(quantity)
+        price = recompute_best_ask!(manager)
+        isnan(price) && return nothing
+        quantity = manager.asks[price]
+    end
+
     return (price=price, quantity=quantity)
 end
 

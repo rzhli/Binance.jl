@@ -766,6 +766,16 @@ struct InstrumentListMsg
     raw_fields::Dict{Int,String}
 end
 
+struct SessionCallback
+    callback::Any
+end
+
+@inline (callback::SessionCallback)(args...) = callback.callback(args...)
+
+wrap_session_callback(::Nothing) = nothing
+wrap_session_callback(callback::SessionCallback) = callback
+wrap_session_callback(callback) = SessionCallback(callback)
+
 mutable struct FIXSession
     host::String
     port::Int
@@ -774,7 +784,7 @@ mutable struct FIXSession
     sender_comp_id::String
     target_comp_id::String
     config::BinanceConfig
-    signer::Any
+    signer::Signature.BinanceSigner
     session_type::FIXSessionType
     is_logged_in::Bool
     recv_buffer::String
@@ -790,16 +800,16 @@ mutable struct FIXSession
     should_stop::Ref{Bool}
 
     # Callbacks for connection events
-    on_maintenance::Union{Function,Nothing}  # Called when maintenance News received
-    on_disconnect::Union{Function,Nothing}   # Called when connection lost/timeout
-    on_message::Union{Function,Nothing}      # Called for each received message
+    on_maintenance::Union{SessionCallback,Nothing}  # Called when maintenance News received
+    on_disconnect::Union{SessionCallback,Nothing}   # Called when connection lost/timeout
+    on_message::Union{SessionCallback,Nothing}      # Called for each received message
 
     function FIXSession(host::String, port::Int, sender_comp_id::String,
         target_comp_id::String, config::BinanceConfig;
         session_type::FIXSessionType=OrderEntry,
-        on_maintenance::Union{Function,Nothing}=nothing,
-        on_disconnect::Union{Function,Nothing}=nothing,
-        on_message::Union{Function,Nothing}=nothing)
+        on_maintenance=nothing,
+        on_disconnect=nothing,
+        on_message=nothing)
         # Validate CompIDs (must match regex: ^[a-zA-Z0-9-_]{1,8}$)
         validate_comp_id(sender_comp_id, "SenderCompID")
         validate_comp_id(target_comp_id, "TargetCompID")
@@ -809,16 +819,18 @@ mutable struct FIXSession
         new(host, port, nothing, 1, sender_comp_id, target_comp_id, config, signer,
             session_type, false, "",
             30, now_time, now_time, "", nothing, false, nothing, Ref(false),
-            on_maintenance, on_disconnect, on_message)
+            wrap_session_callback(on_maintenance),
+            wrap_session_callback(on_disconnect),
+            wrap_session_callback(on_message))
     end
 end
 
 # Convenience constructors for each session type
 function FIXSession(config::BinanceConfig, sender_comp_id::String;
     session_type::FIXSessionType=OrderEntry,
-    on_maintenance::Union{Function,Nothing}=nothing,
-    on_disconnect::Union{Function,Nothing}=nothing,
-    on_message::Union{Function,Nothing}=nothing)
+    on_maintenance=nothing,
+    on_disconnect=nothing,
+    on_message=nothing)
     # Default target is "SPOT" for all Binance FIX sessions
     target_comp_id = "SPOT"
 

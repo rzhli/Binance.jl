@@ -1,6 +1,6 @@
 module Account
 
-    using JSON3, StructTypes, DataFrames, Dates
+    using JSON3, StructTypes, Dates, Printf
     using ..RESTAPI
     using ..Types: to_struct
     
@@ -201,12 +201,10 @@ module Account
         println(io, "  Buyer: ", info.commissionRates.buyer)
         println(io, "  Seller: ", info.commissionRates.seller)
 
-        balances_df = DataFrame(info.balances)
-        non_zero_balances = filter(row -> row.free > 0 || row.locked > 0, balances_df)
-
+        non_zero_balances = filter(balance -> balance.free > 0 || balance.locked > 0, info.balances)
         if !isempty(non_zero_balances)
             println(io, "\nBalances:")
-            show(io, non_zero_balances)
+            print_balances(io, non_zero_balances)
         else
             println(io, "\nNo non-zero balances.")
         end
@@ -216,8 +214,27 @@ module Account
         show(io, MIME"text/plain"(), status.info)
         println(io)
         println(io, "\nRate Limits:")
-        rate_limits_df = DataFrame(status.rateLimits)
-        show(io, rate_limits_df)
+        print_account_rate_limits(io, status.rateLimits)
+    end
+
+    function print_balances(io::IO, balances::Vector{Balance})
+        @printf(io, "  %-12s %18s %18s\n", "asset", "free", "locked")
+        for balance in balances
+            @printf(io, "  %-12s %18.8f %18.8f\n", balance.asset, balance.free, balance.locked)
+        end
+    end
+
+    function print_account_rate_limits(io::IO, rate_limits::Vector{RateLimit})
+        if isempty(rate_limits)
+            println(io, "  (none)")
+            return
+        end
+
+        @printf(io, "  %-16s %-10s %8s %8s %8s\n", "type", "interval", "num", "limit", "count")
+        for limit in rate_limits
+            @printf(io, "  %-16s %-10s %8d %8d %8d\n",
+                limit.rateLimitType, limit.interval, limit.intervalNum, limit.limit, limit.count)
+        end
     end
 
     # Existing Functions

@@ -40,6 +40,12 @@ export SBEStreamClient, connect_sbe!, sbe_subscribe, sbe_unsubscribe,
 # Re-export SBE data types
 export TradeEvent, TradeData, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
 
+struct SBEStreamCallback
+    callback::Any
+end
+
+@inline (callback::SBEStreamCallback)(data) = callback.callback(data)
+
 """
 SBE Market Data Stream Client
 
@@ -51,7 +57,7 @@ for efficient real-time market data delivery.
 - `ws_base_url::String`: WebSocket base URL for SBE streams
 - `ws_connection::Union{WebSocket,Nothing}`: Active WebSocket connection
 - `ws_task::Union{Task,Nothing}`: Background task for WebSocket
-- `subscriptions::Dict{String,Any}`: Callbacks for each stream (Any allows heterogeneous closure types)
+- `subscriptions::Dict{String,SBEStreamCallback}`: Callbacks for each stream
 - `should_reconnect::Bool`: Reconnection flag
 """
 mutable struct SBEStreamClient
@@ -59,7 +65,7 @@ mutable struct SBEStreamClient
     ws_base_url::String
     ws_connection::Union{HTTP.WebSockets.WebSocket,Nothing}  # Typed WebSocket connection
     ws_task::Union{Task,Nothing}
-    subscriptions::Dict{String,Any}  # stream_name => callback (Any allows concrete closure types)
+    subscriptions::Dict{String,SBEStreamCallback}  # stream_name => callback
     should_reconnect::Bool
     next_request_id::Int
 
@@ -76,7 +82,7 @@ mutable struct SBEStreamClient
                       "wss://stream-sbe.testnet.binance.vision:9443" :
                       "wss://stream-sbe.binance.com:9443"
 
-        new(config, ws_base_url, nothing, nothing, Dict{String,Any}(), true, 1)
+        new(config, ws_base_url, nothing, nothing, Dict{String,SBEStreamCallback}(), true, 1)
     end
 end
 
@@ -276,7 +282,7 @@ end
 """
     handle_control_message(client, msg)
 
-Handle JSON control messages (subscription responses).
+Handle JSON control messages (subscription responses and serverShutdown events).
 """
 function handle_control_message(client::SBEStreamClient, msg::String)
     try
@@ -286,7 +292,17 @@ function handle_control_message(client::SBEStreamClient, msg::String)
         # {"result":null,"id":1}  (success)
         # {"id":1,"error":{"code":-1121,"msg":"Invalid symbol."}}  (error)
 
-        if haskey(data, :result)
+        if isa(data, JSON3.Object) && get(data, :e, nothing) == "serverShutdown"
+            event_time = haskey(data, :E) ? unix2datetime(data[:E] / 1000) : nothing
+            @warn "serverShutdown received on SBE stream. Closing connection for reconnect." event_time
+            if !isnothing(client.ws_connection)
+                try
+                    close(client.ws_connection)
+                catch close_error
+                    @warn "Error while closing SBE WebSocket after serverShutdown: $close_error"
+                end
+            end
+        elseif haskey(data, :result)
             @info "Subscription successful: $msg"
         elseif haskey(data, :error)
             @error "Subscription error: $(data.error.msg)"
@@ -389,7 +405,7 @@ function sbe_subscribe(client::SBEStreamClient, stream_name::String, callback)
     end
 
     # Register callback
-    client.subscriptions[stream_name] = callback
+    client.subscriptions[stream_name] = SBEStreamCallback(callback)
 
     # Send subscription request (JSON format)
     subscribe_msg = JSON3.write(Dict(

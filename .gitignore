@@ -1,6 +1,5 @@
 # Personal configuration files (contain API keys)
 config.toml
-config_vm.toml
 
 # Private key files
 key/
@@ -47,10 +46,9 @@ test_convert.jl
 single_run_test.jl
 
 # Personal trading strategies
-# Uncomment if Strategy.jl is proprietary
-strategy
-*.jl
-!test/runtests.jl
+strategy/
+# Add specific local-only strategy files here if needed; do not ignore *.jl
+# globally, or new package source and test files will be invisible to Git.
 
 # Other files that might contain sensitive data
 # Uncomment as needed
