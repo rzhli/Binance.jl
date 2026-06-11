@@ -1,6 +1,6 @@
 name = "BinanceFIX"
 uuid = "87654321-4321-8765-2109-876543210987"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["rzhli <tayuebuliuhen@gmail.com>"]
 
 [deps]

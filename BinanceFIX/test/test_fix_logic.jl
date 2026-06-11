@@ -109,6 +109,17 @@ config = test_binance_config()
         # Test maintenance detection
         @test is_maintenance_news(news) == true
 
+        # Documented countdown messages: only Headline (148) is sent
+        countdown = NewsMsg(
+            "You'll be disconnected in 60 seconds. Please reconnect.",
+            "", "", Dict{Int,String}())
+        @test is_maintenance_news(countdown) == true
+
+        final_warning = NewsMsg(
+            "Your connection is about to be closed. Please reconnect.",
+            "", "", Dict{Int,String}())
+        @test is_maintenance_news(final_warning) == true
+
         # Test non-maintenance news
         normal_news = NewsMsg("Market Update", "Trading resumed", "0", Dict{Int,String}())
         @test is_maintenance_news(normal_news) == false

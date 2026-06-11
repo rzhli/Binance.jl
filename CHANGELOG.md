@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-06-11
+
+Sync with Binance API changelog 2026-06-10 (FIX API documentation updates).
+
+### Removed — BinanceFIX
+- **`last_fragment` field on `MarketDataIncrementalMsg`** — Binance removed
+  LastFragment (893) from the FIX API field list and the QuickFIX MD schema.
+  MarketDataIncrementalRefresh `<X>` messages stopped being fragmented on
+  2025-12-18 and the server no longer sends the field (the struct field had
+  been marked deprecated since then). The parser no longer reads tag 893 and
+  the `TAG_LAST_FRAGMENT` constant was removed.
+
+### Fixed — BinanceFIX
+- **News `<B>` maintenance detection** — per the updated News `<B>`
+  documentation (2026-06-09 announcement), the server sends countdown
+  headlines "You'll be disconnected in %d seconds. Please reconnect." and,
+  at 10 seconds remaining, "Your connection is about to be closed. Please
+  reconnect.", with Headline (148) as the only field. `is_maintenance_news`
+  previously missed the final warning (it only matched "reconnect" in
+  Text (58), which is not sent), and the SBE session only matched
+  "maintenance", missing both countdown messages. Both now match
+  maintenance/disconnect/reconnect in either Headline or Text, so
+  `on_maintenance` fires for every documented countdown message.
+- **News `<B>` docs** — `parse_news` docstring and `NewsMsg` comments now
+  describe the 10-second countdown semantics and note that Text (58) and
+  Urgency (61) are parsed defensively and may be empty.
+
 ## [0.10.1] - 2026-06-09
 
 ### Changed

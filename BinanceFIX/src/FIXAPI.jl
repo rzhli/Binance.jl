@@ -694,7 +694,9 @@ function get_error_info(msg::OrderAmendRejectMsg)
     )
 end
 
-# News message (used for maintenance notifications)
+# News message (used for maintenance/disconnection countdown notifications).
+# Only Headline (148) is documented for Binance News <B>; Text (58) and
+# Urgency (61) are parsed defensively and may be empty.
 struct NewsMsg
     headline::String
     text::String
@@ -724,13 +726,11 @@ struct MarketDataSnapshotMsg
     raw_fields::Dict{Int,String}
 end
 
-# DEPRECATION NOTICE (2025-12-18):
-# The `last_fragment` field (TAG_LAST_FRAGMENT/893) is deprecated and will always be `true`.
-# Messages are no longer fragmented; instead, entries are reduced when the message would exceed limits.
-# Code should not rely on `last_fragment` for message reassembly.
+# Note: LastFragment (893) was removed from the FIX API on 2026-06-10.
+# Messages stopped being fragmented on 2025-12-18; entries are reduced instead
+# when a message would exceed limits.
 struct MarketDataIncrementalMsg
     md_req_id::String
-    last_fragment::Bool  # DEPRECATED: Always true as of 2025-12-18. See deprecation notice above.
     first_book_update_id::String
     last_book_update_id::String
     entries::Vector{MDEntry}
@@ -3565,7 +3565,19 @@ end
 """
     parse_news(fields::Dict{Int,String})
 
-Parse a News (MsgType=B) message. Used for maintenance notifications.
+Parse a News (MsgType=B) message.
+
+When the server enters maintenance, a News message is sent every 10 seconds,
+counting down to disconnection. When the countdown ends, clients are logged
+out and their sessions are closed. Upon receiving such a message, clients are
+expected to establish a new session and close the old one.
+
+The countdown Headline (148) is:
+`You'll be disconnected in %d seconds. Please reconnect.`
+With 10 seconds remaining it becomes:
+`Your connection is about to be closed. Please reconnect.`
+If the client does not close the old session within 10 seconds of that final
+message, the server logs it out and closes the session.
 """
 function parse_news(fields::Dict{Int,String})
     return NewsMsg(
@@ -3579,7 +3591,11 @@ end
 """
     is_maintenance_news(news::NewsMsg)
 
-Check if a News message indicates server maintenance.
+Check if a News message indicates server maintenance or impending
+disconnection. Matches the documented countdown headlines
+("You'll be disconnected in %d seconds. Please reconnect." and
+"Your connection is about to be closed. Please reconnect.") as well as
+explicit maintenance notices, in either Headline (148) or Text (58).
 """
 function is_maintenance_news(news::NewsMsg)
     headline_lower = lowercase(news.headline)
@@ -3587,6 +3603,8 @@ function is_maintenance_news(news::NewsMsg)
     return contains(headline_lower, "maintenance") ||
            contains(text_lower, "maintenance") ||
            contains(headline_lower, "disconnect") ||
+           contains(text_lower, "disconnect") ||
+           contains(headline_lower, "reconnect") ||
            contains(text_lower, "reconnect")
 end
 
@@ -3716,9 +3734,8 @@ Fields like Symbol, FirstBookUpdateID, and LastBookUpdateID can inherit from
 the previous entry in the same message if not specified.
 
 # Notes
-- **DEPRECATED (2025-12-18)**: LastFragment field is deprecated and will always be true.
-  Messages are no longer fragmented; instead, entries are reduced when the message would exceed limits.
-  Code should not rely on `last_fragment` for message reassembly.
+- LastFragment (893) was removed from the FIX API on 2026-06-10. Messages are
+  never fragmented; entries are reduced when a message would exceed limits.
 
 # Example
 ```julia
@@ -3734,7 +3751,6 @@ function parse_market_data_incremental(msg::String)
 
     fields = Dict{Int,String}()
     md_req_id = ""
-    last_fragment = false
     entries = MDEntry[]
 
     # Track repeating group state
@@ -3777,8 +3793,6 @@ function parse_market_data_incremental(msg::String)
 
         if tag == TAG_MD_REQ_ID
             md_req_id = value
-        elseif tag == TAG_LAST_FRAGMENT
-            last_fragment = value == "Y"
         elseif tag == TAG_NO_MD_ENTRIES
             entries_count = something(tryparse(Int, value), 0)
             in_entries_group = true
@@ -3877,7 +3891,6 @@ function parse_market_data_incremental(msg::String)
 
     return MarketDataIncrementalMsg(
         md_req_id,
-        last_fragment,
         msg_first_book_id,
         msg_last_book_id,
         entries,

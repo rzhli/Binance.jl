@@ -12,6 +12,19 @@ BinanceFIX.jl provides complete FIX protocol support for Binance Spot trading:
 
 ## Recent Updates
 
+### v0.4.0 - Changelog Sync 2026-06-10
+
+- **`LastFragment (893)` removed** — Binance removed the field from the FIX
+  API field list and the QuickFIX MD schema. The `last_fragment` field was
+  dropped from `MarketDataIncrementalMsg`, tag 893 is no longer parsed, and
+  the `TAG_LAST_FRAGMENT` constant was removed.
+- **News `<B>` countdown handling** — during maintenance the server sends a
+  News message every 10 seconds counting down to disconnection, with
+  Headline (148) as the only field. `is_maintenance_news` and the SBE
+  session now match all documented countdown headlines (previously the
+  final "Your connection is about to be closed. Please reconnect." warning
+  was missed), so `on_maintenance` fires for every countdown message.
+
 ### v0.3.0 - FIX SBE schema 1:1 encoder support (2026-06-02)
 
 - SBE request encoders now target FIX SBE schema 1:1 and stamp version 1 in

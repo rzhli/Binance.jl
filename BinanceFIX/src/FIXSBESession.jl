@@ -695,10 +695,15 @@ function process_sbe_messages(session::SBESession)
                 # Respond with heartbeat
                 heartbeat_sbe(session; test_req_id=decoded.test_req_id)
             elseif msg_type == :news
-                # Check for maintenance notification
+                # Maintenance/disconnection countdown notification. The
+                # documented headlines are "You'll be disconnected in %d
+                # seconds. Please reconnect." and "Your connection is about
+                # to be closed. Please reconnect."
                 headline_lower = lowercase(decoded.headline)
                 text_lower = lowercase(decoded.text)
-                if contains(headline_lower, "maintenance") || contains(text_lower, "maintenance")
+                if contains(headline_lower, "maintenance") || contains(text_lower, "maintenance") ||
+                   contains(headline_lower, "disconnect") || contains(text_lower, "disconnect") ||
+                   contains(headline_lower, "reconnect") || contains(text_lower, "reconnect")
                     session.maintenance_warning = true
                     if !isnothing(session.on_maintenance)
                         session.on_maintenance(session, decoded)

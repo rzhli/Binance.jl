@@ -24,17 +24,17 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
-### v0.10.1 - Changelog Sync 2026-06-09
+### v0.11.0 - Changelog Sync 2026-06-10
 
-- **`serverShutdown` reconnect behavior** — WebSocket API, JSON market-data
-  streams, and SBE market-data streams now close the current socket when
-  `serverShutdown` is received so reconnect loops open a fresh connection.
-- **SBE control event docs** — Documented that `serverShutdown` is delivered as
-  JSON in WebSocket text frames on SBE market-data connections.
-- **Reference-price calculation docs** — External calculation IDs are treated as
-  extensible Binance-defined method identifiers.
-- **Dependency cleanup** — Removed the unused main-package DataFrames
-  dependency; WebSocket kline helpers now return plain `NamedTuple` rows.
+- **FIX `LastFragment (893)` removed** — Binance removed the field from the
+  FIX API; `MarketDataIncrementalMsg` no longer carries `last_fragment` and
+  the parser no longer reads tag 893 (messages stopped being fragmented on
+  2025-12-18).
+- **FIX News `<B>` countdown handling** — maintenance detection now matches
+  the documented disconnection countdown headlines ("You'll be disconnected
+  in %d seconds. Please reconnect." / "Your connection is about to be
+  closed. Please reconnect.") on both text-FIX and SBE sessions, so
+  `on_maintenance` fires for every countdown message.
 
 ---
 
