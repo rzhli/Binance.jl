@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.11.1] - 2026-06-27
+
+### Changed
+- **Network timeout handling** — REST requests now apply the configured
+  connection timeout across connect, overall request, and read-idle phases.
+  WebSocket API, JSON market-data streams, and SBE market-data streams now use
+  the configured timeout for connection handshakes and the configured
+  reconnect delay for retry sleeps.
+- **Async task supervision** — WebSocket connection, heartbeat, setup, and SBE
+  stream tasks are now wrapped with `errormonitor` so background failures are
+  surfaced instead of being silently lost. The SBE stream session no longer
+  starts a no-op ping/pong task.
+- **SBE production lifecycle docs** — Synced with the Binance API changelog
+  from 2026-06-22. Production schema 3:1 is now documented as retiring on
+  2026-06-29; schema 3:4 remains current. The decoder already targets 3:4 and
+  keeps older market-data template layouts tolerant for historical payloads.
+
+### Fixed
+- **WebSocket API response waits** — Request/response calls now use a bounded
+  wait based on the configured timeout instead of blocking forever if a response
+  is lost. Sequential request ID generation now explicitly calls `Base.time()`
+  to avoid the module's `time(client)` API method shadowing the Base function.
+
+### Tests
+- Added regression coverage for ready WebSocket API response handling and the
+  positive timeout floor used by WebSocket clients.
+
 ## [0.11.0] - 2026-06-11
 
 Sync with Binance API changelog 2026-06-10 (FIX API documentation updates).
@@ -149,7 +178,7 @@ Sync with Binance API changelog 2026-06-10 (FIX API documentation updates).
 ### Changed
 - **SBE schema 3:3 → 3:4** — Bumped current schema version constants in
   `SBEDecoder.jl` (`SCHEMA_VERSION_CURRENT = 4`); 3:3 marked deprecated as of
-  2026-05-08, retiring ~6 months later. Market-data template IDs (10000–10003)
+  2026-05-08. Market-data template IDs (10000–10003)
   used by this decoder are unchanged across 3:3 and 3:4. Schema 3:4 adds:
   - new message `BlockTradesResponse` (template 219)
   - new type `blockTradeId`

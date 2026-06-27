@@ -2,6 +2,7 @@ using Test
 using Binance
 using Base64
 using Dates
+using JSON3
 
 const RSA_TEST_PRIVATE_KEY = """
 -----BEGIN PRIVATE KEY-----
@@ -161,6 +162,32 @@ end
         @test rows[1].close_time == DateTime(2026, 1, 1, 0, 0, 59)
         @test rows[1].base_volume == 10.0
         @test !any(pkgid -> pkgid.name == "DataFrames", keys(Base.loaded_modules))
+    end
+
+    @testset "WebSocket response helper returns ready messages" begin
+        response_channel = Channel{Any}(1)
+        put!(response_channel, JSON3.read("{\"status\":200,\"result\":{\"ok\":true}}"))
+        response = Binance.WebSocketAPI.take_response!(response_channel, 1, "ping", "test-request-id")
+        @test response.status == 200
+        @test response.result.ok === true
+    end
+
+    @testset "WebSocket network timeout has a positive floor" begin
+        tmpdir = mktempdir()
+        config_path = joinpath(tmpdir, "config.toml")
+        write(config_path, """
+        [api]
+        api_key = "test-api-key"
+        secret_key = "test-secret"
+        signature_method = "HMAC_SHA256"
+
+        [connection]
+        timeout = 0
+        proxy = ""
+        """)
+
+        client = Binance.WebSocketAPI.WebSocketClient(config_path)
+        @test Binance.WebSocketAPI.network_timeout(client) == 1
     end
 
     @testset "BlockTrade construction and parsing" begin

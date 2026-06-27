@@ -499,12 +499,17 @@ Treat the event as an immediate reconnect signal.
 
 This client tracks the Binance SBE Market Data schema (`schemaId = 3`):
 
-| Version | Status |
-|---------|--------|
-| 3:1 | Deprecated 2025-12-18 |
-| 3:2 | Deprecated 2026-03-09 |
-| 3:3 | Deprecated 2026-05-08 (retiring ~6 months later) |
-| 3:4 | **Current** (since 2026-05-08) |
+| Version | Release Date | Production Status |
+|---------|--------------|-------------------|
+| 3:0 | 2025-04-24 | Retired 2026-02-19 |
+| 3:1 | 2025-08-19 | Retires 2026-06-29 |
+| 3:2 | 2025-12-18 | Deprecated 2026-03-25 |
+| 3:3 | 2026-03-25 | Deprecated 2026-05-08 |
+| 3:4 | 2026-05-08 | **Current** |
+
+The production lifecycle above reflects Binance's 2026-06-22 changelog update.
+Production clients should use schema 3:4; the decoder remains tolerant of older
+market-data template layouts for recorded or transitional payloads.
 
 The market-data template IDs (10000–10003) listed below are unchanged across
 3:3 and 3:4. Schema 3:4's additions — `BlockTradesResponse`, `blockTradeId`,

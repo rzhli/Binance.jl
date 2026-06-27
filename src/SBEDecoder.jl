@@ -6,18 +6,19 @@ based on the official SBE schema.
 
 Schema Information:
 - Schema ID: 3
-- Supported Versions: 1 (deprecated), 2 (deprecated), 3 (deprecated 2026-05-08), 4 (current)
+- Supported Versions: 1 (retires 2026-06-29 in production),
+  2 (deprecated 2026-03-25), 3 (deprecated 2026-05-08), 4 (current)
 - Byte order: Little Endian
 
-Note: Schema version 3:1 is deprecated. Version 3:2 is deprecated as of 2026-03-09.
-Version 3:3 is deprecated as of 2026-05-08 and will be retired ~2026-11-08 per the
-6-month deprecation policy. Version 3:4 is the current version, adding:
+Note: Binance's production SBE lifecycle was updated on 2026-06-22: schema
+3:1 retires on 2026-06-29, 3:2 and 3:3 are deprecated, and 3:4 is current.
+Version 3:4 adds:
   - New message BlockTradesResponse
   - New type blockTradeId
   - New field expiryReason in OrderResponse and OrdersResponse
 
-Market data template structures used by this decoder are unchanged across 3:3 and 3:4;
-new template IDs in 3:4 are handled gracefully.
+Market data template structures used by this decoder are unchanged across
+3:3 and 3:4; new template IDs in 3:4 are handled gracefully.
 
 Message Types (Market Data):
 - TradesStreamEvent (10000)
@@ -37,8 +38,8 @@ export SCHEMA_ID, SCHEMA_VERSION_DEPRECATED, SCHEMA_VERSION_CURRENT
 # ============================================================================
 
 const SCHEMA_ID = UInt16(3)
-const SCHEMA_VERSION_DEPRECATED = UInt16(1)  # Deprecated as of 2025-12-18
-const SCHEMA_VERSION_V2 = UInt16(2)          # Deprecated as of 2026-03-09
+const SCHEMA_VERSION_DEPRECATED = UInt16(1)  # Retires in production on 2026-06-29
+const SCHEMA_VERSION_V2 = UInt16(2)          # Deprecated as of 2026-03-25
 const SCHEMA_VERSION_V3 = UInt16(3)          # Deprecated as of 2026-05-08
 const SCHEMA_VERSION_CURRENT = UInt16(4)     # Current version as of 2026-05-08
 
@@ -61,7 +62,8 @@ Fields:
 - blockLength: uint16 - Length of message body
 - templateId: uint16 - Message type identifier
 - schemaId: uint16 - Schema identifier (Binance uses 3)
-- version: uint16 - Schema version (1, 2, 3 deprecated; 4 current as of 2026-05-08)
+- version: uint16 - Schema version (1 retires 2026-06-29;
+  2 and 3 deprecated; 4 current as of 2026-05-08)
 """
 struct SBEMessageHeader
     blockLength::UInt16

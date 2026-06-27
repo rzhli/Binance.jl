@@ -36,6 +36,10 @@ module MarketDataStreams
         end
     end
 
+    @inline function network_timeout(client::MarketDataStreamClient)
+        return max(client.config.timeout, 1)
+    end
+
     # --- Websocket Functions ---
 
     function subscribe(client::MarketDataStreamClient, stream_name::String, callback; struct_type=nothing)
@@ -44,25 +48,28 @@ module MarketDataStreams
 
         uri = client.ws_base_url * stream_name
         proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
+        timeout = network_timeout(client)
 
-        task = @async begin
+        task = errormonitor(@async begin
             while get(client.should_reconnect, stream_name, false) # Check reconnection flag
                 try
                     # 根据是否有 proxy 选择不同的调用方式，避免每次创建 Dict
                     if proxy_url !== nothing
-                        HTTP.WebSockets.open(uri; suppress_close_error=true, proxy=proxy_url) do ws
+                        HTTP.WebSockets.open(uri; suppress_close_error=true, proxy=proxy_url,
+                                             connect_timeout=timeout, request_timeout=timeout) do ws
                             _handle_ws_messages(client, ws, stream_name, struct_type)
                         end
                     else
-                        HTTP.WebSockets.open(uri; suppress_close_error=true) do ws
+                        HTTP.WebSockets.open(uri; suppress_close_error=true,
+                                             connect_timeout=timeout, request_timeout=timeout) do ws
                             _handle_ws_messages(client, ws, stream_name, struct_type)
                         end
                     end
 
-                if get(client.should_reconnect, stream_name, false)
-                    println("⚪ WebSocket connection for '$stream_name' closed. Reconnecting in 5 seconds...")
-                    sleep(5) # Wait 5 seconds before attempting to reconnect
-                end
+                    if get(client.should_reconnect, stream_name, false)
+                        println("⚪ WebSocket connection for '$stream_name' closed. Reconnecting in $(client.config.reconnect_delay) seconds...")
+                        sleep(client.config.reconnect_delay)
+                    end
 
                 catch e
                     if e isa InterruptException || !get(client.should_reconnect, stream_name, false)
@@ -70,13 +77,13 @@ module MarketDataStreams
                         break # Exit the while loop
                     end
                     if get(client.should_reconnect, stream_name, false)
-                        println("❌ WebSocket connection error for '$stream_name': $e. Retrying in 5 seconds...")
-                        sleep(5)
+                        println("❌ WebSocket connection error for '$stream_name': $e. Retrying in $(client.config.reconnect_delay) seconds...")
+                        sleep(client.config.reconnect_delay)
                     end
                 end
             end
             println("🛑 WebSocket task for '$stream_name' has terminated.")
-        end
+        end)
 
         client.ws_connections[stream_name] = task
         return stream_name

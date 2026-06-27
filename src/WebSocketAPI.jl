@@ -118,6 +118,23 @@ module WebSocketAPI
         end
     end
 
+    @inline function network_timeout(client::WebSocketClient)
+        return max(client.config.timeout, 1)
+    end
+
+    function take_response!(response_channel::Channel, timeout::Real, method::String, request_id::String)
+        timeout >= 0 || throw(ArgumentError("timeout must be non-negative"))
+        deadline = Base.time() + timeout
+        while !isready(response_channel)
+            remaining = deadline - Base.time()
+            if remaining <= 0
+                error("Timed out after $timeout seconds waiting for WebSocket API response to '$method' (id=$request_id)")
+            end
+            sleep(min(0.05, remaining))
+        end
+        return take!(response_channel)
+    end
+
     """
         get_rate_limit_status(client::WebSocketClient)
     
@@ -192,7 +209,7 @@ module WebSocketAPI
         check_and_wait(client.rate_limiter, "CONNECTIONS")
         
         client.should_reconnect = true
-        client.reconnect_task = @async begin
+        client.reconnect_task = errormonitor(@async begin
             for attempt in 1:(client.config.max_reconnect_attempts+1)
                 if !client.should_reconnect
                     break
@@ -200,15 +217,16 @@ module WebSocketAPI
 
                 try
                     proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
+                    timeout = network_timeout(client)
                     open_kwargs = proxy_url === nothing ?
-                        (; connect_timeout=30) :
-                        (; connect_timeout=30, proxy=proxy_url)
+                        (; connect_timeout=timeout, request_timeout=timeout) :
+                        (; connect_timeout=timeout, request_timeout=timeout, proxy=proxy_url)
                     WebSockets.open(client.base_url; open_kwargs...) do ws
                         client.ws_connection = ws
                         @info "Successfully connected to WebSocket API."
                         
                         # Start heartbeat task using WebSocket ping frames
-                        client.heartbeat_task = @async begin
+                        client.heartbeat_task = errormonitor(@async begin
                             @info "Starting heartbeat task with $(client.heartbeat_interval) second interval"
                             while !isnothing(client.ws_connection) && !WebSockets.isclosed(client.ws_connection)
                                 try
@@ -225,10 +243,10 @@ module WebSocketAPI
                                 end
                             end
                             @info "Heartbeat task stopped"
-                        end
+                        end)
 
                         # Spawn a setup task that runs in the background, allowing the main loop to listen immediately
-                        @async begin
+                        errormonitor(@async begin
                             # Synchronize time with server with retries
                             max_retries = 3
                             retry_count = 0
@@ -272,7 +290,7 @@ module WebSocketAPI
                                     client.is_authenticated = false
                                 end
                             end
-                        end
+                        end)
 
                         # The main connection task immediately starts listening for messages
                         for msg in ws
@@ -357,7 +375,7 @@ module WebSocketAPI
                     end
                 end
             end
-        end
+        end)
     end
 
     """
@@ -399,7 +417,7 @@ module WebSocketAPI
     
     See Binance documentation for complete list of event types.
     """
-    function on_event(client::WebSocketClient, event_type::String, callback::Function)
+    function on_event(client::WebSocketClient, event_type::String, callback)
         client.ws_callbacks[event_type] = EventCallback(callback)
         @info "Registered callback for event type '$event_type'."
     end
@@ -476,12 +494,13 @@ module WebSocketAPI
                 connect!(client)
                 # Wait for connection to establish
                 wait_time = 0
-                while isnothing(client.ws_connection) && wait_time < 30
+                timeout = network_timeout(client)
+                while isnothing(client.ws_connection) && wait_time < timeout
                     sleep(0.5)
                     wait_time += 0.5
                 end
                 if isnothing(client.ws_connection)
-                    error("Failed to establish WebSocket connection after 30 seconds")
+                    error("Failed to establish WebSocket connection after $timeout seconds")
                 end
             end
         end
@@ -583,7 +602,7 @@ module WebSocketAPI
         elseif request_id_type == :timestamp
             string(Int(round(datetime2unix(now()) * 1000)))
         elseif request_id_type == :sequential
-            string(Int(round(time() * 1000000)))  # Microsecond precision for uniqueness
+            string(Int(round(Base.time() * 1000000)))  # Microsecond precision for uniqueness
         else
             throw(ArgumentError("Invalid request_id_type: $request_id_type"))
         end
@@ -622,8 +641,7 @@ module WebSocketAPI
             
             WebSockets.send(client.ws_connection, JSON3.write(request))
 
-            # Wait for the response
-            response = take!(response_channel) # This will block until a response is received
+            response = take_response!(response_channel, network_timeout(client), method, request_id)
             
             # Always update rate limits if present
             if haskey(response, :rateLimits)

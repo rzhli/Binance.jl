@@ -92,6 +92,10 @@ function next_request_id!(client::SBEStreamClient)
     return id
 end
 
+@inline function network_timeout(client::SBEStreamClient)
+    return max(client.config.timeout, 1)
+end
+
 # ============================================================================
 # WebSocket Connection Management
 # ============================================================================
@@ -121,28 +125,18 @@ function _handle_sbe_ws_session(client::SBEStreamClient, ws)
         end
     end
 
-    # Start ping/pong handler
-    ping_task = @async handle_ping_pong(client, ws)
-
-    try
-        for msg in ws
-            if !client.should_reconnect
-                break
-            end
-
-            # Check message type: text (JSON control) or binary (SBE data)
-            if msg isa String
-                handle_control_message(client, msg)
-            elseif msg isa Vector{UInt8}
-                handle_sbe_message(client, msg)
-            else
-                @warn "Unknown message type: $(typeof(msg))"
-            end
+    for msg in ws
+        if !client.should_reconnect
+            break
         end
-    finally
-        # Stop ping task
-        if !isnothing(ping_task) && !istaskdone(ping_task)
-            Base.@async Base.throwto(ping_task, InterruptException())
+
+        # Check message type: text (JSON control) or binary (SBE data)
+        if msg isa String
+            handle_control_message(client, msg)
+        elseif msg isa Vector{UInt8}
+            handle_sbe_message(client, msg)
+        else
+            @warn "Unknown message type: $(typeof(msg))"
         end
     end
 end
@@ -192,29 +186,32 @@ function connect_sbe!(client::SBEStreamClient)
 
     # Proxy settings
     proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
+    timeout = network_timeout(client)
 
     @info "Connecting to SBE stream: $uri"
 
-    client.ws_task = @async begin
+    client.ws_task = errormonitor(@async begin
         while client.should_reconnect
             try
                 # Binance SBE streams require the "stream" subprotocol during handshake
                 # Use direct keyword args to avoid NamedTuple merge overhead
                 if proxy_url !== nothing
                     HTTP.WebSockets.open(uri; headers=headers, suppress_close_error=true,
-                                         subprotocols=["stream"], proxy=proxy_url) do ws
+                                         subprotocols=["stream"], proxy=proxy_url,
+                                         connect_timeout=timeout, request_timeout=timeout) do ws
                         _handle_sbe_ws_session(client, ws)
                     end
                 else
                     HTTP.WebSockets.open(uri; headers=headers, suppress_close_error=true,
-                                         subprotocols=["stream"]) do ws
+                                         subprotocols=["stream"],
+                                         connect_timeout=timeout, request_timeout=timeout) do ws
                         _handle_sbe_ws_session(client, ws)
                     end
                 end
 
                 if client.should_reconnect
-                    @info "SBE WebSocket closed. Reconnecting in 5 seconds..."
-                    sleep(5)
+                    @info "SBE WebSocket closed. Reconnecting in $(client.config.reconnect_delay) seconds..."
+                    sleep(client.config.reconnect_delay)
                 end
 
             catch e
@@ -229,32 +226,34 @@ function connect_sbe!(client::SBEStreamClient)
                       URI: $uri
                       Proxy: $(client.config.proxy)
                       API Key: $(client.config.api_key[1:8])...
-                    Retrying in 5 seconds..."""
+                    Retrying in $(client.config.reconnect_delay) seconds..."""
                     # Print the full exception for debugging
                     @error "Full error:" exception = (e, catch_backtrace())
-                    sleep(5)
+                    sleep(client.config.reconnect_delay)
                 end
             end
         end
 
         client.ws_connection = nothing
         @info "SBE WebSocket task terminated"
-    end
+    end)
 
     # Wait for connection to establish
     @info "Waiting for WebSocket connection to establish..."
-    for i in 1:30
+    poll_interval = 0.5
+    checks = max(1, ceil(Int, timeout / poll_interval))
+    for i in 1:checks
         if !isnothing(client.ws_connection)
             @info "Connection established successfully after $(i * 0.5) seconds"
             return
         end
-        sleep(0.5)
+        sleep(poll_interval)
         if i % 4 == 0
-            @debug "Still waiting for connection... ($(i * 0.5)s elapsed)"
+            @debug "Still waiting for connection... ($(i * poll_interval)s elapsed)"
         end
     end
 
-    @error """Failed to establish SBE WebSocket connection after 15 seconds.
+    @error """Failed to establish SBE WebSocket connection after $timeout seconds.
     Possible reasons:
       1. Network connectivity issues
       2. Proxy configuration problem (current: $(client.config.proxy))

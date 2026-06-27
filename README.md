@@ -24,17 +24,17 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
-### v0.11.0 - Changelog Sync 2026-06-10
+### v0.11.1 - Network Hardening and SBE Lifecycle Sync
 
-- **FIX `LastFragment (893)` removed** — Binance removed the field from the
-  FIX API; `MarketDataIncrementalMsg` no longer carries `last_fragment` and
-  the parser no longer reads tag 893 (messages stopped being fragmented on
-  2025-12-18).
-- **FIX News `<B>` countdown handling** — maintenance detection now matches
-  the documented disconnection countdown headlines ("You'll be disconnected
-  in %d seconds. Please reconnect." / "Your connection is about to be
-  closed. Please reconnect.") on both text-FIX and SBE sessions, so
-  `on_maintenance` fires for every countdown message.
+- **Configured network timeouts** — REST requests now apply the configured
+  timeout across connection, request, and read-idle phases. WebSocket API,
+  JSON market-data streams, and SBE market-data streams use the configured
+  timeout for handshakes and the configured reconnect delay for retries.
+- **Supervised WebSocket tasks** — Background WebSocket, heartbeat, setup, and
+  SBE stream tasks now use `errormonitor`, and WebSocket API request/response
+  waits are bounded so lost responses do not block indefinitely.
+- **SBE production lifecycle docs** — Schema 3:1 is documented as retiring in
+  production on 2026-06-29; schema 3:4 remains current.
 
 ---
 

@@ -68,6 +68,10 @@ module RESTAPI
         return Int(round(datetime2unix(now(Dates.UTC)) * 1000)) + client.time_offset
     end
 
+    @inline function network_timeout(client::RESTClient)
+        return max(client.config.timeout, 1)
+    end
+
     function build_headers(client::RESTClient)
         # 返回类型稳定的 Vector{Pair{String,String}}
         if !isempty(client.config.api_key)
@@ -191,18 +195,27 @@ module RESTAPI
 
         try
             proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
+            timeout = network_timeout(client)
             # Use direct keyword args to avoid Dict allocation on every request
             if !isempty(body)
                 if proxy_url !== nothing
-                    response = HTTP.request(method, url; headers=headers, body=body, proxy=proxy_url)
+                    response = HTTP.request(method, url; headers=headers, body=body, proxy=proxy_url,
+                                            connect_timeout=timeout, request_timeout=timeout,
+                                            read_idle_timeout=timeout)
                 else
-                    response = HTTP.request(method, url; headers=headers, body=body)
+                    response = HTTP.request(method, url; headers=headers, body=body,
+                                            connect_timeout=timeout, request_timeout=timeout,
+                                            read_idle_timeout=timeout)
                 end
             else
                 if proxy_url !== nothing
-                    response = HTTP.request(method, url; headers=headers, proxy=proxy_url)
+                    response = HTTP.request(method, url; headers=headers, proxy=proxy_url,
+                                            connect_timeout=timeout, request_timeout=timeout,
+                                            read_idle_timeout=timeout)
                 else
-                    response = HTTP.request(method, url; headers=headers)
+                    response = HTTP.request(method, url; headers=headers,
+                                            connect_timeout=timeout, request_timeout=timeout,
+                                            read_idle_timeout=timeout)
                 end
             end
 
