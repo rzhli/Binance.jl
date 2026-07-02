@@ -862,8 +862,8 @@ module WebSocketAPI
             if !isempty(symbol) || !isnothing(symbols)
                 throw(ArgumentError("symbolStatus cannot be used in combination with symbol or symbols"))
             end
-            if !(symbolStatus in ("TRADING", "HALT", "BREAK"))
-                throw(ArgumentError("Invalid symbolStatus. Valid values: TRADING, HALT, BREAK"))
+            if !(symbolStatus in ("TRADING", "HALT", "BREAK", "CANCEL_ONLY"))
+                throw(ArgumentError("Invalid symbolStatus. Valid values: TRADING, HALT, BREAK, CANCEL_ONLY"))
             end
             params["symbolStatus"] = symbolStatus
         end

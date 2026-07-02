@@ -259,4 +259,10 @@ end
         calc = Binance.ExternalCalculation("BTCUSDT", "EXTERNAL", 42)
         @test calc.externalCalculationId == 42
     end
+
+    @testset "Spot SBE 3:5 symbolStatus CANCEL_ONLY is supported" begin
+        @test Binance.SBEMarketDataStreams.SCHEMA_VERSION_CURRENT == UInt16(5)
+        @test Binance.Types.to_struct(Binance.Types.SymbolStatus, "CANCEL_ONLY") ==
+              Binance.Types.CANCEL_ONLY
+    end
 end

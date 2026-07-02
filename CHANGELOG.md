@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-07-02
+
+### Changed
+- **Spot SBE schema 3:5 / symbolStatus `CANCEL_ONLY`** — Synced with the
+  Binance Spot changelog from 2026-07-01. `SymbolStatus` now includes
+  `CANCEL_ONLY`, REST and WebSocket API `exchangeInfo` accept it as a
+  `symbolStatus` filter, and SBE docs/constants mark schema 3:5 as current for
+  the 2026-07-07 rollout.
+
 ## [0.11.1] - 2026-06-27
 
 ### Changed

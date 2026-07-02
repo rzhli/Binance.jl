@@ -7,18 +7,22 @@ based on the official SBE schema.
 Schema Information:
 - Schema ID: 3
 - Supported Versions: 1 (retires 2026-06-29 in production),
-  2 (deprecated 2026-03-25), 3 (deprecated 2026-05-08), 4 (current)
+  2 (deprecated 2026-03-25), 3 (deprecated 2026-05-08),
+  4 (deprecated 2026-07-01), 5 (current rollout starts 2026-07-07)
 - Byte order: Little Endian
 
-Note: Binance's production SBE lifecycle was updated on 2026-06-22: schema
-3:1 retires on 2026-06-29, 3:2 and 3:3 are deprecated, and 3:4 is current.
+Note: Binance's production SBE lifecycle was updated on 2026-07-01: schema
+3:1 retires on 2026-06-29, 3:2, 3:3, and 3:4 are deprecated, and the
+3:5 rollout starts on 2026-07-07.
 Version 3:4 adds:
   - New message BlockTradesResponse
   - New type blockTradeId
   - New field expiryReason in OrderResponse and OrdersResponse
+Version 3:5 adds:
+  - New symbolStatus enum value CANCEL_ONLY
 
 Market data template structures used by this decoder are unchanged across
-3:3 and 3:4; new template IDs in 3:4 are handled gracefully.
+3:3, 3:4, and 3:5; new template IDs are handled gracefully.
 
 Message Types (Market Data):
 - TradesStreamEvent (10000)
@@ -41,7 +45,8 @@ const SCHEMA_ID = UInt16(3)
 const SCHEMA_VERSION_DEPRECATED = UInt16(1)  # Retires in production on 2026-06-29
 const SCHEMA_VERSION_V2 = UInt16(2)          # Deprecated as of 2026-03-25
 const SCHEMA_VERSION_V3 = UInt16(3)          # Deprecated as of 2026-05-08
-const SCHEMA_VERSION_CURRENT = UInt16(4)     # Current version as of 2026-05-08
+const SCHEMA_VERSION_V4 = UInt16(4)          # Deprecated as of 2026-07-01
+const SCHEMA_VERSION_CURRENT = UInt16(5)     # Current version for the 2026-07-07 rollout
 
 # ============================================================================
 # SBE Null Value Constants (for optional fields)
@@ -63,7 +68,7 @@ Fields:
 - templateId: uint16 - Message type identifier
 - schemaId: uint16 - Schema identifier (Binance uses 3)
 - version: uint16 - Schema version (1 retires 2026-06-29;
-  2 and 3 deprecated; 4 current as of 2026-05-08)
+  2, 3, and 4 deprecated; 5 rollout starts 2026-07-07)
 """
 struct SBEMessageHeader
     blockLength::UInt16

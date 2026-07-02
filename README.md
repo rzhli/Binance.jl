@@ -24,17 +24,12 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
-### v0.11.1 - Network Hardening and SBE Lifecycle Sync
+### v0.11.2 - Spot SBE 3:5 and CANCEL_ONLY
 
-- **Configured network timeouts** — REST requests now apply the configured
-  timeout across connection, request, and read-idle phases. WebSocket API,
-  JSON market-data streams, and SBE market-data streams use the configured
-  timeout for handshakes and the configured reconnect delay for retries.
-- **Supervised WebSocket tasks** — Background WebSocket, heartbeat, setup, and
-  SBE stream tasks now use `errormonitor`, and WebSocket API request/response
-  waits are bounded so lost responses do not block indefinitely.
-- **SBE production lifecycle docs** — Schema 3:1 is documented as retiring in
-  production on 2026-06-29; schema 3:4 remains current.
+- **Spot symbol status support** — `SymbolStatus` now includes `CANCEL_ONLY`,
+  and REST/WebSocket API `exchangeInfo` accept it as a `symbolStatus` filter.
+- **SBE production lifecycle docs** — Schema 3:5 is documented as the current
+  schema for the 2026-07-07 rollout; schema 3:4 is deprecated.
 
 ---
 

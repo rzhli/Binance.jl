@@ -240,7 +240,7 @@ module RESTAPI
         return unix2datetime(response.serverTime / 1000)
     end
 
-    function get_exchange_info(client::RESTClient; symbol::String="", symbols::Vector{String}=String[], permissions::Vector{String}=String[])
+    function get_exchange_info(client::RESTClient; symbol::String="", symbols::Vector{String}=String[], permissions::Vector{String}=String[], symbolStatus::String="")
         params = Dict{String,Any}()
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
@@ -248,6 +248,15 @@ module RESTAPI
             params["symbols"] = JSON3.write(symbols)
         elseif !isempty(permissions)
             params["permissions"] = JSON3.write(permissions)
+        end
+        if !isempty(symbolStatus)
+            if !isempty(symbol) || !isempty(symbols)
+                throw(ArgumentError("symbolStatus cannot be used in combination with symbol or symbols"))
+            end
+            if !(symbolStatus in ("TRADING", "HALT", "BREAK", "CANCEL_ONLY"))
+                throw(ArgumentError("Invalid symbolStatus. Valid values: TRADING, HALT, BREAK, CANCEL_ONLY"))
+            end
+            params["symbolStatus"] = symbolStatus
         end
 
         response = make_request(client, "GET", "/api/v3/exchangeInfo"; params=params)

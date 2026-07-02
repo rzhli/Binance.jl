@@ -505,19 +505,22 @@ This client tracks the Binance SBE Market Data schema (`schemaId = 3`):
 | 3:1 | 2025-08-19 | Retires 2026-06-29 |
 | 3:2 | 2025-12-18 | Deprecated 2026-03-25 |
 | 3:3 | 2026-03-25 | Deprecated 2026-05-08 |
-| 3:4 | 2026-05-08 | **Current** |
+| 3:4 | 2026-05-08 | Deprecated 2026-07-01 |
+| 3:5 | 2026-07-01 | **Current** rollout starts 2026-07-07 |
 
-The production lifecycle above reflects Binance's 2026-06-22 changelog update.
-Production clients should use schema 3:4; the decoder remains tolerant of older
-market-data template layouts for recorded or transitional payloads.
+The production lifecycle above reflects Binance's 2026-07-01 changelog update.
+Production clients should use schema 3:5 after the rollout reaches their
+environment; the decoder remains tolerant of older market-data template layouts
+for recorded or transitional payloads.
 
 The market-data template IDs (10000–10003) listed below are unchanged across
-3:3 and 3:4. Schema 3:4's additions — `BlockTradesResponse`, `blockTradeId`,
-and `expiryReason` on `OrderResponse`/`OrdersResponse` — apply to the
+3:3, 3:4, and 3:5. Schema 3:4's additions — `BlockTradesResponse`,
+`blockTradeId`, and `expiryReason` on `OrderResponse`/`OrdersResponse` — and
+schema 3:5's `symbolStatus` enum value `CANCEL_ONLY` apply to the
 WebSocket API SBE schema, not the market-data streams decoded here. The
 JSON-side equivalents are exposed through `BlockTrade`,
 `get_historical_block_trades`, `block_trades_historical`, and the new
-`Order.expiryReason` field.
+`Order.expiryReason` field; `CANCEL_ONLY` is accepted as a `SymbolStatus`.
 
 ### SBE Message Format
 
@@ -643,5 +646,5 @@ Complete examples in `examples/sbe_stream_example.jl`:
 ## References
 
 - [Binance SBE Documentation](https://developers.binance.com/docs/binance-spot-api-docs/faqs/sbe_faq)
-- [SBE Schema XML (3:4)](https://github.com/binance/binance-spot-api-docs/blob/master/sbe/schemas/spot_3_4.xml)
+- [SBE Schema XML (3:5)](https://github.com/binance/binance-spot-api-docs/blob/master/sbe/schemas/spot_3_5.xml)
 - [Simple Binary Encoding Spec](https://github.com/real-logic/simple-binary-encoding)
