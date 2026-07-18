@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-07-18
+
+### Changed
+- **SBE incremental depth update speed** — Synced with the Binance Spot API
+  changelog from 2026-07-17. On 2026-08-04 at approximately 07:00 UTC, the
+  SBE WebSocket `<symbol>@depth` stream and FIX SBE
+  `MarketDataIncrementalDepth` (templateId `207`) will change from 25ms to
+  20ms. Stream names and binary layouts are unchanged. Documentation now
+  distinguishes these feeds from the 50ms SBE `@depth20` snapshot stream and
+  the 100ms text FIX incremental-depth stream.
+- **BinanceFIX 0.4.1** — Updated the FIX SBE incremental-depth documentation
+  for the same 20ms rollout; no template or decoder-layout changes are needed.
+
 ## [0.11.2] - 2026-07-02
 
 ### Changed

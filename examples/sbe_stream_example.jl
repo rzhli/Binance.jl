@@ -16,7 +16,7 @@ Demonstrates how to use Binance SBE (Simple Binary Encoding) market data streams
 # Available Streams
 - <symbol>@trade          - Real-time trade data
 - <symbol>@bestBidAsk     - Best bid/ask (supports auto-culling)
-- <symbol>@depth          - Incremental order book updates (50ms)
+- <symbol>@depth          - Incremental order book updates (20ms from 2026-08-04 ~07:00 UTC)
 - <symbol>@depth20        - Top 20 levels snapshot (50ms)
 """
 

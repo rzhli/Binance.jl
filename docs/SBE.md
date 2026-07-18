@@ -50,8 +50,12 @@ end
 |--------|-------------|-------------|-------------|
 | `<symbol>@trade` | TradesStreamEvent | Real-time | Live trade data |
 | `<symbol>@bestBidAsk` | BestBidAskStreamEvent | Real-time | Best bid/ask (auto-culling) |
-| `<symbol>@depth` | DepthDiffStreamEvent | 50ms | Incremental order book |
+| `<symbol>@depth` | DepthDiffStreamEvent | 20ms* | Incremental order book |
 | `<symbol>@depth20` | DepthSnapshotStreamEvent | 50ms | Top 20 levels snapshot |
+
+\* Binance will change the `@depth` cadence from 25ms to 20ms on
+2026-08-04 at approximately 07:00 UTC. The stream name and SBE message layout
+do not change.
 
 ## Data Structures
 
@@ -144,7 +148,8 @@ end)
 
 ### DepthDiffEvent
 
-Incremental order book updates (50ms).
+Incremental order book updates. Binance will change the cadence from 25ms to
+20ms on 2026-08-04 at approximately 07:00 UTC.
 
 ```julia
 struct DepthDiffEvent
@@ -243,7 +248,8 @@ end)
 
 #### `sbe_subscribe_depth(client, symbol, callback)`
 
-Subscribe to incremental order book updates (50ms).
+Subscribe to incremental order book updates (20ms from 2026-08-04 at
+approximately 07:00 UTC; 25ms before the rollout).
 
 **Parameters:**
 - `symbol::String` - Trading pair

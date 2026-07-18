@@ -568,7 +568,7 @@ end
 
 """MarketDataIncrementalDepth (templateId=207)
 
-Update Speed: 25ms (effective 2026-05-05; was 50ms)
+Update Speed: 20ms from 2026-08-04 ~07:00 UTC (25ms before rollout)
 """
 struct SBEMarketDataIncrementalDepth
     seq_num::UInt32

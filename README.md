@@ -24,6 +24,14 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.11.3 - SBE incremental depth 20ms rollout
+
+- **Faster SBE depth updates** — Binance will change both the SBE WebSocket
+  `<symbol>@depth` stream and FIX SBE `MarketDataIncrementalDepth` from 25ms
+  to 20ms on 2026-08-04 at approximately 07:00 UTC. No stream name, template,
+  or decoder changes are required; consumers should allow for roughly 25%
+  more depth callbacks. Text FIX incremental depth remains 100ms.
+
 ### v0.11.2 - Spot SBE 3:5 and CANCEL_ONLY
 
 - **Spot symbol status support** — `SymbolStatus` now includes `CANCEL_ONLY`,

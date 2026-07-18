@@ -12,6 +12,14 @@ BinanceFIX.jl provides complete FIX protocol support for Binance Spot trading:
 
 ## Recent Updates
 
+### v0.4.1 - FIX SBE incremental depth 20ms rollout
+
+- **`MarketDataIncrementalDepth` cadence** — Binance will change FIX SBE
+  incremental depth responses from 25ms to 20ms on 2026-08-04 at
+  approximately 07:00 UTC. The template remains `207`; only the delivery
+  cadence changes. Applications should budget for roughly 25% more depth
+  callbacks. The text FIX incremental depth stream remains 100ms.
+
 ### v0.4.0 - Changelog Sync 2026-06-10
 
 - **`LastFragment (893)` removed** — Binance removed the field from the FIX

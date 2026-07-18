@@ -292,7 +292,8 @@ function start!(manager::OrderBookManager)
         )
         println("[OrderBookManager] Started for $(manager.symbol) (JSON stream: $stream_id, speed: $(manager.update_speed))")
     elseif manager.ws_client isa SBEStreamClient
-        # SBE streams are typically 50ms, so we might ignore update_speed or warn if it's different
+        # Binance controls the SBE diff-depth cadence (20ms from
+        # 2026-08-04 ~07:00 UTC), so the JSON-only update_speed setting is ignored.
         stream_id = sbe_subscribe_depth(
             manager.ws_client,
             manager.symbol,
