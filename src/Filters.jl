@@ -6,47 +6,48 @@ module Filters
            validate_side, validate_time_in_force, ParsedPriceFilter, ParsedLotSizeFilter,
            ParsedNotionalFilter, parse_filter
 
-    # --- Parsed Filter Structs (pre-parsed Float64 values for performance) ---
+    # --- Parsed Filter Structs (pre-parsed exact values) ---
 
     """
-    Parsed version of PriceFilter with Float64 values for fast validation.
+    Parsed version of PriceFilter with exact fixed-point values.
     """
     struct ParsedPriceFilter
-        min_price::Float64
-        max_price::Float64
-        tick_size::Float64
-        tick_precision::Int
+        min_price::DecimalPrice
+        max_price::DecimalPrice
+        tick_size::DecimalPrice
     end
 
     """
-    Parsed version of LotSizeFilter with Float64 values for fast validation.
+    Parsed version of LotSizeFilter with exact fixed-point values.
     """
     struct ParsedLotSizeFilter
-        min_qty::Float64
-        max_qty::Float64
-        step_size::Float64
+        min_qty::DecimalPrice
+        max_qty::DecimalPrice
+        step_size::DecimalPrice
     end
 
     """
-    Parsed version of NotionalFilter with Float64 values for fast validation.
+    Parsed version of NotionalFilter with exact fixed-point values.
     """
     struct ParsedNotionalFilter
-        min_notional::Float64
-        max_notional::Float64
+        min_notional::DecimalPrice
+        max_notional::Union{DecimalPrice,Nothing}
     end
+
+    @inline parse_decimal(value) = parse(DecimalPrice, string(value))
 
     # --- Filter Parsing Functions ---
 
     """
-    Parse a PriceFilter into a ParsedPriceFilter with Float64 values.
+    Parse a PriceFilter once for exact, allocation-free validation.
     Call this once when loading symbol info, then reuse for all validations.
     """
     function parse_filter(filter::PriceFilter)
-        min_price = parse(Float64, filter.minPrice)
-        max_price = parse(Float64, filter.maxPrice)
-        tick_size = parse(Float64, filter.tickSize)
-        tick_precision = tick_size > 0 ? max(0, -Int(floor(log10(tick_size)))) : 0
-        return ParsedPriceFilter(min_price, max_price, tick_size, tick_precision)
+        return ParsedPriceFilter(
+            parse_decimal(filter.minPrice),
+            parse_decimal(filter.maxPrice),
+            parse_decimal(filter.tickSize),
+        )
     end
 
     """
@@ -54,9 +55,9 @@ module Filters
     """
     function parse_filter(filter::LotSizeFilter)
         return ParsedLotSizeFilter(
-            parse(Float64, filter.minQty),
-            parse(Float64, filter.maxQty),
-            parse(Float64, filter.stepSize)
+            parse_decimal(filter.minQty),
+            parse_decimal(filter.maxQty),
+            parse_decimal(filter.stepSize),
         )
     end
 
@@ -65,8 +66,8 @@ module Filters
     """
     function parse_filter(filter::NotionalFilter)
         return ParsedNotionalFilter(
-            parse(Float64, filter.minNotional),
-            parse(Float64, filter.maxNotional)
+            parse_decimal(filter.minNotional),
+            parse_decimal(filter.maxNotional),
         )
     end
 
@@ -75,8 +76,8 @@ module Filters
     """
     function parse_filter(filter::MinNotionalFilter)
         return ParsedNotionalFilter(
-            parse(Float64, filter.minNotional),
-            Inf  # No max for MinNotionalFilter
+            parse_decimal(filter.minNotional),
+            nothing,
         )
     end
 
@@ -106,7 +107,7 @@ module Filters
     """
     Validate price using pre-parsed filter (faster than parsing each time).
     """
-    @inline function validate_price(price::Float64, pf::ParsedPriceFilter)
+    @inline function validate_price(price::DecimalPrice, pf::ParsedPriceFilter)
         if pf.min_price > 0 && price < pf.min_price
             throw(ArgumentError("Price ($price) is below the minimum allowed price ($(pf.min_price))."))
         end
@@ -116,8 +117,7 @@ module Filters
         end
 
         if pf.tick_size > 0
-            val_to_check = round(price - pf.min_price, digits=pf.tick_precision)
-            if rem(val_to_check, pf.tick_size) > 1e-9
+            if rem(price - pf.min_price, pf.tick_size) != 0
                 throw(ArgumentError("Price ($price) does not meet the tick size ($(pf.tick_size)) requirement."))
             end
         end
@@ -125,10 +125,12 @@ module Filters
         return true
     end
 
+    @inline validate_price(price, pf::ParsedPriceFilter) = validate_price(parse_decimal(price), pf)
+
     """
     Validate quantity using pre-parsed filter (faster than parsing each time).
     """
-    @inline function validate_quantity(qty::Float64, lf::ParsedLotSizeFilter)
+    @inline function validate_quantity(qty::DecimalPrice, lf::ParsedLotSizeFilter)
         if qty < lf.min_qty
             throw(ArgumentError("Quantity ($qty) is below the minimum allowed quantity ($(lf.min_qty))."))
         end
@@ -138,10 +140,7 @@ module Filters
         end
 
         if lf.step_size > 0
-            steps_from_min = (qty - lf.min_qty) / lf.step_size
-            rounded_steps = round(steps_from_min)
-            tolerance = lf.step_size * 1e-9
-            if abs(steps_from_min - rounded_steps) * lf.step_size > tolerance
+            if rem(qty - lf.min_qty, lf.step_size) != 0
                 throw(ArgumentError("Quantity ($qty) does not meet the step size ($(lf.step_size)) requirement."))
             end
         end
@@ -149,20 +148,24 @@ module Filters
         return true
     end
 
+    @inline validate_quantity(qty, lf::ParsedLotSizeFilter) = validate_quantity(parse_decimal(qty), lf)
+
     """
     Validate notional value using pre-parsed filter.
     """
-    @inline function validate_notional(notional::Float64, nf::ParsedNotionalFilter)
+    @inline function validate_notional(notional::DecimalPrice, nf::ParsedNotionalFilter)
         if notional < nf.min_notional
             throw(ArgumentError("Notional value ($notional) is below the minimum required ($(nf.min_notional))."))
         end
 
-        if notional > nf.max_notional
+        if !isnothing(nf.max_notional) && notional > nf.max_notional
             throw(ArgumentError("Notional value ($notional) is above the maximum allowed ($(nf.max_notional))."))
         end
 
         return true
     end
+
+    @inline validate_notional(notional, nf::ParsedNotionalFilter) = validate_notional(parse_decimal(notional), nf)
 
     # --- Original filter validation (parses on each call - for backward compatibility) ---
 
@@ -175,9 +178,8 @@ module Filters
         price = get(params, "price", nothing)
         !isnothing(price) || return true # Only validate if price is present
 
-        price_val = parse(Float64, string(price))
         pf = parse_filter(filter)
-        return validate_price(price_val, pf)
+        return validate_price(price, pf)
     end
 
     """
@@ -189,9 +191,8 @@ module Filters
         quantity = get(params, "quantity", nothing)
         !isnothing(quantity) || return true # Only validate if quantity is present
 
-        qty_val = parse(Float64, string(quantity))
         lf = parse_filter(filter)
-        return validate_quantity(qty_val, lf)
+        return validate_quantity(quantity, lf)
     end
 
     """
@@ -212,15 +213,13 @@ module Filters
         price = get(params, "price", nothing)
         quantity = get(params, "quantity", nothing)
         quoteOrderQty = get(params, "quoteOrderQty", nothing)
-        min_notional = parse(Float64, filter.minNotional)
-
-        notional_value = 0.0
+        min_notional = parse_decimal(filter.minNotional)
 
         if !isnothing(quoteOrderQty)
-            notional_value = parse(Float64, string(quoteOrderQty))
+            notional_value = parse_decimal(quoteOrderQty)
         elseif !isnothing(price) && !isnothing(quantity)
-            price_val = parse(Float64, string(price))
-            qty_val = parse(Float64, string(quantity))
+            price_val = parse_decimal(price)
+            qty_val = parse_decimal(quantity)
             notional_value = price_val * qty_val
         else
             # Cannot determine notional value for client-side validation (e.g., MARKET order with base quantity).
@@ -255,13 +254,11 @@ module Filters
 
         nf = parse_filter(filter)
 
-        notional_value = 0.0
-
         if !isnothing(quoteOrderQty)
-            notional_value = parse(Float64, string(quoteOrderQty))
+            notional_value = parse_decimal(quoteOrderQty)
         elseif !isnothing(price) && !isnothing(quantity)
-            price_val = parse(Float64, string(price))
-            qty_val = parse(Float64, string(quantity))
+            price_val = parse_decimal(price)
+            qty_val = parse_decimal(quantity)
             notional_value = price_val * qty_val
         else
             # Cannot determine notional value for client-side validation (e.g., MARKET order with base quantity).

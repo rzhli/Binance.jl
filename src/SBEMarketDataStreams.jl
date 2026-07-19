@@ -40,11 +40,11 @@ export SBEStreamClient, connect_sbe!, sbe_subscribe, sbe_unsubscribe,
 # Re-export SBE data types
 export TradeEvent, TradeData, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
 
-struct SBEStreamCallback
-    callback::Any
+struct SBEStreamCallback{F}
+    callback::F
 end
 
-@inline (callback::SBEStreamCallback)(data) = callback.callback(data)
+@inline (callback::SBEStreamCallback{F})(data) where {F} = callback.callback(data)
 
 """
 SBE Market Data Stream Client
@@ -68,6 +68,9 @@ mutable struct SBEStreamClient
     subscriptions::Dict{String,SBEStreamCallback}  # stream_name => callback
     should_reconnect::Bool
     next_request_id::Int
+    request_lock::ReentrantLock
+    subscriptions_lock::ReentrantLock
+    send_lock::ReentrantLock
 
     function SBEStreamClient(config_path::String="config.toml")
         config = from_toml(config_path)
@@ -82,14 +85,31 @@ mutable struct SBEStreamClient
                       "wss://stream-sbe.testnet.binance.vision:9443" :
                       "wss://stream-sbe.binance.com:9443"
 
-        new(config, ws_base_url, nothing, nothing, Dict{String,SBEStreamCallback}(), true, 1)
+        new(
+            config, ws_base_url, nothing, nothing, Dict{String,SBEStreamCallback}(),
+            true, 1, ReentrantLock(), ReentrantLock(), ReentrantLock(),
+        )
+    end
+end
+
+function subscription_callback(client::SBEStreamClient, stream_name::String)
+    return lock(client.subscriptions_lock) do
+        get(client.subscriptions, stream_name, nothing)
+    end
+end
+
+function subscription_names(client::SBEStreamClient)
+    return lock(client.subscriptions_lock) do
+        collect(keys(client.subscriptions))
     end
 end
 
 function next_request_id!(client::SBEStreamClient)
-    id = client.next_request_id
-    client.next_request_id += 1
-    return id
+    return lock(client.request_lock) do
+        id = client.next_request_id
+        client.next_request_id += 1
+        return id
+    end
 end
 
 @inline function network_timeout(client::SBEStreamClient)
@@ -106,8 +126,8 @@ function _handle_sbe_ws_session(client::SBEStreamClient, ws)
     @info "✅ Connected to SBE Market Data Stream"
 
     # Resubscribe to existing streams
-    if !isempty(client.subscriptions)
-        streams = collect(keys(client.subscriptions))
+    streams = subscription_names(client)
+    if !isempty(streams)
         @info "Resubscribing to $(length(streams)) streams..."
 
         # Send subscription request for all streams
@@ -118,7 +138,9 @@ function _handle_sbe_ws_session(client::SBEStreamClient, ws)
         ))
 
         try
-            HTTP.WebSockets.send(ws, subscribe_msg)
+            lock(client.send_lock) do
+                HTTP.WebSockets.send(ws, subscribe_msg)
+            end
             @info "Sent resubscription request for: $(join(streams, ", "))"
         catch e
             @error "Failed to resubscribe: $e"
@@ -225,7 +247,7 @@ function connect_sbe!(client::SBEStreamClient)
                     Connection details:
                       URI: $uri
                       Proxy: $(client.config.proxy)
-                      API Key: $(client.config.api_key[1:8])...
+                      API key configured: $(!isempty(client.config.api_key))
                     Retrying in $(client.config.reconnect_delay) seconds..."""
                     # Print the full exception for debugging
                     @error "Full error:" exception = (e, catch_backtrace())
@@ -332,28 +354,28 @@ function handle_sbe_message(client::SBEStreamClient, data::Vector{UInt8})
         # Use get() for single lookup instead of haskey() + indexing (avoids double lookup)
         if decoded isa TradeEvent
             stream_name = string(lowercase(decoded.symbol), "@trade")
-            callback = get(client.subscriptions, stream_name, nothing)
+            callback = subscription_callback(client, stream_name)
             if callback !== nothing
                 callback(decoded)
             end
 
         elseif decoded isa BestBidAskEvent
             stream_name = string(lowercase(decoded.symbol), "@bestBidAsk")
-            callback = get(client.subscriptions, stream_name, nothing)
+            callback = subscription_callback(client, stream_name)
             if callback !== nothing
                 callback(decoded)
             end
 
         elseif decoded isa DepthSnapshotEvent
             stream_name = string(lowercase(decoded.symbol), "@depth20")
-            callback = get(client.subscriptions, stream_name, nothing)
+            callback = subscription_callback(client, stream_name)
             if callback !== nothing
                 callback(decoded)
             end
 
         elseif decoded isa DepthDiffEvent
             stream_name = string(lowercase(decoded.symbol), "@depth")
-            callback = get(client.subscriptions, stream_name, nothing)
+            callback = subscription_callback(client, stream_name)
             if callback !== nothing
                 callback(decoded)
             end
@@ -404,7 +426,9 @@ function sbe_subscribe(client::SBEStreamClient, stream_name::String, callback)
     end
 
     # Register callback
-    client.subscriptions[stream_name] = SBEStreamCallback(callback)
+    lock(client.subscriptions_lock) do
+        client.subscriptions[stream_name] = SBEStreamCallback(callback)
+    end
 
     # Send subscription request (JSON format)
     subscribe_msg = JSON3.write(Dict(
@@ -414,11 +438,15 @@ function sbe_subscribe(client::SBEStreamClient, stream_name::String, callback)
     ))
 
     try
-        HTTP.WebSockets.send(client.ws_connection, subscribe_msg)
+        lock(client.send_lock) do
+            HTTP.WebSockets.send(client.ws_connection, subscribe_msg)
+        end
         @info "Subscribed to SBE stream: $stream_name"
     catch e
         @error "Failed to subscribe to $stream_name: $e"
-        delete!(client.subscriptions, stream_name)
+        lock(client.subscriptions_lock) do
+            delete!(client.subscriptions, stream_name)
+        end
         rethrow(e)
     end
 
@@ -444,8 +472,12 @@ function sbe_unsubscribe(client::SBEStreamClient, stream_name::String)
     ))
 
     try
-        HTTP.WebSockets.send(client.ws_connection, unsubscribe_msg)
-        delete!(client.subscriptions, stream_name)
+        lock(client.send_lock) do
+            HTTP.WebSockets.send(client.ws_connection, unsubscribe_msg)
+        end
+        lock(client.subscriptions_lock) do
+            delete!(client.subscriptions, stream_name)
+        end
         @info "Unsubscribed from SBE stream: $stream_name"
     catch e
         @error "Failed to unsubscribe from $stream_name: $e"
@@ -582,7 +614,7 @@ function sbe_close_all(client::SBEStreamClient)
     @info "Closing all SBE streams..."
 
     # Unsubscribe from all streams
-    for stream_name in keys(client.subscriptions)
+    for stream_name in subscription_names(client)
         sbe_unsubscribe(client, stream_name)
     end
 
@@ -613,7 +645,7 @@ end
 List all active SBE stream subscriptions.
 """
 function sbe_list_streams(client::SBEStreamClient)
-    return collect(keys(client.subscriptions))
+    return subscription_names(client)
 end
 
 end # module SBEMarketDataStreams

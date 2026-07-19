@@ -5,7 +5,7 @@ using SHA, Base64, OpenSSL
 using ..Config: BinanceConfig
 
 export CryptoSigner, BinanceSigner, HMAC_SHA256, ED25519, RSA,
-    HmacSigner, Ed25519Signer, RsaSigner, create_signer, sign_message
+    HmacSigner, Ed25519Signer, RsaSigner, NoSigner, create_signer, sign_message
 
 const HMAC_SHA256 = "HMAC_SHA256"
 const ED25519 = "ED25519"
@@ -16,7 +16,12 @@ abstract type CryptoSigner end
 # HMAC SHA256 Signer (most common)
 struct HmacSigner <: CryptoSigner
     secret_key::String
+    secret_bytes::Vector{UInt8}
 end
+
+HmacSigner(secret_key::String) = HmacSigner(secret_key, Vector{UInt8}(codeunits(secret_key)))
+
+struct NoSigner <: CryptoSigner end
 
 # Ed25519 Signer (using OpenSSL)
 struct Ed25519Signer <: CryptoSigner
@@ -61,7 +66,7 @@ struct RsaSigner <: CryptoSigner
     end
 end
 
-const BinanceSigner = Union{HmacSigner,Ed25519Signer,RsaSigner}
+const BinanceSigner = Union{HmacSigner,Ed25519Signer,RsaSigner,NoSigner}
 
 # Create signer based on configuration
 function create_signer(config::BinanceConfig)
@@ -80,6 +85,8 @@ function create_signer(config::BinanceConfig)
             error("Private key path is required for RSA signature")
         end
         return RsaSigner(config.private_key_path, config.private_key_pass)
+    elseif config.signature_method == "NONE"
+        return NoSigner()
     else
         error("Unsupported signature method: $(config.signature_method)")
     end
@@ -96,16 +103,12 @@ end
 
 # HMAC SHA256 signature implementation
 function sign_message(signer::HmacSigner, message::String)
-    # Convert secret key and message to bytes
-    key_bytes = Vector{UInt8}(signer.secret_key)
-    message_bytes = Vector{UInt8}(message)
-
-    # Compute HMAC-SHA256
-    signature_bytes = hmac_sha256(key_bytes, message_bytes)
-
-    # Convert to hex string (lowercase)
-    return bytes2hex(signature_bytes)
+    return bytes2hex(SHA.hmac_sha256(signer.secret_bytes, message))
 end
+
+sign_message(::NoSigner, ::String) = throw(ArgumentError(
+    "This client has signature_method=NONE and cannot send signed requests",
+))
 
 # Ed25519 signature implementation using OpenSSL
 function sign_message(signer::Ed25519Signer, message::String)
@@ -215,36 +218,7 @@ end
 
 # HMAC-SHA256 implementation with local buffers (thread-safe)
 function hmac_sha256(key::Vector{UInt8}, message::Vector{UInt8})
-    # If key is longer than block size, hash it
-    block_size = 64
-    actual_key = length(key) > block_size ? sha256(key) : key
-    key_len = length(actual_key)
-
-    # Pad key to block size
-    padded_key = Vector{UInt8}(undef, block_size)
-    @inbounds for i in 1:key_len
-        padded_key[i] = actual_key[i]
-    end
-    @inbounds for i in (key_len+1):block_size
-        padded_key[i] = 0x00
-    end
-
-    # Compute inner hash: SHA256((key ⊻ 0x36) || message)
-    inner_data = Vector{UInt8}(undef, block_size + length(message))
-    @inbounds for i in 1:block_size
-        inner_data[i] = padded_key[i] ⊻ 0x36
-    end
-    @inbounds copyto!(inner_data, block_size + 1, message, 1, length(message))
-    inner_hash = sha256(inner_data)
-
-    # Compute outer hash: SHA256((key ⊻ 0x5c) || inner_hash)
-    outer_data = Vector{UInt8}(undef, block_size + 32)  # SHA256 output is 32 bytes
-    @inbounds for i in 1:block_size
-        outer_data[i] = padded_key[i] ⊻ 0x5c
-    end
-    @inbounds copyto!(outer_data, block_size + 1, inner_hash, 1, 32)
-
-    return sha256(outer_data)
+    return SHA.hmac_sha256(key, message)
 end
 
 # Load Ed25519 public key from file

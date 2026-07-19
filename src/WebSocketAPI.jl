@@ -1,10 +1,9 @@
 module WebSocketAPI
 
     using HTTP, JSON3, Dates, SHA, URIs, StructTypes, UUIDs
-    using FixedPointDecimals
     import HTTP.WebSockets
 
-    using ..Config, ..Signature, ..Types, ..RESTAPI, ..RateLimiter, ..Account, ..Events, ..Errors
+    using ..Config, ..Signature, ..Types, ..Filters, ..RESTAPI, ..RateLimiter, ..Account, ..Events, ..Errors
 
     # ✨✨ 关键步骤 ✨✨
     # 使用 import 关键字，将 RESTAPI.place_order 函数本身引入当前作用域, 为它添加新方法，
@@ -20,11 +19,11 @@ module WebSocketAPI
         "serverShutdown" => ServerShutdown
     )
 
-    struct EventCallback
-        callback::Any
+    struct EventCallback{F}
+        callback::F
     end
 
-    @inline (callback::EventCallback)(event) = callback.callback(event)
+    @inline (callback::EventCallback{F})(event) where {F} = callback.callback(event)
 
     kline_row(k::Kline) = (
         open_time = floor(k.open_time, Second),
@@ -87,8 +86,10 @@ module WebSocketAPI
         base_url::String
         ws_connection::Union{WebSockets.WebSocket,Nothing}  # Typed WebSocket connection
         rate_limiter::BinanceRateLimit
-        responses::Dict{String,Channel{Any}} # Changed from Int64 to String for UUID keys
+        responses::Dict{String,Channel{JSON3.Object}}
+        responses_lock::ReentrantLock
         ws_callbacks::Dict{String,EventCallback} # For user data stream events
+        callbacks_lock::ReentrantLock
         time_offset::Int64
         is_authenticated::Bool
         should_reconnect::Bool
@@ -108,7 +109,12 @@ module WebSocketAPI
             end
 
             rate_limiter = BinanceRateLimit(config)
-            client = new(config, signer, base_url, nothing, rate_limiter, Dict{String,Channel{Any}}(), Dict{String,EventCallback}(), 0, false, true, nothing, ReentrantLock(), nothing, 60)
+            client = new(
+                config, signer, base_url, nothing, rate_limiter,
+                Dict{String,Channel{JSON3.Object}}(), ReentrantLock(),
+                Dict{String,EventCallback}(), ReentrantLock(), 0, false, true, nothing,
+                ReentrantLock(), nothing, 60,
+            )
 
             # Initialize time offset to 0. This will be synchronized with the server after the WebSocket connection is established.
             # We don't assume any timezone offset, letting the synchronization handle the actual difference
@@ -133,6 +139,24 @@ module WebSocketAPI
             sleep(min(0.05, remaining))
         end
         return take!(response_channel)
+    end
+
+    function get_response_channel(client::WebSocketClient, request_id::String)
+        return lock(client.responses_lock) do
+            get(client.responses, request_id, nothing)
+        end
+    end
+
+    function get_event_callback(client::WebSocketClient, event_type::String)
+        return lock(client.callbacks_lock) do
+            get(client.ws_callbacks, event_type, nothing)
+        end
+    end
+
+    function has_event_callbacks(client::WebSocketClient)
+        return lock(client.callbacks_lock) do
+            !isempty(client.ws_callbacks)
+        end
     end
 
     """
@@ -205,6 +229,15 @@ module WebSocketAPI
     end
 
     function connect!(client::WebSocketClient)
+        return lock(client.reconnect_lock) do
+            if !isnothing(client.reconnect_task) && !istaskdone(client.reconnect_task)
+                return client.reconnect_task
+            end
+            return start_connection_task!(client)
+        end
+    end
+
+    function start_connection_task!(client::WebSocketClient)
         # Check connection rate limit (300 connections per 5 minutes per IP)
         check_and_wait(client.rate_limiter, "CONNECTIONS")
         
@@ -277,7 +310,7 @@ module WebSocketAPI
                                     @info "Session re-authenticated successfully after reconnect."
 
                                     # Automatically re-subscribe to user data stream if callbacks are registered
-                                    if !isempty(client.ws_callbacks)
+                                    if has_event_callbacks(client)
                                         try
                                             userdata_stream_subscribe(client)
                                             @info "Automatically re-subscribed to user data stream."
@@ -305,8 +338,10 @@ module WebSocketAPI
                                 data = JSON3.read(String(msg))
 
                                 # Check if this is a response to a request
-                                if haskey(data, :id) && haskey(client.responses, string(data.id))
-                                    put!(client.responses[string(data.id)], data)
+                                request_id = haskey(data, :id) ? string(data.id) : ""
+                                response_channel = isempty(request_id) ? nothing : get_response_channel(client, request_id)
+                                if response_channel !== nothing
+                                    put!(response_channel, data)
                                 # Check if this is a user data stream event
                                 else
                                     event_payload = nothing
@@ -322,18 +357,19 @@ module WebSocketAPI
                                         event_type = string(event_payload[:e])
                                         if event_type == "serverShutdown"
                                             event_struct = to_struct(ServerShutdown, event_payload)
-                                            if haskey(client.ws_callbacks, event_type)
+                                            callback = get_event_callback(client, event_type)
+                                            if callback !== nothing
                                                 try
-                                                    client.ws_callbacks[event_type](event_struct)
+                                                    callback(event_struct)
                                                 catch e
                                                     @error "Error in event callback for '$event_type': $e"
                                                 end
                                             end
                                             handle_server_shutdown!(client, event_struct)
-                                        elseif haskey(client.ws_callbacks, event_type)
+                                        elseif (callback = get_event_callback(client, event_type)) !== nothing
                                             try
                                                 event_struct = to_struct(EVENT_TYPE_MAP[event_type], event_payload)
-                                                client.ws_callbacks[event_type](event_struct)
+                                                callback(event_struct)
                                             catch e
                                                 @error "Error in event callback for '$event_type': $e"
                                             end
@@ -376,6 +412,7 @@ module WebSocketAPI
                 end
             end
         end)
+        return client.reconnect_task
     end
 
     """
@@ -418,7 +455,9 @@ module WebSocketAPI
     See Binance documentation for complete list of event types.
     """
     function on_event(client::WebSocketClient, event_type::String, callback)
-        client.ws_callbacks[event_type] = EventCallback(callback)
+        lock(client.callbacks_lock) do
+            client.ws_callbacks[event_type] = EventCallback(callback)
+        end
         @info "Registered callback for event type '$event_type'."
     end
     
@@ -446,8 +485,10 @@ module WebSocketAPI
     Remove a previously registered event handler.
     """
     function remove_event_handler(client::WebSocketClient, event_type::String)
-        if haskey(client.ws_callbacks, event_type)
-            delete!(client.ws_callbacks, event_type)
+        removed = lock(client.callbacks_lock) do
+            return pop!(client.ws_callbacks, event_type, nothing) !== nothing
+        end
+        if removed
             @info "Removed callback for event type '$event_type'."
         else
             @warn "No callback registered for event type '$event_type'."
@@ -460,7 +501,9 @@ module WebSocketAPI
     Remove all registered event handlers.
     """
     function clear_event_handlers(client::WebSocketClient)
-        empty!(client.ws_callbacks)
+        lock(client.callbacks_lock) do
+            empty!(client.ws_callbacks)
+        end
         @info "Cleared all event callbacks."
     end
 
@@ -611,8 +654,10 @@ module WebSocketAPI
         full_method = isempty(api_version) ? method : "$api_version/$method"
 
         # Create a channel to wait for the response
-        response_channel = Channel{Any}(1)
-        client.responses[request_id] = response_channel
+        response_channel = Channel{JSON3.Object}(1)
+        lock(client.responses_lock) do
+            client.responses[request_id] = response_channel
+        end
 
         # Add returnRateLimits parameter if specified
         if !isnothing(return_rate_limits)
@@ -664,7 +709,9 @@ module WebSocketAPI
             rethrow(e)
         finally
             # Clean up the response channel
-            delete!(client.responses, request_id)
+            lock(client.responses_lock) do
+                delete!(client.responses, request_id)
+            end
         end
     end
 
@@ -1382,10 +1429,10 @@ module WebSocketAPI
     """
     function place_order(
         client::WebSocketClient, symbol::String, side::String, type::String;
-        timeInForce::String="", price::Union{Float64,String,FixedDecimal,Nothing}=nothing,
-        quantity::Union{Float64,String,FixedDecimal,Nothing}=nothing, quoteOrderQty::Union{Float64,String,FixedDecimal,Nothing}=nothing,
-        newClientOrderId::String="", stopPrice::Union{Float64,String,FixedDecimal,Nothing}=nothing,
-        trailingDelta::Union{Int,Nothing}=nothing, icebergQty::Union{Float64,String,FixedDecimal,Nothing}=nothing,
+        timeInForce::String="", price::Union{DecimalInput,Nothing}=nothing,
+        quantity::Union{DecimalInput,Nothing}=nothing, quoteOrderQty::Union{DecimalInput,Nothing}=nothing,
+        newClientOrderId::String="", stopPrice::Union{DecimalInput,Nothing}=nothing,
+        trailingDelta::Union{Int,Nothing}=nothing, icebergQty::Union{DecimalInput,Nothing}=nothing,
         newOrderRespType::String="", strategyId::Union{Int,Nothing}=nothing,
         strategyType::Union{Int,Nothing}=nothing, selfTradePreventionMode::String="",
         kwargs...  # Accept any additional parameters
@@ -1404,7 +1451,7 @@ module WebSocketAPI
 
         # Build parameters
         params = Dict{String,Any}(
-            "symbol" => symbol,
+            "symbol" => validate_symbol(symbol),
             "side" => side,
             "type" => type
         )
@@ -1517,11 +1564,11 @@ module WebSocketAPI
         client::WebSocketClient, symbol::String, cancelReplaceMode::String, side::String, type::String;
         cancelOrderId::Union{Int,Nothing}=nothing, cancelOrigClientOrderId::String="",
         cancelNewClientOrderId::String="", cancelRestrictions::String="", orderRateLimitExceededMode::String="DO_NOTHING",
-        price::Union{Float64,String,Nothing}=nothing, quantity::Union{Float64,String,Nothing}=nothing,
-        quoteOrderQty::Union{Float64,String,Nothing}=nothing, timeInForce::String="",
+        price::Union{DecimalInput,Nothing}=nothing, quantity::Union{DecimalInput,Nothing}=nothing,
+        quoteOrderQty::Union{DecimalInput,Nothing}=nothing, timeInForce::String="",
         newClientOrderId::String="", newOrderRespType::String="",
-        stopPrice::Union{Float64,String,Nothing}=nothing, trailingDelta::Union{Int,Nothing}=nothing,
-        icebergQty::Union{Float64,String,Nothing}=nothing, strategyId::Union{Int,Nothing}=nothing,
+        stopPrice::Union{DecimalInput,Nothing}=nothing, trailingDelta::Union{Int,Nothing}=nothing,
+        icebergQty::Union{DecimalInput,Nothing}=nothing, strategyId::Union{Int,Nothing}=nothing,
         strategyType::Union{Int,Nothing}=nothing, selfTradePreventionMode::String="",
         pegPriceType::String="", pegOffsetValue::Union{Int,Nothing}=nothing, pegOffsetType::String=""
         )
@@ -1541,7 +1588,7 @@ module WebSocketAPI
         end
 
         params = Dict{String,Any}(
-            "symbol" => symbol,
+            "symbol" => validate_symbol(symbol),
             "cancelReplaceMode" => cancelReplaceMode,
             "side" => side,
             "type" => type
@@ -1561,15 +1608,15 @@ module WebSocketAPI
         !isempty(orderRateLimitExceededMode) && (params["orderRateLimitExceededMode"] = orderRateLimitExceededMode)
         
         # New order parameters
-        !isnothing(price) && (params["price"] = string(price))
-        !isnothing(quantity) && (params["quantity"] = string(quantity))
-        !isnothing(quoteOrderQty) && (params["quoteOrderQty"] = string(quoteOrderQty))
+        !isnothing(price) && (params["price"] = to_decimal_string(price))
+        !isnothing(quantity) && (params["quantity"] = to_decimal_string(quantity))
+        !isnothing(quoteOrderQty) && (params["quoteOrderQty"] = to_decimal_string(quoteOrderQty))
         !isempty(timeInForce) && (params["timeInForce"] = timeInForce)
         !isempty(newClientOrderId) && (params["newClientOrderId"] = newClientOrderId)
         !isempty(newOrderRespType) && (params["newOrderRespType"] = newOrderRespType)
-        !isnothing(stopPrice) && (params["stopPrice"] = string(stopPrice))
+        !isnothing(stopPrice) && (params["stopPrice"] = to_decimal_string(stopPrice))
         !isnothing(trailingDelta) && (params["trailingDelta"] = trailingDelta)
-        !isnothing(icebergQty) && (params["icebergQty"] = string(icebergQty))
+        !isnothing(icebergQty) && (params["icebergQty"] = to_decimal_string(icebergQty))
         !isnothing(strategyId) && (params["strategyId"] = strategyId)
         !isnothing(strategyType) && (params["strategyType"] = strategyType)
         !isempty(selfTradePreventionMode) && (params["selfTradePreventionMode"] = selfTradePreventionMode)
@@ -1592,10 +1639,10 @@ module WebSocketAPI
     """
     function amend_order(
         client::WebSocketClient, symbol::String; orderId::Union{Int,Nothing}=nothing,
-        origClientOrderId::String="", newClientOrderId::String="", newQty::Union{Float64,String,Nothing}=nothing
+        origClientOrderId::String="", newClientOrderId::String="", newQty::Union{DecimalInput,Nothing}=nothing
         )
 
-        params = Dict{String,Any}("symbol" => symbol)
+        params = Dict{String,Any}("symbol" => validate_symbol(symbol))
 
         if !isnothing(orderId)
             params["orderId"] = orderId
@@ -1608,7 +1655,7 @@ module WebSocketAPI
         if isnothing(newQty)
             error("newQty is required")
         end
-        params["newQty"] = string(newQty)
+        params["newQty"] = to_decimal_string(newQty)
 
         !isempty(newClientOrderId) && (params["newClientOrderId"] = newClientOrderId)
 

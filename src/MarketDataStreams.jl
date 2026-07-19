@@ -13,11 +13,11 @@ module MarketDataStreams
         subscribe_combined, unsubscribe, close_all_connections, list_active_streams,
         subscribe_avg_price, subscribe_reference_price
 
-    struct StreamCallback
-        callback::Any
+    struct StreamCallback{F}
+        callback::F
     end
 
-    @inline (callback::StreamCallback)(data) = callback.callback(data)
+    @inline (callback::StreamCallback{F})(data) where {F} = callback.callback(data)
 
     """
     A client for subscribing to Binance Market Data WebSocket streams.
@@ -28,11 +28,15 @@ module MarketDataStreams
         ws_connections::Dict{String,Task}
         ws_callbacks::Dict{String,StreamCallback}
         should_reconnect::Dict{String,Bool}
+        state_lock::ReentrantLock
 
         function MarketDataStreamClient(config_path::String="config.toml")
             config = from_toml(config_path)
             ws_base_url = config.testnet ? "wss://stream.testnet.binance.vision/ws/" : "wss://stream.binance.com:9443/ws/"
-            new(config, ws_base_url, Dict{String,Task}(), Dict{String,StreamCallback}(), Dict{String,Bool}())
+            new(
+                config, ws_base_url, Dict{String,Task}(),
+                Dict{String,StreamCallback}(), Dict{String,Bool}(), ReentrantLock(),
+            )
         end
     end
 
@@ -40,18 +44,35 @@ module MarketDataStreams
         return max(client.config.timeout, 1)
     end
 
+    function reconnect_enabled(client::MarketDataStreamClient, stream_name::String)
+        return lock(client.state_lock) do
+            get(client.should_reconnect, stream_name, false)
+        end
+    end
+
+    function stream_callback(client::MarketDataStreamClient, stream_name::String)
+        return lock(client.state_lock) do
+            get(client.ws_callbacks, stream_name, nothing)
+        end
+    end
+
     # --- Websocket Functions ---
 
     function subscribe(client::MarketDataStreamClient, stream_name::String, callback; struct_type=nothing)
-        client.ws_callbacks[stream_name] = StreamCallback(callback)
-        client.should_reconnect[stream_name] = true
+        lock(client.state_lock) do
+            haskey(client.ws_connections, stream_name) && throw(ArgumentError(
+                "Stream '$stream_name' is already subscribed",
+            ))
+            client.ws_callbacks[stream_name] = StreamCallback(callback)
+            client.should_reconnect[stream_name] = true
+        end
 
         uri = client.ws_base_url * stream_name
         proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
         timeout = network_timeout(client)
 
         task = errormonitor(@async begin
-            while get(client.should_reconnect, stream_name, false) # Check reconnection flag
+            while reconnect_enabled(client, stream_name)
                 try
                     # 根据是否有 proxy 选择不同的调用方式，避免每次创建 Dict
                     if proxy_url !== nothing
@@ -66,34 +87,36 @@ module MarketDataStreams
                         end
                     end
 
-                    if get(client.should_reconnect, stream_name, false)
-                        println("⚪ WebSocket connection for '$stream_name' closed. Reconnecting in $(client.config.reconnect_delay) seconds...")
+                    if reconnect_enabled(client, stream_name)
+                        @info "WebSocket connection closed; reconnecting" stream_name delay=client.config.reconnect_delay
                         sleep(client.config.reconnect_delay)
                     end
 
                 catch e
-                    if e isa InterruptException || !get(client.should_reconnect, stream_name, false)
-                        println("🛑 WebSocket task for '$stream_name' received stop signal.")
+                    if e isa InterruptException || !reconnect_enabled(client, stream_name)
+                        @debug "WebSocket task received stop signal" stream_name
                         break # Exit the while loop
                     end
-                    if get(client.should_reconnect, stream_name, false)
-                        println("❌ WebSocket connection error for '$stream_name': $e. Retrying in $(client.config.reconnect_delay) seconds...")
+                    if reconnect_enabled(client, stream_name)
+                        @error "WebSocket connection error; retrying" stream_name delay=client.config.reconnect_delay exception=(e, catch_backtrace())
                         sleep(client.config.reconnect_delay)
                     end
                 end
             end
-            println("🛑 WebSocket task for '$stream_name' has terminated.")
+            @debug "WebSocket task terminated" stream_name
         end)
 
-        client.ws_connections[stream_name] = task
+        lock(client.state_lock) do
+            client.ws_connections[stream_name] = task
+        end
         return stream_name
     end
 
     # 提取消息处理逻辑，避免代码重复
     function _handle_ws_messages(client::MarketDataStreamClient, ws, stream_name::String, struct_type)
-        println("✅ Successfully connected to '$stream_name'.")
+        @info "Successfully connected to WebSocket stream" stream_name
         for msg in ws
-            if !get(client.should_reconnect, stream_name, false)
+            if !reconnect_enabled(client, stream_name)
                 break     # Stop processing if unsubscribed
             end
             try
@@ -112,13 +135,12 @@ module MarketDataStreams
                     break
                 end
                 data = isnothing(struct_type) ? raw : to_struct(struct_type, raw)
-                if haskey(client.ws_callbacks, stream_name)
-                    cb = client.ws_callbacks[stream_name]
+                cb = stream_callback(client, stream_name)
+                if cb !== nothing
                     cb(data)
                 end
             catch e
-                println("⚠️ Error processing WebSocket message on stream '$stream_name': $e")
-                println("   Raw message: $msg")
+                @error "Error processing WebSocket message" stream_name message_bytes=sizeof(msg) exception=(e, catch_backtrace())
             end
         end
     end
@@ -274,60 +296,79 @@ module MarketDataStreams
         return subscribe(client, combined_stream, callback)
     end
 
-    function unsubscribe(client::MarketDataStreamClient, stream::String)
-        if haskey(client.ws_connections, stream)
-            # Set reconnection flag to false first
-            client.should_reconnect[stream] = false
+    function subscribe_user_data(
+        client::MarketDataStreamClient, listen_key::String, callback,
+    )
+        isempty(listen_key) && throw(ArgumentError("listen_key cannot be empty"))
+        return subscribe(client, listen_key, callback)
+    end
 
-            task = client.ws_connections[stream]
+    function unsubscribe(client::MarketDataStreamClient, stream::String)
+        task = lock(client.state_lock) do
+            task = get(client.ws_connections, stream, nothing)
+            task === nothing || (client.should_reconnect[stream] = false)
+            return task
+        end
+
+        if task !== nothing
             try
                 if !istaskdone(task)
                     schedule(task, InterruptException(), error=true)
                 end
-                # Wait a brief moment for the task to stop
-                sleep(0.1)
+                wait_status = timedwait(() -> istaskdone(task), network_timeout(client))
+                wait_status == :timed_out && @warn "Timed out waiting for WebSocket task to stop" stream
             catch e
-                println("⚠️ Error stopping task for '$stream': $e")
+                @warn "Error stopping WebSocket task" stream exception=(e, catch_backtrace())
             finally
-                delete!(client.ws_connections, stream)
-                delete!(client.ws_callbacks, stream)
-                delete!(client.should_reconnect, stream)
-                println("🛑 Unsubscribed from stream: $stream")
+                lock(client.state_lock) do
+                    delete!(client.ws_connections, stream)
+                    delete!(client.ws_callbacks, stream)
+                    delete!(client.should_reconnect, stream)
+                end
+                @info "Unsubscribed from WebSocket stream" stream
             end
             return true
         else
-            println("⚠️ Stream '$stream' not found in active connections.")
+            @warn "Stream not found in active connections" stream
             return false
         end
     end
 
     function close_all_connections(client::MarketDataStreamClient)
-        # Set all reconnection flags to false
-        for stream in keys(client.should_reconnect)
-            client.should_reconnect[stream] = false
+        tasks = lock(client.state_lock) do
+            for stream in keys(client.should_reconnect)
+                client.should_reconnect[stream] = false
+            end
+            return collect(client.ws_connections)
         end
 
-        for (stream, task) in client.ws_connections
+        for (stream, task) in tasks
             try
                 if !istaskdone(task)
                     schedule(task, InterruptException(), error=true)
                 end
             catch e
-                println("⚠️ Error stopping task for '$stream': $e")
+                @warn "Error stopping WebSocket task" stream exception=(e, catch_backtrace())
             end
         end
 
-        # Wait a brief moment for all tasks to stop
-        sleep(0.2)
+        for (stream, task) in tasks
+            wait_status = timedwait(() -> istaskdone(task), network_timeout(client))
+            wait_status == :timed_out && @warn "Timed out waiting for WebSocket task to stop" stream
+        end
 
-        empty!(client.ws_connections)
-        empty!(client.ws_callbacks)
-        empty!(client.should_reconnect)
-        println("🛑 All WebSocket connections closed.")
+        lock(client.state_lock) do
+            empty!(client.ws_connections)
+            empty!(client.ws_callbacks)
+            empty!(client.should_reconnect)
+        end
+        @info "All WebSocket connections closed"
     end
 
     function list_active_streams(client::MarketDataStreamClient)
-        return collect(keys(client.ws_connections))
+        return lock(client.state_lock) do
+            collect(keys(client.ws_connections))
+        end
     end
 
 end # end of module

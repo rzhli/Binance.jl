@@ -24,6 +24,22 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.12.0 - Precision, concurrency, and protocol hardening
+
+- **Exact order validation** — Price and quantity filters accept decimal
+  strings and fixed-point values without binary floating-point boundary errors.
+- **Thread-safe clients** — REST caches, WebSocket request state,
+  subscriptions, callbacks, and `OrderBookManager` state are synchronized;
+  callbacks execute outside internal locks.
+- **Safer SBE/FIX processing** — Added strict framing and bounds validation,
+  allocation-reduced integer codecs, supervised monitor tasks, and timeout
+  handling that does not leave orphan readers.
+- **Configuration and API fixes** — Corrected testnet endpoints, added the
+  exported `load_config` helper, restored missing root exports, and fixed
+  `REQUEST_WEIGHT` rate-limit accounting.
+- **BinanceFIX 0.5.0** — Includes the corresponding session, framing,
+  concurrency, and encoder/decoder improvements. Julia 1.11+ is supported.
+
 ### v0.11.3 - SBE incremental depth 20ms rollout
 
 - **Faster SBE depth updates** — Binance will change both the SBE WebSocket
@@ -138,6 +154,12 @@ proxy = ""  # Optional: "http://127.0.0.1:7890"
 ```
 
 See `config_example.toml` for all options.
+
+Load the configuration explicitly when needed:
+
+```julia
+config = load_config("config.toml")
+```
 
 ### Basic Usage
 

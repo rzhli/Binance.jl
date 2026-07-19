@@ -766,11 +766,11 @@ struct InstrumentListMsg
     raw_fields::Dict{Int,String}
 end
 
-struct SessionCallback
-    callback::Any
+struct SessionCallback{F}
+    callback::F
 end
 
-@inline (callback::SessionCallback)(args...) = callback.callback(args...)
+@inline (callback::SessionCallback{F})(args...) where {F} = callback.callback(args...)
 
 wrap_session_callback(::Nothing) = nothing
 wrap_session_callback(callback::SessionCallback) = callback
@@ -779,7 +779,7 @@ wrap_session_callback(callback) = SessionCallback(callback)
 mutable struct FIXSession
     host::String
     port::Int
-    socket::Union{IO,Nothing}
+    socket::Union{TCPSocket,Nothing}
     seq_num::Int
     sender_comp_id::String
     target_comp_id::String
@@ -797,7 +797,9 @@ mutable struct FIXSession
     test_req_sent_time::Union{DateTime,Nothing}
     maintenance_warning::Bool
     monitor_task::Union{Task,Nothing}
-    should_stop::Ref{Bool}
+    should_stop::Threads.Atomic{Bool}
+    read_lock::ReentrantLock
+    send_lock::ReentrantLock
 
     # Callbacks for connection events
     on_maintenance::Union{SessionCallback,Nothing}  # Called when maintenance News received
@@ -818,7 +820,8 @@ mutable struct FIXSession
         now_time = now(Dates.UTC)
         new(host, port, nothing, 1, sender_comp_id, target_comp_id, config, signer,
             session_type, false, "",
-            30, now_time, now_time, "", nothing, false, nothing, Ref(false),
+            30, now_time, now_time, "", nothing, false, nothing, Threads.Atomic{Bool}(false),
+            ReentrantLock(), ReentrantLock(),
             wrap_session_callback(on_maintenance),
             wrap_session_callback(on_disconnect),
             wrap_session_callback(on_message))
@@ -863,10 +866,10 @@ function connect_fix(session::FIXSession)
     try
         # TCP connection to local stunnel proxy
         # stunnel handles TLS termination to Binance FIX servers
-        println("DEBUG: Connecting to stunnel proxy at $(session.host):$(session.port)...")
+        @debug "Connecting to FIX stunnel proxy" host=session.host port=session.port
         tcp_socket = connect(session.host, session.port)
         session.socket = tcp_socket
-        println("Connected to FIX server via stunnel at $(session.host):$(session.port)")
+        @info "Connected to FIX server via stunnel" host=session.host port=session.port
 
         # Reset timestamps on new connection
         now_time = now(Dates.UTC)
@@ -887,12 +890,16 @@ function close_fix(session::FIXSession)
     # Stop monitor if running
     stop_monitor(session)
 
-    if !isnothing(session.socket) && isopen(session.socket)
-        close(session.socket)
-        println("FIX connection closed")
+    lock(session.read_lock) do
+        lock(session.send_lock) do
+            if !isnothing(session.socket) && isopen(session.socket)
+                close(session.socket)
+                @info "FIX connection closed"
+            end
+            session.socket = nothing
+        end
     end
 
-    session.socket = nothing
     session.is_logged_in = false
 end
 
@@ -943,6 +950,11 @@ function calculate_checksum(msg::String)
     return lpad(string(sum_val % 256), 3, '0')
 end
 
+@inline function write_fix_field(io::IO, tag, value)
+    print(io, tag, '=', value, '\x01')
+    return nothing
+end
+
 # Build message with optional timestamp (for signature consistency)
 function build_message(session::FIXSession, msg_type::String, fields::Dict{Int,String};
     timestamp::Union{String,Nothing}=nothing)
@@ -958,15 +970,16 @@ function build_message(session::FIXSession, msg_type::String, fields::Dict{Int,S
         (52, timestamp)
     ]
 
-    body_str = ""
+    body = IOBuffer()
     for (tag, value) in header_fields
-        body_str *= "$tag=$value\x01"
+        print(body, tag, '=', value, '\x01')
     end
 
     # Add body fields in sorted order for consistency
     for tag in sort(collect(keys(fields)))
-        body_str *= "$tag=$(fields[tag])\x01"
+        print(body, tag, '=', fields[tag], '\x01')
     end
+    body_str = String(take!(body))
 
     # FIX BodyLength is byte count, not character count
     # Use sizeof() for correct UTF-8 handling with non-ASCII symbols
@@ -979,14 +992,18 @@ function build_message(session::FIXSession, msg_type::String, fields::Dict{Int,S
 end
 
 function send_message(session::FIXSession, msg::String)
-    if isnothing(session.socket) || !isopen(session.socket)
-        error("FIX session not connected")
+    lock(session.send_lock) do
+        socket = session.socket
+        if isnothing(socket) || !isopen(socket)
+            error("FIX session not connected")
+        end
+        write(socket, msg)
+        flush(socket)
+        @debug "Sent FIX message" bytes=sizeof(msg)
+        session.seq_num += 1
+        session.last_sent_time = now(Dates.UTC)
     end
-    write(session.socket, msg)
-    flush(session.socket)
-    println("DEBUG: Sent message: $(replace(msg, "\x01" => "|"))")
-    session.seq_num += 1
-    session.last_sent_time = now(Dates.UTC)
+    return nothing
 end
 
 function logon(session::FIXSession;
@@ -1072,7 +1089,7 @@ function logon(session::FIXSession;
     end
 
     msg = build_message(session, msg_type, fields; timestamp=timestamp)
-    println("Sending Logon...")
+    @info "Sending FIX Logon"
     send_message(session, msg)
 
     # Wait for Logon response from server
@@ -1097,7 +1114,7 @@ function logon(session::FIXSession;
 
             if msg_type_recv == MSG_LOGON
                 session.is_logged_in = true
-                println("Logon confirmed by server")
+                @info "FIX Logon confirmed by server"
                 break
             elseif msg_type_recv == MSG_LOGOUT
                 logout_text = get(parsed_fields, TAG_TEXT, "Unknown reason")
@@ -1124,7 +1141,7 @@ function logout(session::FIXSession; text::String="")
     end
 
     msg = build_message(session, MSG_LOGOUT, fields)
-    println("Sending Logout...")
+    @info "Sending FIX Logout"
     send_message(session, msg)
     session.is_logged_in = false
 end
@@ -2250,25 +2267,25 @@ function new_order_list(session::FIXSession, symbol::String, orders::Vector{Dict
 
     # Build message manually for repeating groups
     timestamp = get_timestamp()
-    body_str = ""
+    body = IOBuffer()
 
     # Header fields
-    body_str *= "$(TAG_MSG_TYPE)=$(MSG_NEW_ORDER_LIST)\x01"
-    body_str *= "$(TAG_SENDER_COMP_ID)=$(session.sender_comp_id)\x01"
-    body_str *= "$(TAG_TARGET_COMP_ID)=$(session.target_comp_id)\x01"
-    body_str *= "$(TAG_MSG_SEQ_NUM)=$(session.seq_num)\x01"
-    body_str *= "$(TAG_SENDING_TIME)=$timestamp\x01"
+    write_fix_field(body, TAG_MSG_TYPE, MSG_NEW_ORDER_LIST)
+    write_fix_field(body, TAG_SENDER_COMP_ID, session.sender_comp_id)
+    write_fix_field(body, TAG_TARGET_COMP_ID, session.target_comp_id)
+    write_fix_field(body, TAG_MSG_SEQ_NUM, session.seq_num)
+    write_fix_field(body, TAG_SENDING_TIME, timestamp)
 
     # List fields
-    body_str *= "$(TAG_CL_LIST_ID)=$cl_list_id\x01"
-    body_str *= "$(TAG_CONTINGENCY_TYPE)=$contingency_type\x01"
+    write_fix_field(body, TAG_CL_LIST_ID, cl_list_id)
+    write_fix_field(body, TAG_CONTINGENCY_TYPE, contingency_type)
 
     # OPO (One Party Only) flag - Optional
     if opo
-        body_str *= "$(TAG_OPO)=Y\x01"
+        write_fix_field(body, TAG_OPO, 'Y')
     end
 
-    body_str *= "$(TAG_NO_ORDERS)=$num_orders\x01"
+    write_fix_field(body, TAG_NO_ORDERS, num_orders)
 
     # Add each order with all supported fields
     for (i, order) in enumerate(orders)
@@ -2279,35 +2296,35 @@ function new_order_list(session::FIXSession, symbol::String, orders::Vector{Dict
         end
 
         # Required fields
-        body_str *= "$(TAG_CL_ORD_ID)=$cl_ord_id\x01"
-        body_str *= "$(TAG_SYMBOL)=$symbol\x01"
-        body_str *= "$(TAG_SIDE)=$(order[:side])\x01"
-        body_str *= "$(TAG_ORD_TYPE)=$(order[:ord_type])\x01"
+        write_fix_field(body, TAG_CL_ORD_ID, cl_ord_id)
+        write_fix_field(body, TAG_SYMBOL, symbol)
+        write_fix_field(body, TAG_SIDE, order[:side])
+        write_fix_field(body, TAG_ORD_TYPE, order[:ord_type])
 
         # Quantity (one of these is required)
         if haskey(order, :quantity)
-            body_str *= "$(TAG_ORDER_QTY)=$(order[:quantity])\x01"
+            write_fix_field(body, TAG_ORDER_QTY, order[:quantity])
         end
         if haskey(order, :cash_order_qty)
-            body_str *= "$(TAG_CASH_ORDER_QTY)=$(order[:cash_order_qty])\x01"
+            write_fix_field(body, TAG_CASH_ORDER_QTY, order[:cash_order_qty])
         end
 
         # Price and time in force
         if haskey(order, :price)
-            body_str *= "$(TAG_PRICE)=$(order[:price])\x01"
+            write_fix_field(body, TAG_PRICE, order[:price])
         end
         if haskey(order, :time_in_force)
-            body_str *= "$(TAG_TIME_IN_FORCE)=$(order[:time_in_force])\x01"
+            write_fix_field(body, TAG_TIME_IN_FORCE, order[:time_in_force])
         end
 
         # Execution instructions
         if haskey(order, :exec_inst)
-            body_str *= "$(TAG_EXEC_INST)=$(order[:exec_inst])\x01"
+            write_fix_field(body, TAG_EXEC_INST, order[:exec_inst])
         end
 
         # Iceberg
         if haskey(order, :max_floor)
-            body_str *= "$(TAG_MAX_FLOOR)=$(order[:max_floor])\x01"
+            write_fix_field(body, TAG_MAX_FLOOR, order[:max_floor])
         end
 
         # Strategy
@@ -2315,63 +2332,65 @@ function new_order_list(session::FIXSession, symbol::String, orders::Vector{Dict
             if order[:target_strategy] < 1000000
                 error("Order $i: TargetStrategy must be >= 1000000")
             end
-            body_str *= "$(TAG_TARGET_STRATEGY)=$(order[:target_strategy])\x01"
+            write_fix_field(body, TAG_TARGET_STRATEGY, order[:target_strategy])
         end
         if haskey(order, :strategy_id)
-            body_str *= "$(TAG_STRATEGY_ID)=$(order[:strategy_id])\x01"
+            write_fix_field(body, TAG_STRATEGY_ID, order[:strategy_id])
         end
 
         # Self-trade prevention
         if haskey(order, :self_trade_prevention)
-            body_str *= "$(TAG_SELF_TRADE_PREVENTION)=$(order[:self_trade_prevention])\x01"
+            write_fix_field(body, TAG_SELF_TRADE_PREVENTION, order[:self_trade_prevention])
         end
 
         # Pegged order fields
         if haskey(order, :peg_offset_value)
-            body_str *= "$(TAG_PEG_OFFSET_VALUE)=$(order[:peg_offset_value])\x01"
+            write_fix_field(body, TAG_PEG_OFFSET_VALUE, order[:peg_offset_value])
             # PegMoveType is required for pegged orders
-            body_str *= "$(TAG_PEG_MOVE_TYPE)=$(PEG_MOVE_FIXED)\x01"
+            write_fix_field(body, TAG_PEG_MOVE_TYPE, PEG_MOVE_FIXED)
         end
         if haskey(order, :peg_price_type)
-            body_str *= "$(TAG_PEG_PRICE_TYPE)=$(order[:peg_price_type])\x01"
+            write_fix_field(body, TAG_PEG_PRICE_TYPE, order[:peg_price_type])
         end
         if haskey(order, :peg_offset_type)
-            body_str *= "$(TAG_PEG_OFFSET_TYPE)=$(order[:peg_offset_type])\x01"
+            write_fix_field(body, TAG_PEG_OFFSET_TYPE, order[:peg_offset_type])
         end
 
         # Trigger/Stop order fields
         if haskey(order, :trigger_price)
-            body_str *= "$(TAG_TRIGGER_PRICE)=$(order[:trigger_price])\x01"
+            write_fix_field(body, TAG_TRIGGER_PRICE, order[:trigger_price])
             # Set required trigger fields
-            body_str *= "$(TAG_TRIGGER_TYPE)=$(TRIGGER_TYPE_PRICE_MOVEMENT)\x01"
-            body_str *= "$(TAG_TRIGGER_ACTION)=$(TRIGGER_ACTION_ACTIVATE)\x01"
-            body_str *= "$(TAG_TRIGGER_PRICE_TYPE)=$(TRIGGER_PRICE_TYPE_LAST_TRADE)\x01"
+            write_fix_field(body, TAG_TRIGGER_TYPE, TRIGGER_TYPE_PRICE_MOVEMENT)
+            write_fix_field(body, TAG_TRIGGER_ACTION, TRIGGER_ACTION_ACTIVATE)
+            write_fix_field(body, TAG_TRIGGER_PRICE_TYPE, TRIGGER_PRICE_TYPE_LAST_TRADE)
         end
         if haskey(order, :trigger_price_direction)
-            body_str *= "$(TAG_TRIGGER_PRICE_DIRECTION)=$(order[:trigger_price_direction])\x01"
+            write_fix_field(body, TAG_TRIGGER_PRICE_DIRECTION, order[:trigger_price_direction])
         end
         if haskey(order, :trigger_trailing_delta_bips)
-            body_str *= "$(TAG_TRIGGER_TRAILING_DELTA_BIPS)=$(order[:trigger_trailing_delta_bips])\x01"
+            write_fix_field(body, TAG_TRIGGER_TRAILING_DELTA_BIPS, order[:trigger_trailing_delta_bips])
         end
 
         # List triggering instructions (for OTO/OTOCO)
         if haskey(order, :list_trigger_instructions)
             instructions = order[:list_trigger_instructions]
-            body_str *= "$(TAG_NO_LIST_TRIGGERING_INSTRUCTIONS)=$(length(instructions))\x01"
+            write_fix_field(body, TAG_NO_LIST_TRIGGERING_INSTRUCTIONS, length(instructions))
 
             for instr in instructions
                 if haskey(instr, :trigger_type)
-                    body_str *= "$(TAG_LIST_TRIGGER_TYPE)=$(instr[:trigger_type])\x01"
+                    write_fix_field(body, TAG_LIST_TRIGGER_TYPE, instr[:trigger_type])
                 end
                 if haskey(instr, :trigger_index)
-                    body_str *= "$(TAG_LIST_TRIGGER_TRIGGER_INDEX)=$(instr[:trigger_index])\x01"
+                    write_fix_field(body, TAG_LIST_TRIGGER_TRIGGER_INDEX, instr[:trigger_index])
                 end
                 if haskey(instr, :action)
-                    body_str *= "$(TAG_LIST_TRIGGER_ACTION)=$(instr[:action])\x01"
+                    write_fix_field(body, TAG_LIST_TRIGGER_ACTION, instr[:action])
                 end
             end
         end
     end
+
+    body_str = String(take!(body))
 
     # FIX BodyLength is byte count, not character count
     # Use sizeof() for correct UTF-8 handling with non-ASCII symbols
@@ -2665,46 +2684,48 @@ function market_data_request(session::FIXSession, symbols::Vector{String};
 
     # Build message manually for repeating groups
     timestamp = get_timestamp()
-    body_str = ""
+    body = IOBuffer()
 
     # Header fields
-    body_str *= "$(TAG_MSG_TYPE)=$(MSG_MARKET_DATA_REQUEST)\x01"
-    body_str *= "$(TAG_SENDER_COMP_ID)=$(session.sender_comp_id)\x01"
-    body_str *= "$(TAG_TARGET_COMP_ID)=$(session.target_comp_id)\x01"
-    body_str *= "$(TAG_MSG_SEQ_NUM)=$(session.seq_num)\x01"
-    body_str *= "$(TAG_SENDING_TIME)=$timestamp\x01"
+    write_fix_field(body, TAG_MSG_TYPE, MSG_MARKET_DATA_REQUEST)
+    write_fix_field(body, TAG_SENDER_COMP_ID, session.sender_comp_id)
+    write_fix_field(body, TAG_TARGET_COMP_ID, session.target_comp_id)
+    write_fix_field(body, TAG_MSG_SEQ_NUM, session.seq_num)
+    write_fix_field(body, TAG_SENDING_TIME, timestamp)
 
     # MarketDataRequest fields
-    body_str *= "$(TAG_MD_REQ_ID)=$md_req_id\x01"
-    body_str *= "$(TAG_SUBSCRIPTION_REQUEST_TYPE)=$subscription_type\x01"
+    write_fix_field(body, TAG_MD_REQ_ID, md_req_id)
+    write_fix_field(body, TAG_SUBSCRIPTION_REQUEST_TYPE, subscription_type)
 
     if market_depth > 0
-        body_str *= "$(TAG_MARKET_DEPTH)=$market_depth\x01"
+        write_fix_field(body, TAG_MARKET_DEPTH, market_depth)
     end
 
     # For unsubscription, only MDReqID and SubscriptionRequestType are needed
     if subscription_type == MD_SUBSCRIBE
         # AggregatedBook
         if aggregated_book
-            body_str *= "$(TAG_AGGREGATED_BOOK)=Y\x01"
+            write_fix_field(body, TAG_AGGREGATED_BOOK, 'Y')
         end
 
         # NoRelatedSym group
         if !isempty(symbols)
-            body_str *= "$(TAG_NO_RELATED_SYM)=$(length(symbols))\x01"
+            write_fix_field(body, TAG_NO_RELATED_SYM, length(symbols))
             for symbol in symbols
-                body_str *= "$(TAG_SYMBOL)=$symbol\x01"
+                write_fix_field(body, TAG_SYMBOL, symbol)
             end
         end
 
         # NoMDEntryTypes group
         if !isempty(entry_types)
-            body_str *= "$(TAG_NO_MD_ENTRY_TYPES)=$(length(entry_types))\x01"
+            write_fix_field(body, TAG_NO_MD_ENTRY_TYPES, length(entry_types))
             for et in entry_types
-                body_str *= "$(TAG_MD_ENTRY_TYPE)=$et\x01"
+                write_fix_field(body, TAG_MD_ENTRY_TYPE, et)
             end
         end
     end
+
+    body_str = String(take!(body))
 
     # FIX BodyLength is byte count, not character count
     # Use sizeof() for correct UTF-8 handling with non-ASCII symbols
@@ -2895,97 +2916,80 @@ Receive and return raw FIX message(s) from the session.
 Returns a vector of raw message strings, or empty vector if no data available.
 """
 function receive_message(session::FIXSession; timeout_ms::Int=0, verbose::Bool=false)
-    if isnothing(session.socket) || !isopen(session.socket)
-        return String[]
-    end
-
-    # Read data using async task with timeout
-    try
-        max_wait_sec = timeout_ms > 0 ? timeout_ms / 1000.0 : 0.1
-
-        # Create an async read task
-        read_task = @async begin
+    timeout_ms >= 0 || throw(ArgumentError("timeout_ms must be non-negative"))
+    return lock(session.read_lock) do
+        socket = session.socket
+        if isnothing(socket) || !isopen(socket)
+            return String[]
+        end
+        try
+            max_wait_sec = timeout_ms > 0 ? timeout_ms / 1000 : 0.1
+            deadline = time() + max_wait_sec
             buf = IOBuffer()
-            start_time = time()
-            while isopen(session.socket) && (time() - start_time) < max_wait_sec + 1.0
-                # For process pipes, check if data is available
-                if bytesavailable(session.socket) > 0
-                    byte = read(session.socket, UInt8)
-                    write(buf, byte)
-                    # Check if we have a complete message (ends with checksum pattern)
+            while isopen(socket) && time() < deadline
+                available = bytesavailable(socket)
+                if available > 0
+                    write(buf, read(socket, available))
                     data = String(take!(copy(buf)))
                     if occursin(r"10=\d{3}\x01", data)
-                        return String(take!(buf))
+                        break
                     end
                 else
-                    sleep(0.001)  # Small sleep to avoid busy loop
+                    sleep(min(0.001, max(deadline - time(), 0.0)))
                 end
             end
-            return String(take!(buf))
-        end
-
-        # Wait with timeout
-        timer = Timer(max_wait_sec)
-        while !istaskdone(read_task) && isopen(timer)
-            sleep(0.01)
-        end
-        close(timer)
-
-        if istaskdone(read_task)
-            data = fetch(read_task)
+            data = String(take!(buf))
             if !isempty(data)
                 session.recv_buffer *= data
             end
-        end
-    catch e
-        if !(e isa EOFError || e isa Base.IOError)
-            @warn "Error reading from socket: $e"
-        end
-    end
-
-    # Extract complete messages from buffer
-    messages = String[]
-    while true
-        # Look for message start
-        begin_idx = findfirst("8=FIX", session.recv_buffer)
-        if isnothing(begin_idx)
-            if !isempty(session.recv_buffer)
-                println("DEBUG: Buffer has $(length(session.recv_buffer)) bytes but no start tag found yet")
+        catch e
+            if !(e isa EOFError || e isa Base.IOError)
+                @warn "Error reading from socket" exception=(e, catch_backtrace())
             end
-            session.recv_buffer = ""
-            break
+        end
+        # Extract complete messages from buffer
+        messages = String[]
+        while true
+            # Look for message start
+            begin_idx = findfirst("8=FIX", session.recv_buffer)
+            if isnothing(begin_idx)
+                if !isempty(session.recv_buffer)
+                    verbose && @debug "FIX receive buffer has no message start" bytes=sizeof(session.recv_buffer)
+                end
+                session.recv_buffer = ""
+                break
+            end
+
+            # Look for checksum field (message end)
+            checksum_pattern = r"10=\d{3}\x01"
+            checksum_match = match(checksum_pattern, session.recv_buffer, begin_idx[1])
+            if isnothing(checksum_match)
+                verbose && @debug "Found incomplete FIX message in receive buffer"
+                break
+            end
+
+            # Extract complete message
+            msg_end = checksum_match.offset + length(checksum_match.match) - 1
+            msg = session.recv_buffer[begin_idx[1]:msg_end]
+            push!(messages, msg)
+            @debug "Extracted complete FIX message" bytes=sizeof(msg)
+
+            # Remove processed message from buffer
+            session.recv_buffer = session.recv_buffer[msg_end+1:end]
+
+            if verbose
+                readable = replace(msg, "\x01" => "|")
+                @debug "Received FIX message" message=readable
+            end
         end
 
-        # Look for checksum field (message end)
-        checksum_pattern = r"10=\d{3}\x01"
-        checksum_match = match(checksum_pattern, session.recv_buffer, begin_idx[1])
-        if isnothing(checksum_match)
-            # Incomplete message, keep buffer
-            println("DEBUG: Found message start but no end tag yet")
-            break
+        # Update last received time if we got any messages
+        if !isempty(messages)
+            session.last_recv_time = now(Dates.UTC)
         end
 
-        # Extract complete message
-        msg_end = checksum_match.offset + length(checksum_match.match) - 1
-        msg = session.recv_buffer[begin_idx[1]:msg_end]
-        push!(messages, msg)
-        println("DEBUG: Extracted full message: $(replace(msg, "\x01" => "|"))")
-
-        # Remove processed message from buffer
-        session.recv_buffer = session.recv_buffer[msg_end+1:end]
-
-        if verbose
-            readable = replace(msg, "\x01" => "|")
-            println("Received: $readable")
-        end
+        return messages
     end
-
-    # Update last received time if we got any messages
-    if !isempty(messages)
-        session.last_recv_time = now(Dates.UTC)
-    end
-
-    return messages
 end
 
 """
@@ -4138,7 +4142,7 @@ function start_monitor(session::FIXSession)
 
     session.should_stop[] = false
 
-    session.monitor_task = @async begin
+    session.monitor_task = errormonitor(@async begin
         try
             monitor_loop(session)
         catch e
@@ -4149,9 +4153,9 @@ function start_monitor(session::FIXSession)
                 end
             end
         end
-    end
+    end)
 
-    println("Connection monitor started (HeartBtInt=$(session.heartbeat_interval)s)")
+    @info "FIX connection monitor started" heartbeat_interval=session.heartbeat_interval
 end
 
 """
@@ -4163,16 +4167,13 @@ function stop_monitor(session::FIXSession)
     session.should_stop[] = true
 
     if !isnothing(session.monitor_task) && !istaskdone(session.monitor_task)
-        # Give it a moment to stop gracefully
-        for _ in 1:10
-            if istaskdone(session.monitor_task)
-                break
-            end
-            sleep(0.1)
-        end
+        wait_status = timedwait(() -> istaskdone(session.monitor_task), 2.0)
+        wait_status == :timed_out && @warn "Timed out waiting for FIX monitor to stop"
     end
 
-    session.monitor_task = nothing
+    if isnothing(session.monitor_task) || istaskdone(session.monitor_task)
+        session.monitor_task = nothing
+    end
 end
 
 """
@@ -4297,7 +4298,7 @@ function reconnect(session::FIXSession; heartbeat_interval::Int=session.heartbea
     end
 
     if session.is_logged_in
-        println("Reconnected successfully")
+        @info "FIX session reconnected successfully"
         start_monitor(session)
         return true
     else

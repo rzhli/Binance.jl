@@ -57,7 +57,9 @@ mutable struct SBEBuffer
     block_length::UInt16  # Size of root block (set by mark_block_end!)
 
     function SBEBuffer(initial_size::Int=1024)
-        buf = new(zeros(UInt8, initial_size), 1, 0, UInt16(0))
+        initial_size > 0 || throw(ArgumentError("initial_size must be positive"))
+        capacity = max(initial_size, SBE_SOFH_SIZE + SBE_MESSAGE_HEADER_SIZE)
+        buf = new(zeros(UInt8, capacity), 1, 0, UInt16(0))
         # Reserve space for SOFH (6 bytes) + message header (20 bytes)
         buf.position = SBE_SOFH_SIZE + SBE_MESSAGE_HEADER_SIZE + 1
         buf.body_start = buf.position
@@ -76,6 +78,28 @@ end
 # Low-Level Write Functions (Little Endian)
 # =============================================================================
 
+@inline function store_uint16!(data::Vector{UInt8}, position::Int, value::UInt16)
+    @inbounds begin
+        data[position] = UInt8(value & 0xff)
+        data[position + 1] = UInt8(value >> 8)
+    end
+    return nothing
+end
+
+@inline function store_uint32!(data::Vector{UInt8}, position::Int, value::UInt32)
+    @inbounds for shift in 0:8:24
+        data[position + (shift >>> 3)] = UInt8((value >> shift) & 0xff)
+    end
+    return nothing
+end
+
+@inline function store_uint64!(data::Vector{UInt8}, position::Int, value::UInt64)
+    @inbounds for shift in 0:8:56
+        data[position + (shift >>> 3)] = UInt8((value >> shift) & 0xff)
+    end
+    return nothing
+end
+
 function write_uint8!(buf::SBEBuffer, value::UInt8)
     ensure_capacity!(buf, 1)
     buf.data[buf.position] = value
@@ -90,45 +114,36 @@ end
 
 function write_uint16!(buf::SBEBuffer, value::UInt16)
     ensure_capacity!(buf, 2)
-    bytes = reinterpret(UInt8, [value])
-    buf.data[buf.position:buf.position+1] = bytes
+    store_uint16!(buf.data, buf.position, value)
     buf.position += 2
 end
 
 function write_uint32!(buf::SBEBuffer, value::UInt32)
     ensure_capacity!(buf, 4)
-    bytes = reinterpret(UInt8, [value])
-    buf.data[buf.position:buf.position+3] = bytes
+    store_uint32!(buf.data, buf.position, value)
     buf.position += 4
 end
 
 function write_int32!(buf::SBEBuffer, value::Int32)
-    ensure_capacity!(buf, 4)
-    bytes = reinterpret(UInt8, [value])
-    buf.data[buf.position:buf.position+3] = bytes
-    buf.position += 4
+    write_uint32!(buf, reinterpret(UInt32, value))
 end
 
 function write_uint64!(buf::SBEBuffer, value::UInt64)
     ensure_capacity!(buf, 8)
-    bytes = reinterpret(UInt8, [value])
-    buf.data[buf.position:buf.position+7] = bytes
+    store_uint64!(buf.data, buf.position, value)
     buf.position += 8
 end
 
 function write_int64!(buf::SBEBuffer, value::Int64)
-    ensure_capacity!(buf, 8)
-    bytes = reinterpret(UInt8, [value])
-    buf.data[buf.position:buf.position+7] = bytes
-    buf.position += 8
+    write_uint64!(buf, reinterpret(UInt64, value))
 end
 
 """Write fixed-length string, padding with nulls"""
 function write_fixed_string!(buf::SBEBuffer, value::String, length::Int)
     ensure_capacity!(buf, length)
-    bytes = Vector{UInt8}(value)
+    bytes = codeunits(value)
     actual_len = min(Base.length(bytes), length)
-    buf.data[buf.position:buf.position+actual_len-1] = bytes[1:actual_len]
+    actual_len > 0 && copyto!(buf.data, buf.position, bytes, 1, actual_len)
     # Pad with nulls
     for i in actual_len+1:length
         buf.data[buf.position+i-1] = 0x00
@@ -138,25 +153,25 @@ end
 
 """Write variable-length string with uint8 length prefix"""
 function write_var_string8!(buf::SBEBuffer, value::String)
-    bytes = Vector{UInt8}(value)
+    bytes = codeunits(value)
     len = UInt8(min(Base.length(bytes), 255))
     write_uint8!(buf, len)
     if len > 0
         ensure_capacity!(buf, len)
-        buf.data[buf.position:buf.position+len-1] = bytes[1:len]
-        buf.position += len
+        copyto!(buf.data, buf.position, bytes, 1, Int(len))
+        buf.position += Int(len)
     end
 end
 
 """Write variable-length string with uint16 length prefix"""
 function write_var_string16!(buf::SBEBuffer, value::String)
-    bytes = Vector{UInt8}(value)
+    bytes = codeunits(value)
     len = UInt16(min(Base.length(bytes), 65535))
     write_uint16!(buf, len)
     if len > 0
         ensure_capacity!(buf, len)
-        buf.data[buf.position:buf.position+len-1] = bytes[1:len]
-        buf.position += len
+        copyto!(buf.data, buf.position, bytes, 1, Int(len))
+        buf.position += Int(len)
     end
 end
 
@@ -184,8 +199,8 @@ function encode_sofh!(buf::SBEBuffer)
     message_length = UInt32(buf.position - 1)
 
     # Write at position 1
-    buf.data[1:4] = reinterpret(UInt8, [message_length])
-    buf.data[5:6] = reinterpret(UInt8, [SBE_ENCODING_TYPE_LE])
+    store_uint32!(buf.data, 1, message_length)
+    store_uint16!(buf.data, 5, SBE_ENCODING_TYPE_LE)
 end
 
 """
@@ -204,17 +219,17 @@ function encode_message_header!(buf::SBEBuffer, templateId::UInt16, seqNum::UInt
     pos = SBE_SOFH_SIZE + 1  # Position 7
 
     # blockLength (2)
-    buf.data[pos:pos+1] = reinterpret(UInt8, [block_length])
+    store_uint16!(buf.data, pos, block_length)
     # templateId (2)
-    buf.data[pos+2:pos+3] = reinterpret(UInt8, [templateId])
+    store_uint16!(buf.data, pos + 2, templateId)
     # schemaId (2)
-    buf.data[pos+4:pos+5] = reinterpret(UInt8, [SBE_SCHEMA_ID_FIX])
+    store_uint16!(buf.data, pos + 4, SBE_SCHEMA_ID_FIX)
     # version (2)
-    buf.data[pos+6:pos+7] = reinterpret(UInt8, [SBE_SCHEMA_VERSION_FIX])
+    store_uint16!(buf.data, pos + 6, SBE_SCHEMA_VERSION_FIX)
     # seqNum (4)
-    buf.data[pos+8:pos+11] = reinterpret(UInt8, [seqNum])
+    store_uint32!(buf.data, pos + 8, seqNum)
     # sendingTime (8)
-    buf.data[pos+12:pos+19] = reinterpret(UInt8, [sending_time])
+    store_uint64!(buf.data, pos + 12, reinterpret(UInt64, sending_time))
 end
 
 """
@@ -231,7 +246,8 @@ end
 function finalize_message!(buf::SBEBuffer, templateId::UInt16, seqNum::UInt32)
     encode_message_header!(buf, templateId, seqNum)
     encode_sofh!(buf)
-    return buf.data[1:buf.position-1]
+    resize!(buf.data, buf.position - 1)
+    return buf.data
 end
 
 # =============================================================================

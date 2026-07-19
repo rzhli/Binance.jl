@@ -180,12 +180,12 @@ end
 
 """Read variable-length UTF-8 string (varString8)"""
 @inline function read_var_string(data::Vector{UInt8}, offset::Int)
-    @inbounds length = data[offset]
-    if length == 0
+    nbytes = Int(data[offset])
+    if nbytes == 0
         return "", offset + 1
     end
-    @inbounds str = String(view(data, offset+1:offset+length))
-    return str, offset + 1 + length
+    str = String(view(data, offset+1:offset+nbytes))
+    return str, offset + 1 + nbytes
 end
 
 # ============================================================================
@@ -194,30 +194,30 @@ end
 
 """Read UInt8 from byte array"""
 @inline function read_uint8(data::Vector{UInt8}, offset::Int)
-    @inbounds return data[offset]
+    return data[offset]
 end
 
 """Read Int8 from byte array"""
 @inline function read_int8(data::Vector{UInt8}, offset::Int)
-    @inbounds return reinterpret(Int8, data[offset])
+    return reinterpret(Int8, data[offset])
 end
 
 """Read UInt16 from byte array (little endian)"""
 @inline function read_uint16(data::Vector{UInt8}, offset::Int)
-    @inbounds return UInt16(data[offset]) | (UInt16(data[offset+1]) << 8)
+    return UInt16(data[offset]) | (UInt16(data[offset+1]) << 8)
 end
 
 """Read UInt32 from byte array (little endian)"""
 @inline function read_uint32(data::Vector{UInt8}, offset::Int)
-    @inbounds return UInt32(data[offset]) |
-                    (UInt32(data[offset+1]) << 8) |
-                    (UInt32(data[offset+2]) << 16) |
-                    (UInt32(data[offset+3]) << 24)
+    return UInt32(data[offset]) |
+           (UInt32(data[offset+1]) << 8) |
+           (UInt32(data[offset+2]) << 16) |
+           (UInt32(data[offset+3]) << 24)
 end
 
 """Read Int64 from byte array (little endian)"""
 @inline function read_int64(data::Vector{UInt8}, offset::Int)
-    @inbounds return reinterpret(Int64,
+    return reinterpret(Int64,
         UInt64(data[offset]) |
         (UInt64(data[offset+1]) << 8) |
         (UInt64(data[offset+2]) << 16) |
@@ -226,6 +226,16 @@ end
         (UInt64(data[offset+5]) << 40) |
         (UInt64(data[offset+6]) << 48) |
         (UInt64(data[offset+7]) << 56))
+end
+
+@inline function checked_group_count(
+    data::Vector{UInt8}, offset::Int, count::Integer, entry_size::Int, min_tail::Int, label::String,
+)
+    remaining = length(data) - offset + 1
+    if remaining < min_tail || count > (remaining - min_tail) ÷ entry_size
+        throw(ArgumentError("Truncated SBE $label group: count=$count, remaining=$remaining bytes"))
+    end
+    return Int(count)
 end
 
 # ============================================================================
@@ -261,6 +271,9 @@ Decode complete SBE message including header and body.
 """
 function decode_sbe_message(data::Vector{UInt8})
     header = decode_sbe_header(data)
+    header.schemaId == SCHEMA_ID || throw(ArgumentError(
+        "Unsupported SBE schema ID $(header.schemaId); expected $SCHEMA_ID",
+    ))
 
     # Route to appropriate decoder based on template ID
     if header.templateId == TEMPLATE_ID_TRADES
@@ -301,10 +314,11 @@ function decode_trades_event(data::Vector{UInt8}, ::SBEMessageHeader)
 
     numInGroup = read_uint32(data, offset)
     offset += 4
+    trade_count = checked_group_count(data, offset, numInGroup, 25, 1, "trades")
 
     # Pre-allocate vector with exact size
-    trades = Vector{TradeData}(undef, numInGroup)
-    @inbounds for i in 1:numInGroup
+    trades = Vector{TradeData}(undef, trade_count)
+    @inbounds for i in 1:trade_count
         # Each trade: id (8) + price (8) + qty (8) + isBuyerMaker (1)
         # Note: isBestMatch is presence="constant", NOT encoded in message
         tradeId = read_int64(data, offset)
@@ -405,10 +419,11 @@ function decode_depth_snapshot_event(data::Vector{UInt8}, ::SBEMessageHeader)
 
     bids_numInGroup = read_uint16(data, offset)
     offset += 2
+    bid_count = checked_group_count(data, offset, bids_numInGroup, 16, 5, "snapshot bids")
 
     # Pre-allocate bids vector
-    bids = Vector{PriceLevel}(undef, bids_numInGroup)
-    @inbounds for i in 1:bids_numInGroup
+    bids = Vector{PriceLevel}(undef, bid_count)
+    @inbounds for i in 1:bid_count
         priceMantissa = read_int64(data, offset)
         offset += 8
 
@@ -426,10 +441,11 @@ function decode_depth_snapshot_event(data::Vector{UInt8}, ::SBEMessageHeader)
 
     asks_numInGroup = read_uint16(data, offset)
     offset += 2
+    ask_count = checked_group_count(data, offset, asks_numInGroup, 16, 1, "snapshot asks")
 
     # Pre-allocate asks vector
-    asks = Vector{PriceLevel}(undef, asks_numInGroup)
-    @inbounds for i in 1:asks_numInGroup
+    asks = Vector{PriceLevel}(undef, ask_count)
+    @inbounds for i in 1:ask_count
         priceMantissa = read_int64(data, offset)
         offset += 8
 
@@ -477,10 +493,11 @@ function decode_depth_diff_event(data::Vector{UInt8}, ::SBEMessageHeader)
 
     bids_numInGroup = read_uint16(data, offset)
     offset += 2
+    bid_count = checked_group_count(data, offset, bids_numInGroup, 16, 5, "depth bids")
 
     # Pre-allocate bids vector
-    bids = Vector{PriceLevel}(undef, bids_numInGroup)
-    @inbounds for i in 1:bids_numInGroup
+    bids = Vector{PriceLevel}(undef, bid_count)
+    @inbounds for i in 1:bid_count
         priceMantissa = read_int64(data, offset)
         offset += 8
 
@@ -499,10 +516,11 @@ function decode_depth_diff_event(data::Vector{UInt8}, ::SBEMessageHeader)
 
     asks_numInGroup = read_uint16(data, offset)
     offset += 2
+    ask_count = checked_group_count(data, offset, asks_numInGroup, 16, 1, "depth asks")
 
     # Pre-allocate asks vector
-    asks = Vector{PriceLevel}(undef, asks_numInGroup)
-    @inbounds for i in 1:asks_numInGroup
+    asks = Vector{PriceLevel}(undef, ask_count)
+    @inbounds for i in 1:ask_count
         priceMantissa = read_int64(data, offset)
         offset += 8
 

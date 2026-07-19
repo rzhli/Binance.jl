@@ -69,14 +69,58 @@ module RateLimiter
     - `retry_after`: Either seconds to wait (if < 1000000000) or epoch timestamp in milliseconds
     """
     function set_backoff!(rate_limiter::BinanceRateLimit, retry_after::Int)
-        lock(rate_limiter.lock) do
+        retry_after >= 0 || throw(ArgumentError("retry_after must be non-negative"))
+
+        backoff_until = lock(rate_limiter.lock) do
             # Determine if retry_after is seconds or epoch timestamp
             if retry_after < 1000000000  # Likely seconds
                 rate_limiter.backoff_until = now(UTC) + Second(retry_after)
             else  # Likely epoch timestamp in milliseconds
                 rate_limiter.backoff_until = unix2datetime(retry_after / 1000)
             end
-            @warn "Rate limit exceeded. Backing off until $(rate_limiter.backoff_until) UTC."
+            return rate_limiter.backoff_until
+        end
+        @warn "Rate limit exceeded. Backing off until $backoff_until UTC."
+        return backoff_until
+    end
+
+    function wait_for_backoff(rate_limiter::BinanceRateLimit)
+        while true
+            sleep_duration = lock(rate_limiter.lock) do
+                current_time = now(UTC)
+                if rate_limiter.backoff_until == NO_BACKOFF || current_time >= rate_limiter.backoff_until
+                    rate_limiter.backoff_until = NO_BACKOFF
+                    return 0.0
+                end
+                return Dates.value(rate_limiter.backoff_until - current_time) / 1000
+            end
+
+            sleep_duration <= 0 && return nothing
+            @info "Sleeping for $(round(sleep_duration, digits=2)) seconds due to rate limit backoff."
+            sleep(sleep_duration)
+        end
+    end
+
+    function reserve_request!(limit::APILimit)
+        while true
+            sleep_seconds = lock(limit.lock) do
+                current_time = now(UTC)
+                window_start = current_time - Millisecond(limit.interval_ms)
+                filter!(>(window_start), limit.requests)
+
+                if length(limit.requests) < limit.limit
+                    push!(limit.requests, current_time)
+                    return 0.0
+                end
+
+                oldest_request_time = first(limit.requests)
+                wait_period = oldest_request_time + Millisecond(limit.interval_ms) - current_time
+                return max(Dates.value(wait_period) / 1000, 0.0)
+            end
+
+            sleep_seconds <= 0 && continue
+            @debug "Approaching $(limit.limit_type) limit. Sleeping for $(round(sleep_seconds, digits=2)) seconds."
+            sleep(sleep_seconds)
         end
     end
 
@@ -85,50 +129,19 @@ module RateLimiter
     Also handles the reactive backoff set by `set_backoff`.
     """
     function check_and_wait(rate_limiter::BinanceRateLimit, request_type::String)
-        # 1. Handle reactive backoff from 429/418 errors
-        lock(rate_limiter.lock) do
-            if rate_limiter.backoff_until != NO_BACKOFF && now(UTC) < rate_limiter.backoff_until
-                sleep_duration = (rate_limiter.backoff_until - now(UTC)).value / 1000.0
-                if sleep_duration > 0
-                    @info "Sleeping for $(round(sleep_duration, digits=2)) seconds due to rate limit backoff."
-                    sleep(sleep_duration)
-                end
-                rate_limiter.backoff_until = NO_BACKOFF # Reset after waiting
-            end
+        wait_for_backoff(rate_limiter)
+
+        # Copying at most five small limit objects keeps iteration safe while a
+        # server response updates the vector, without holding the global lock
+        # during a potentially long wait.
+        limits = lock(rate_limiter.lock) do
+            copy(rate_limiter.limits)
         end
-
-        # 2. Handle proactive rate limiting
-        for limit in rate_limiter.limits
-            if limit.limit_type != request_type
-                continue
-            end
-
-            lock(limit.lock) do
-                current_time = now(UTC)
-                # Convert interval_ms to Millisecond for DateTime arithmetic
-                window_start = current_time - Millisecond(limit.interval_ms)
-
-                # Remove requests that are outside the current time window
-                filter!(t -> t > window_start, limit.requests)
-
-                # If the limit is reached, wait until the oldest request expires
-                if length(limit.requests) >= limit.limit
-                    oldest_request_time = first(limit.requests)
-                    time_to_wait_ms = (oldest_request_time + Millisecond(limit.interval_ms)) - current_time
-                    sleep_seconds = time_to_wait_ms.value / 1000.0
-
-                    if sleep_seconds > 0
-                        @debug "Approaching $(limit.limit_type) limit. Sleeping for $(round(sleep_seconds, digits=2)) seconds."
-                        sleep(sleep_seconds)
-                    end
-                    # After sleeping, re-filter the requests
-                    filter!(t -> t > (now(UTC) - Millisecond(limit.interval_ms)), limit.requests)
-                end
-
-                # Add the new request's timestamp
-                push!(limit.requests, now(UTC))
-            end
+        for limit in limits
+            limit.limit_type == request_type || continue
+            reserve_request!(limit)
         end
+        return nothing
     end
 
 """
@@ -165,13 +178,9 @@ helping to keep the client in sync with server-side rate limit tracking.
 function update_limits!(rate_limiter::BinanceRateLimit, new_limits)
     lock(rate_limiter.lock) do
         for new_limit in new_limits
-            # Map WebSocket API names to internal names
-            limit_type = new_limit.rateLimitType
-            if limit_type == "REQUEST_WEIGHT"
-                limit_type = "REQUESTS"
-            end
+            limit_type = string(new_limit.rateLimitType)
 
-            interval_ms = interval_to_ms(new_limit.interval, new_limit.intervalNum)
+            interval_ms = interval_to_ms(string(new_limit.interval), new_limit.intervalNum)
             if interval_ms == 0
                 continue # Skip if the interval was unknown
             end

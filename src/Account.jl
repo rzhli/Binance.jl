@@ -2,7 +2,7 @@ module Account
 
     using JSON3, StructTypes, Dates, Printf
     using ..RESTAPI
-    using ..Types: to_struct
+    using ..Types: DecimalInput, to_decimal_string, to_struct
     
     export get_account_info, get_account_status, get_api_trading_status,
         get_api_key_permission, get_withdraw_history, get_deposit_history,
@@ -184,7 +184,7 @@ module Account
         println(io, "AccountInfo:")
         println(io, "  UID: ", info.uid)
         println(io, "  Account Type: ", info.accountType)
-        println(io, "  Update Time: ", unix2datetime(info.updateTime / 1000) + Hour(8))
+        println(io, "  Update Time (UTC): ", unix2datetime(info.updateTime / 1000))
         println(io, "  Brokered: ", info.brokered)
         println(io, "  Require Self Trade Prevention: ", info.requireSelfTradePrevention)
         println(io, "  Prevent SOR: ", info.preventSor)
@@ -201,10 +201,12 @@ module Account
         println(io, "  Buyer: ", info.commissionRates.buyer)
         println(io, "  Seller: ", info.commissionRates.seller)
 
-        non_zero_balances = filter(balance -> balance.free > 0 || balance.locked > 0, info.balances)
-        if !isempty(non_zero_balances)
+        if any(balance -> balance.free > 0 || balance.locked > 0, info.balances)
             println(io, "\nBalances:")
-            print_balances(io, non_zero_balances)
+            print_balances(io, Iterators.filter(
+                balance -> balance.free > 0 || balance.locked > 0,
+                info.balances,
+            ))
         else
             println(io, "\nNo non-zero balances.")
         end
@@ -217,7 +219,7 @@ module Account
         print_account_rate_limits(io, status.rateLimits)
     end
 
-    function print_balances(io::IO, balances::Vector{Balance})
+    function print_balances(io::IO, balances)
         @printf(io, "  %-12s %18s %18s\n", "asset", "free", "locked")
         for balance in balances
             @printf(io, "  %-12s %18.8f %18.8f\n", balance.asset, balance.free, balance.locked)
@@ -333,14 +335,14 @@ module Account
     end
 
     function withdraw(
-        client::RESTClient, coin::String, address::String, amount::Float64;
+        client::RESTClient, coin::String, address::String, amount::DecimalInput;
         address_tag::String="", network::String="", name::String="",
         wallet_type::Union{Int,Nothing}=nothing)
 
         params = Dict{String,Any}(
             "coin" => coin,
             "address" => address,
-            "amount" => amount
+            "amount" => to_decimal_string(amount)
         )
 
         if !isempty(address_tag)

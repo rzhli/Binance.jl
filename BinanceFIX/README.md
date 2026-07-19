@@ -12,6 +12,20 @@ BinanceFIX.jl provides complete FIX protocol support for Binance Spot trading:
 
 ## Recent Updates
 
+### v0.5.0 - Session concurrency and SBE hardening
+
+- **Safe session lifecycle** — Text FIX and FIX SBE sockets, sequence state,
+  callbacks, and monitor tasks now use concrete types, synchronization, and
+  supervised background tasks.
+- **Bounded receives** — Receive timeouts no longer create orphan reader
+  tasks, and concurrent reads/writes are serialized around each session.
+- **Strict binary framing** — SBE decoders validate message lengths,
+  block lengths, group dimensions, and buffer bounds before accessing fields.
+- **Lower allocation codecs** — Integer encoding and decoding avoids temporary
+  byte arrays in the optimized FIX SBE paths.
+- **Public API fixes** — Root exports now include SBE session variants,
+  `new_order_list_sbe`, and `order_cancel_request_and_new_sbe`.
+
 ### v0.4.1 - FIX SBE incremental depth 20ms rollout
 
 - **`MarketDataIncrementalDepth` cadence** — Binance will change FIX SBE
@@ -80,7 +94,7 @@ using Binance
 using BinanceFIX
 
 # Load config
-config = Binance.from_toml("config.toml")
+config = Binance.load_config("config.toml")
 sender_comp_id = "your_sender_id"
 
 # Create Order Entry session
@@ -157,7 +171,7 @@ using Binance
 using BinanceFIX
 
 # Load config
-config = Binance.from_toml("config.toml"; testnet=true)
+config = Binance.load_config("config.toml"; testnet=true)
 sender_comp_id = "your_sender_id"
 
 # Create SBE Order Entry session (port 9002)

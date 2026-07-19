@@ -27,4 +27,22 @@ end
     include("test_list_status.jl")
     include("test_order_amend_reject.jl")
     include("test_sbe_schema11.jl")
+
+    @testset "Session and SBE optimization regressions" begin
+        @test isempty(Symbol[
+            name for name in names(BinanceFIX; all=false, imported=false)
+            if !isdefined(BinanceFIX, name)
+        ])
+        fix_callback = BinanceFIX.FIXAPI.SessionCallback(identity)
+        sbe_callback = BinanceFIX.FIXSBESession.SBESessionCallback(identity)
+        @test fieldtype(typeof(fix_callback), 1) === typeof(identity)
+        @test fieldtype(typeof(sbe_callback), 1) === typeof(identity)
+
+        buffer = BinanceFIX.SBEBuffer(32)
+        BinanceFIX.write_uint16!(buffer, 0x1234)
+        BinanceFIX.write_uint32!(buffer, 0x12345678)
+        @test buffer.data[27:32] == UInt8[0x34, 0x12, 0x78, 0x56, 0x34, 0x12]
+        @test_throws ArgumentError BinanceFIX.SBEBuffer(0)
+        @test_throws ArgumentError BinanceFIX.FIXSBEDecoder.extract_message(zeros(UInt8, 6))
+    end
 end

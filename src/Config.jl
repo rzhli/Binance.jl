@@ -2,7 +2,7 @@ module Config
 
 using TOML
 
-export BinanceConfig, FIXConfig, FIXEndpoint, from_toml
+export BinanceConfig, FIXConfig, FIXEndpoint, from_toml, load_config
 
 # ======================= FIX 配置结构 =======================
 
@@ -55,7 +55,7 @@ struct BinanceConfig
     log_file::String
 end
 
-function from_toml(config_path::String="config.toml"; testnet::Bool=false)
+function from_toml(config_path::String="config.toml"; testnet::Union{Bool,Nothing}=nothing)
     if !isfile(config_path)
         error("Configuration file not found: $config_path")
     end
@@ -66,6 +66,8 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
         # Extract connection settings
         connection = get(config_data, "connection", Dict())
 
+        use_testnet = isnothing(testnet) ? Bool(get(connection, "testnet", false)) : testnet
+
         # Extract API settings
         api = get(config_data, "api", Dict())
         signature_method = get(api, "signature_method", "HMAC_SHA256")
@@ -74,8 +76,9 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
 
         api_key = ""
         api_secret = ""
-        if testnet
+        if use_testnet
             api_key = get(api, "testnet_api_key", "")
+            api_secret = get(api, "testnet_secret_key", get(api, "secret_key", ""))
             private_key_path = get(api, "testnet_private_key_path", "")
             private_key_pass = get(api, "testnet_private_key_pass", "")
         else
@@ -99,10 +102,10 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
         ws_return_rate_limits = get(rate_limiting, "ws_return_rate_limits", true)
 
         # Extract FIX API settings - use testnet section if testnet=true
-        fix_section = testnet ? "fix_testnet" : "fix"
+        fix_section = use_testnet ? "fix_testnet" : "fix"
         fix_data = get(config_data, fix_section, Dict())
         # Fallback to [fix] section if testnet section doesn't exist
-        if isempty(fix_data) && testnet
+        if isempty(fix_data) && use_testnet
             fix_data = get(config_data, "fix", Dict())
         end
         fix_host = get(fix_data, "host", "127.0.0.1")
@@ -112,9 +115,9 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
         end
 
         # 定义默认端口（testnet 使用 19xxx 系列）
-        base_oe, base_dc, base_md = testnet ? (19000, 19001, 19002) : (9000, 9001, 9002)
-        hybrid_oe, hybrid_dc, hybrid_md = testnet ? (19010, 19011, 19012) : (9010, 9011, 9012)
-        full_oe, full_dc, full_md = testnet ? (19020, 19021, 19022) : (9020, 9021, 9022)
+        base_oe, base_dc, base_md = use_testnet ? (19000, 19001, 19002) : (9000, 9001, 9002)
+        hybrid_oe, hybrid_dc, hybrid_md = use_testnet ? (19010, 19011, 19012) : (9010, 9011, 9012)
+        full_oe, full_dc, full_md = use_testnet ? (19020, 19021, 19022) : (9020, 9021, 9022)
 
         # 构建 FIX 端点配置
         fix_config = FIXConfig(
@@ -168,12 +171,12 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
                 error("RSA private key file not found: $private_key_path")
             end
         elseif signature_method != "NONE"
-            error("Unsupported signature method: $signature_method. Supported methods: HMAC_SHA256, ED25519, RSA")
+            error("Unsupported signature method: $signature_method. Supported methods: HMAC_SHA256, ED25519, RSA, NONE")
         end
 
         return BinanceConfig(
             api_key, signature_method, api_secret, private_key_path, private_key_pass,
-            testnet, timeout, recv_window, proxy, max_reconnect_attempts, reconnect_delay,
+            use_testnet, timeout, recv_window, proxy, max_reconnect_attempts, reconnect_delay,
             max_request_weight_per_minute, max_orders_per_10s, max_orders_per_day, max_connections_per_5m, max_raw_requests_per_5m, ws_return_rate_limits,
             fix_config,
             debug, log_file
@@ -187,5 +190,8 @@ function from_toml(config_path::String="config.toml"; testnet::Bool=false)
         end
     end
 end
+
+load_config(config_path::String="config.toml"; kwargs...) =
+    from_toml(config_path; kwargs...)
 
 end # end of module

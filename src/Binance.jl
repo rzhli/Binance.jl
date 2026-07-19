@@ -31,6 +31,54 @@ using .Signature
 using .Events
 using .OrderBookManagers
 
+# Resolve names intentionally shared by REST and WebSocket APIs. Keeping these
+# methods at the package root preserves one dispatch-based public API without
+# relying on ambiguous `using` imports.
+const RateLimit = Types.RateLimit
+const Trade = Types.Trade
+
+ping(client::RESTClient, args...; kwargs...) = RESTAPI.ping(client, args...; kwargs...)
+ping(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.ping(client, args...; kwargs...)
+
+test_order(client::RESTClient, args...; kwargs...) = RESTAPI.test_order(client, args...; kwargs...)
+test_order(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.test_order(client, args...; kwargs...)
+
+cancel_all_orders(client::RESTClient, args...; kwargs...) = RESTAPI.cancel_all_orders(client, args...; kwargs...)
+cancel_all_orders(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.cancel_all_orders(client, args...; kwargs...)
+
+cancel_replace_order(client::RESTClient, args...; kwargs...) = RESTAPI.cancel_replace_order(client, args...; kwargs...)
+cancel_replace_order(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.cancel_replace_order(client, args...; kwargs...)
+
+amend_order(client::RESTClient, args...; kwargs...) = RESTAPI.amend_order(client, args...; kwargs...)
+amend_order(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.amend_order(client, args...; kwargs...)
+
+place_oco_order(client::RESTClient, args...; kwargs...) = RESTAPI.place_oco_order(client, args...; kwargs...)
+place_oco_order(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.place_oco_order(client, args...; kwargs...)
+
+place_oto_order(client::RESTClient, args...; kwargs...) = RESTAPI.place_oto_order(client, args...; kwargs...)
+place_oto_order(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.place_oto_order(client, args...; kwargs...)
+
+place_otoco_order(client::RESTClient, args...; kwargs...) = RESTAPI.place_otoco_order(client, args...; kwargs...)
+place_otoco_order(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.place_otoco_order(client, args...; kwargs...)
+
+place_opo_order(client::RESTClient, args...; kwargs...) = RESTAPI.place_opo_order(client, args...; kwargs...)
+place_opo_order(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.place_opo_order(client, args...; kwargs...)
+
+place_opoco_order(client::RESTClient, args...; kwargs...) = RESTAPI.place_opoco_order(client, args...; kwargs...)
+place_opoco_order(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.place_opoco_order(client, args...; kwargs...)
+
+cancel_order_list(client::RESTClient, args...; kwargs...) = RESTAPI.cancel_order_list(client, args...; kwargs...)
+cancel_order_list(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.cancel_order_list(client, args...; kwargs...)
+
+place_sor_order(client::RESTClient, args...; kwargs...) = RESTAPI.place_sor_order(client, args...; kwargs...)
+place_sor_order(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.place_sor_order(client, args...; kwargs...)
+
+test_sor_order(client::RESTClient, args...; kwargs...) = RESTAPI.test_sor_order(client, args...; kwargs...)
+test_sor_order(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.test_sor_order(client, args...; kwargs...)
+
+get_my_trades(client::RESTClient, args...; kwargs...) = RESTAPI.get_my_trades(client, args...; kwargs...)
+orders_all(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.all_orders(client, args...; kwargs...)
+
 # Export client types and configuration
 export RESTClient, MarketDataStreamClient, SBEStreamClient, WebSocketClient, BinanceConfig, BinanceRateLimit
 
@@ -41,7 +89,7 @@ export BinanceException, BinanceError, MalformedRequestError, UnauthorizedError,
 
 # Export data types
 export ExchangeInfo, RateLimit, SymbolInfo, Order, Trade, Kline, Ticker24hr
-export DecimalPrice, to_decimal_string
+export DecimalPrice, DecimalInput, to_decimal_string
 export ExecutionRule, SymbolExecutionRules, ExecutionRulesResponse, ReferencePrice
 export AbstractReferencePriceCalculation, ArithmeticMeanCalculation, ExternalCalculation
 export BlockTrade
@@ -117,7 +165,7 @@ export convert_order_status, convert_trade_flow, convert_limit_place_order
 export convert_limit_cancel_order, convert_limit_query_open_orders
 
 # Export Signature functions
-export HmacSigner, Ed25519Signer, RsaSigner, BinanceSigner, create_signer
+export HmacSigner, Ed25519Signer, RsaSigner, NoSigner, BinanceSigner, create_signer
 
 # Export OrderBookManager types and functions
 export OrderBookManager, PriceQuantity, OrderBookSnapshot

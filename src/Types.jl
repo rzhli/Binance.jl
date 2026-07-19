@@ -104,9 +104,10 @@ end
 
 # Type alias for commonly used decimal precision in cryptocurrency (8 decimal places)
 const DecimalPrice = FixedDecimal{Int64, 8}
+const DecimalInput = Union{AbstractString,Integer,AbstractFloat,FixedDecimal}
 
 # Export decimal types and conversion utilities
-export DecimalPrice, to_decimal_string, to_struct
+export DecimalPrice, DecimalInput, to_decimal_string, to_struct
 
 """
     to_struct(T, value)
@@ -148,9 +149,10 @@ to_decimal_string(DecimalPrice(0.001)) # "0.00100000" (exact 8 decimals)
 """
 # 使用多重派发代替运行时类型检查（类型稳定）
 to_decimal_string(::Nothing) = nothing
-to_decimal_string(value::String) = value
+to_decimal_string(value::AbstractString) = String(value)
 to_decimal_string(value::FixedDecimal) = string(value)
-to_decimal_string(value::Float64) = string(value)
+to_decimal_string(value::Integer) = string(value)
+to_decimal_string(value::AbstractFloat) = string(value)
 
 # Enums
 export SymbolStatus, AccountPermissions, OrderStatus, OrderListStatus, OrderListOrderStatus,
@@ -487,7 +489,7 @@ StructTypes.StructType(::Type{WebSocketConnection}) = StructTypes.Struct()
 
 function Base.show(io::IO, ::MIME"text/plain", wsc::WebSocketConnection)
     println(io, "WebSocket Connection Status:")
-    println(io, "  API Key: ", wsc.apiKey)
+    println(io, "  API Key Configured: ", !isempty(wsc.apiKey))
     println(io, "  Connected Since: ", unix2datetime(wsc.connectedSince / 1000))
     println(io, "  Authorized Since: ", unix2datetime(wsc.authorizedSince / 1000))
     println(io, "  Server Time: ", unix2datetime(wsc.serverTime / 1000))

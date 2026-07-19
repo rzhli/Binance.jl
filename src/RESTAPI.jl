@@ -1,7 +1,6 @@
 module RESTAPI
 
     using HTTP, JSON3, Dates, SHA, URIs, StructTypes
-    using FixedPointDecimals
     using ..Config
     using ..Signature
     using ..RateLimiter
@@ -33,6 +32,7 @@ module RESTAPI
         time_offset::Int64
         exchange_info::Union{ExchangeInfo, Nothing}
         symbol_cache::Dict{String, SymbolInfo}  # 缓存 symbol -> SymbolInfo 映射
+        cache_lock::ReentrantLock
 
         function RESTClient(config_path::String="config.toml")
             config = from_toml(config_path)
@@ -40,7 +40,10 @@ module RESTAPI
 
             signer = Signature.create_signer(config)
 
-            client = new(config, signer, rate_limiter, 0, nothing, Dict{String, SymbolInfo}())
+            client = new(
+                config, signer, rate_limiter, 0, nothing,
+                Dict{String,SymbolInfo}(), ReentrantLock(),
+            )
 
             try
                 server_time_response = get_server_time(client)
@@ -86,8 +89,10 @@ module RESTAPI
             return ""
         end
 
-        encoded_pairs = String[]
-        for k in sort(collect(keys(params)))
+        sorted_keys = sort!(collect(keys(params)))
+        output = IOBuffer()
+        for (index, k) in enumerate(sorted_keys)
+            index > 1 && print(output, '&')
             encoded_key = URIs.escapeuri(string(k))
             value = params[k]
             encoded_value = if isa(value, AbstractVector)
@@ -95,10 +100,10 @@ module RESTAPI
             else
                 URIs.escapeuri(string(value))
             end
-            push!(encoded_pairs, "$encoded_key=$encoded_value")
+            print(output, encoded_key, '=', encoded_value)
         end
 
-        return join(encoded_pairs, "&")
+        return String(take!(output))
     end
 
     function build_signed_query_string(client::RESTClient, params::Dict{String,Any})
@@ -276,15 +281,23 @@ module RESTAPI
     Also builds a symbol lookup cache for O(1) symbol info retrieval.
     """
     function get_cached_exchange_info!(client::RESTClient)
-        if isnothing(client.exchange_info)
-            client.exchange_info = get_exchange_info(client)
-            # 构建 symbol 缓存用于 O(1) 查找
-            empty!(client.symbol_cache)
-            for s in client.exchange_info.symbols
-                client.symbol_cache[s.symbol] = s
-            end
+        cached = lock(client.cache_lock) do
+            client.exchange_info
         end
-        return client.exchange_info
+        cached !== nothing && return cached
+
+        fetched = get_exchange_info(client)
+        return lock(client.cache_lock) do
+            if isnothing(client.exchange_info)
+                client.exchange_info = fetched
+                empty!(client.symbol_cache)
+                sizehint!(client.symbol_cache, length(fetched.symbols))
+                for symbol_info in fetched.symbols
+                    client.symbol_cache[symbol_info.symbol] = symbol_info
+                end
+            end
+            return client.exchange_info
+        end
     end
 
     """
@@ -294,24 +307,28 @@ module RESTAPI
     """
     function get_symbol_info(client::RESTClient, symbol::String)
         get_cached_exchange_info!(client)
-        return get(client.symbol_cache, symbol, nothing)
+        normalized_symbol = validate_symbol(symbol)
+        return lock(client.cache_lock) do
+            get(client.symbol_cache, normalized_symbol, nothing)
+        end
     end
 
     # --- Trading Functions ---
 
     function place_order(
         client::RESTClient, symbol::String, side::String, order_type::String;
-        quantity::Union{Float64,String,FixedDecimal,Nothing}=nothing,
-        quote_order_qty::Union{Float64,String,FixedDecimal,Nothing}=nothing,
-        price::Union{Float64,String,FixedDecimal,Nothing}=nothing,
+        quantity::Union{DecimalInput,Nothing}=nothing,
+        quote_order_qty::Union{DecimalInput,Nothing}=nothing,
+        price::Union{DecimalInput,Nothing}=nothing,
         new_client_order_id::String="",
-        stop_price::Union{Float64,String,FixedDecimal,Nothing}=nothing,
-        iceberg_qty::Union{Float64,String,FixedDecimal,Nothing}=nothing,
+        stop_price::Union{DecimalInput,Nothing}=nothing,
+        iceberg_qty::Union{DecimalInput,Nothing}=nothing,
         time_in_force::String="GTC",
         new_order_resp_type::String="ACK"
         )
 
         # --- Validation (使用 O(1) 缓存查找) ---
+        symbol = validate_symbol(symbol)
         symbol_info = get_symbol_info(client, symbol)
         if isnothing(symbol_info)
             throw(ArgumentError("Symbol $symbol not found in exchange info."))
@@ -378,10 +395,10 @@ module RESTAPI
         kwargs...
     )
         params = Dict{String,Any}(kwargs)
-        params[:symbol] = symbol
-        params[:side] = side
-        params[:type] = order_type
-        params[:computeCommissionRates] = compute_commission_rates
+        params["symbol"] = validate_symbol(symbol)
+        params["side"] = validate_side(side)
+        params["type"] = validate_order_type(order_type)
+        params["computeCommissionRates"] = compute_commission_rates
 
         return make_request(client, "POST", "/api/v3/order/test"; params=params, signed=true)
     end
@@ -393,7 +410,7 @@ module RESTAPI
         new_client_order_id::String="")
 
         symbol = validate_symbol(symbol)
-        params = Dict{String,Any}("symbol" => symbol)
+        params = Dict{String,Any}("symbol" => validate_symbol(symbol))
 
         if !isnothing(order_id)
             params["orderId"] = order_id
@@ -428,10 +445,10 @@ module RESTAPI
     )
 
         params = Dict{String,Any}(kwargs)
-        params[:symbol] = symbol
-        params[:side] = side
-        params[:type] = order_type
-        params[:cancelReplaceMode] = cancel_replace_mode
+        params["symbol"] = validate_symbol(symbol)
+        params["side"] = validate_side(side)
+        params["type"] = validate_order_type(order_type)
+        params["cancelReplaceMode"] = cancel_replace_mode
 
         return make_request(client, "POST", "/api/v3/order/cancelReplace"; params=params, signed=true)
     end
@@ -447,12 +464,15 @@ module RESTAPI
     - Failed requests are always charged the documented weight
     """
     function amend_order(
-        client::RESTClient, symbol::String, new_qty::Float64;
+        client::RESTClient, symbol::String, new_qty::DecimalInput;
         order_id::Union{Int,Nothing}=nothing, orig_client_order_id::String="",
         new_client_order_id::String=""
     )
 
-        params = Dict{String,Any}("symbol" => symbol, "newQty" => new_qty)
+        params = Dict{String,Any}(
+            "symbol" => validate_symbol(symbol),
+            "newQty" => to_decimal_string(new_qty),
+        )
 
         if !isnothing(order_id)
             params["orderId"] = order_id
@@ -618,51 +638,51 @@ module RESTAPI
     end
 
     function place_oco_order(
-        client::RESTClient, symbol::String, side::String, quantity::Union{Float64,String,FixedDecimal},
+        client::RESTClient, symbol::String, side::String, quantity::DecimalInput,
         above_type::String, below_type::String; kwargs...
     )
         params = Dict{String,Any}(kwargs)
-        params[:symbol] = symbol
-        params[:side] = side
-        params[:quantity] = quantity
-        params[:aboveType] = above_type
-        params[:belowType] = below_type
+        params["symbol"] = validate_symbol(symbol)
+        params["side"] = validate_side(side)
+        params["quantity"] = to_decimal_string(quantity)
+        params["aboveType"] = above_type
+        params["belowType"] = below_type
 
         return make_request(client, "POST", "/api/v3/orderList/oco"; params=params, signed=true)
     end
 
     function place_oto_order(
         client::RESTClient, symbol::String, working_type::String, working_side::String,
-        working_price::Union{Float64,String,FixedDecimal}, working_quantity::Union{Float64,String,FixedDecimal}, pending_type::String,
-        pending_side::String, pending_quantity::Union{Float64,String,FixedDecimal}; kwargs...
+        working_price::DecimalInput, working_quantity::DecimalInput, pending_type::String,
+        pending_side::String, pending_quantity::DecimalInput; kwargs...
     )
         params = Dict{String,Any}(kwargs)
-        params[:symbol] = symbol
-        params[:workingType] = working_type
-        params[:workingSide] = working_side
-        params[:workingPrice] = working_price
-        params[:workingQuantity] = working_quantity
-        params[:pendingType] = pending_type
-        params[:pendingSide] = pending_side
-        params[:pendingQuantity] = pending_quantity
+        params["symbol"] = validate_symbol(symbol)
+        params["workingType"] = working_type
+        params["workingSide"] = validate_side(working_side)
+        params["workingPrice"] = to_decimal_string(working_price)
+        params["workingQuantity"] = to_decimal_string(working_quantity)
+        params["pendingType"] = pending_type
+        params["pendingSide"] = validate_side(pending_side)
+        params["pendingQuantity"] = to_decimal_string(pending_quantity)
 
         return make_request(client, "POST", "/api/v3/orderList/oto"; params=params, signed=true)
     end
 
     function place_otoco_order(
         client::RESTClient, symbol::String, working_type::String, working_side::String,
-        working_price::Union{Float64,String,FixedDecimal}, working_quantity::Union{Float64,String,FixedDecimal}, pending_side::String,
-        pending_quantity::Union{Float64,String,FixedDecimal}, pending_above_type::String; kwargs...
+        working_price::DecimalInput, working_quantity::DecimalInput, pending_side::String,
+        pending_quantity::DecimalInput, pending_above_type::String; kwargs...
     )
         params = Dict{String,Any}(kwargs)
-        params[:symbol] = symbol
-        params[:workingType] = working_type
-        params[:workingSide] = working_side
-        params[:workingPrice] = working_price
-        params[:workingQuantity] = working_quantity
-        params[:pendingSide] = pending_side
-        params[:pendingQuantity] = pending_quantity
-        params[:pendingAboveType] = pending_above_type
+        params["symbol"] = validate_symbol(symbol)
+        params["workingType"] = working_type
+        params["workingSide"] = validate_side(working_side)
+        params["workingPrice"] = to_decimal_string(working_price)
+        params["workingQuantity"] = to_decimal_string(working_quantity)
+        params["pendingSide"] = validate_side(pending_side)
+        params["pendingQuantity"] = to_decimal_string(pending_quantity)
+        params["pendingAboveType"] = pending_above_type
 
         return make_request(client, "POST", "/api/v3/orderList/otoco"; params=params, signed=true)
     end
@@ -719,16 +739,16 @@ module RESTAPI
     Available after 2025-12-18. Check `opoAllowed` in exchange info for symbol support.
     """
     function place_opo_order(
-        client::RESTClient, symbol::String, trigger_price::Union{Float64,String,FixedDecimal},
+        client::RESTClient, symbol::String, trigger_price::DecimalInput,
         working_type::String, working_side::String,
-        working_quantity::Union{Float64,String,FixedDecimal}; kwargs...
+        working_quantity::DecimalInput; kwargs...
     )
         params = Dict{String,Any}(kwargs)
-        params[:symbol] = symbol
-        params[:triggerPrice] = to_decimal_string(trigger_price)
-        params[:workingType] = working_type
-        params[:workingSide] = working_side
-        params[:workingQuantity] = to_decimal_string(working_quantity)
+        params["symbol"] = validate_symbol(symbol)
+        params["triggerPrice"] = to_decimal_string(trigger_price)
+        params["workingType"] = working_type
+        params["workingSide"] = validate_side(working_side)
+        params["workingQuantity"] = to_decimal_string(working_quantity)
 
         return make_request(client, "POST", "/api/v3/orderList/opo"; params=params, signed=true)
     end
@@ -798,20 +818,20 @@ module RESTAPI
     Available after 2025-12-18. Check `opoAllowed` in exchange info for symbol support.
     """
     function place_opoco_order(
-        client::RESTClient, symbol::String, trigger_price::Union{Float64,String,FixedDecimal},
+        client::RESTClient, symbol::String, trigger_price::DecimalInput,
         working_type::String, working_side::String,
-        working_quantity::Union{Float64,String,FixedDecimal}, pending_side::String,
-        pending_quantity::Union{Float64,String,FixedDecimal}, pending_above_type::String; kwargs...
+        working_quantity::DecimalInput, pending_side::String,
+        pending_quantity::DecimalInput, pending_above_type::String; kwargs...
     )
         params = Dict{String,Any}(kwargs)
-        params[:symbol] = symbol
-        params[:triggerPrice] = to_decimal_string(trigger_price)
-        params[:workingType] = working_type
-        params[:workingSide] = working_side
-        params[:workingQuantity] = to_decimal_string(working_quantity)
-        params[:pendingSide] = pending_side
-        params[:pendingQuantity] = to_decimal_string(pending_quantity)
-        params[:pendingAboveType] = pending_above_type
+        params["symbol"] = validate_symbol(symbol)
+        params["triggerPrice"] = to_decimal_string(trigger_price)
+        params["workingType"] = working_type
+        params["workingSide"] = validate_side(working_side)
+        params["workingQuantity"] = to_decimal_string(working_quantity)
+        params["pendingSide"] = validate_side(pending_side)
+        params["pendingQuantity"] = to_decimal_string(pending_quantity)
+        params["pendingAboveType"] = pending_above_type
 
         return make_request(client, "POST", "/api/v3/orderList/opoco"; params=params, signed=true)
     end
@@ -820,7 +840,7 @@ module RESTAPI
         client::RESTClient, symbol::String; order_list_id::Union{Int,Nothing}=nothing,
         list_client_order_id::String="", new_client_order_id::String=""
     )
-        params = Dict{String,Any}("symbol" => symbol)
+        params = Dict{String,Any}("symbol" => validate_symbol(symbol))
 
         if !isnothing(order_list_id)
             params["orderListId"] = order_list_id
@@ -838,28 +858,28 @@ module RESTAPI
     end
 
     function place_sor_order(
-        client::RESTClient, symbol::String, side::String, order_type::String, quantity::Float64;
+        client::RESTClient, symbol::String, side::String, order_type::String, quantity::DecimalInput;
         kwargs...
     )
         params = Dict{String,Any}(kwargs)
-        params[:symbol] = symbol
-        params[:side] = side
-        params[:type] = order_type
-        params[:quantity] = quantity
+        params["symbol"] = validate_symbol(symbol)
+        params["side"] = validate_side(side)
+        params["type"] = validate_order_type(order_type)
+        params["quantity"] = to_decimal_string(quantity)
 
         return make_request(client, "POST", "/api/v3/sor/order"; params=params, signed=true)
     end
 
     function test_sor_order(
-        client::RESTClient, symbol::String, side::String, order_type::String, quantity::Float64;
+        client::RESTClient, symbol::String, side::String, order_type::String, quantity::DecimalInput;
         compute_commission_rates::Bool=false, kwargs...
     )
         params = Dict{String,Any}(kwargs)
-        params[:symbol] = symbol
-        params[:side] = side
-        params[:type] = order_type
-        params[:quantity] = quantity
-        params[:computeCommissionRates] = compute_commission_rates
+        params["symbol"] = validate_symbol(symbol)
+        params["side"] = validate_side(side)
+        params["type"] = validate_order_type(order_type)
+        params["quantity"] = to_decimal_string(quantity)
+        params["computeCommissionRates"] = compute_commission_rates
 
         return make_request(client, "POST", "/api/v3/sor/order/test"; params=params, signed=true)
     end
@@ -1108,7 +1128,7 @@ module RESTAPI
         return response_dict
     end
 
-    function get_trading_day_ticker(client::RESTClient; symbol::String="", symbols::Vector{String}=[], time_zone::String="", type::String="FULL", symbolStatus::String="")
+    function get_trading_day_ticker(client::RESTClient; symbol::String="", symbols::Vector{String}=String[], time_zone::String="", type::String="FULL", symbolStatus::String="")
         params = Dict{String,Any}()
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
@@ -1147,7 +1167,7 @@ module RESTAPI
         end
     end
 
-    function get_ticker(client::RESTClient; symbol::String="", symbols::Vector{String}=[], window_size::String="1d", type::String="FULL", symbolStatus::String="")
+    function get_ticker(client::RESTClient; symbol::String="", symbols::Vector{String}=String[], window_size::String="1d", type::String="FULL", symbolStatus::String="")
         params = Dict{String,Any}()
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)

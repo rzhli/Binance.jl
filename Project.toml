@@ -1,6 +1,6 @@
 name = "Binance"
 uuid = "cea3082c-a500-42ba-b008-7fc426d310bc"
-version = "0.11.3"
+version = "0.12.0"
 authors = ["rzhli <tayuebuliuhen@gmail.com>"]
 
 [deps]

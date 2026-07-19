@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-19
+
+### Added
+- **Exact decimal order inputs** — Order validation now accepts `String`,
+  `FixedDecimal`, and integer inputs through the public `DecimalInput` type,
+  avoiding binary floating-point rounding at Binance tick-size and step-size
+  boundaries.
+- **Configuration loader** — Added the exported `load_config` convenience
+  function and documented testnet/FIX endpoint settings in
+  `config_example.toml`.
+- **Regression coverage** — Added tests for exact filter validation, testnet
+  configuration, exported entry points, WebSocket depth events, rate-limit
+  accounting, and concurrent order-book access.
+
+### Changed
+- **Concurrent client state** — REST caches, WebSocket responses, callbacks,
+  subscriptions, and local order-book state are now synchronized. User
+  callbacks run outside internal locks to prevent callback code from blocking
+  state updates or causing lock re-entry failures.
+- **Typed callbacks and sessions** — Replaced dynamically typed callback and
+  socket fields with concrete wrappers/types, reducing dispatch overhead and
+  making session ownership clearer.
+- **FIX/SBE framing performance** — Reduced temporary allocations in integer
+  encoding/decoding and tightened message, group, block-length, and buffer
+  bounds validation.
+- **Task supervision** — FIX and WebSocket monitor tasks are supervised, and
+  timed FIX reads no longer leave orphan reader tasks behind.
+
+### Fixed
+- **Testnet selection** — Explicit testnet configuration now selects the
+  correct REST, WebSocket, market-stream, and FIX endpoints.
+- **Public API exports** — Restored all root-module exports that previously
+  resolved only in submodules, including FIX SBE session types and order-list
+  and cancel-replace helpers.
+- **Depth event compatibility** — JSON3 depth events now update
+  `OrderBookManager` correctly, with synchronized recovery and snapshot state.
+- **Rate-limit accounting** — Corrected `REQUEST_WEIGHT` mapping and ensured
+  rate-limit waits do not sleep while holding shared locks.
+- **BinanceFIX 0.5.0** — Hardened text FIX and FIX SBE session concurrency,
+  receive timeouts, framing checks, monitor lifecycle, and encoder/decoder
+  allocation behavior.
+
+### Compatibility
+- Julia 1.11 remains the supported runtime for Binance.jl and BinanceFIX.jl.
+
 ## [0.11.3] - 2026-07-18
 
 ### Changed

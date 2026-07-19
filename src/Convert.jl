@@ -45,7 +45,7 @@ module Convert
 
 using JSON3, StructTypes, Dates
 using ..RESTAPI
-using ..Types: to_decimal_string, to_struct
+using ..Types: DecimalInput, to_decimal_string, to_struct
 
 export convert_exchange_info, convert_asset_info, convert_get_quote, convert_accept_quote,
     convert_order_status, convert_trade_flow, convert_limit_place_order,
@@ -320,7 +320,7 @@ struct ConvertTradeFlowResponse
 end
 StructTypes.StructType(::Type{ConvertTradeFlowResponse}) = StructTypes.CustomStruct()
 StructTypes.construct(::Type{ConvertTradeFlowResponse}, obj) = ConvertTradeFlowResponse(
-    [StructTypes.construct(ConvertTradeFlow, item) for item in obj["list"]],
+    to_struct(Vector{ConvertTradeFlow}, obj["list"]),
     unix2datetime(obj["startTime"] / 1000),
     unix2datetime(obj["endTime"] / 1000),
     obj["limit"],
@@ -448,7 +448,7 @@ function convert_exchange_info(client::RESTClient; from_asset::String="", to_ass
         params["toAsset"] = to_asset
     end
     response = make_request(client, "GET", "/sapi/v1/convert/exchangeInfo"; params=params)
-    return [StructTypes.constructfrom(ConvertPair, item) for item in response]
+    return to_struct(Vector{ConvertPair}, response)
 end
 
 """
@@ -528,24 +528,32 @@ Either `from_amount` or `to_amount` must be specified, but not both.
 """
 function convert_get_quote(
     client::RESTClient, from_asset::String, to_asset::String;
-    from_amount::Union{Float64,Nothing}=nothing,
-    to_amount::Union{Float64,Nothing}=nothing,
+    from_amount::Union{DecimalInput,Nothing}=nothing,
+    to_amount::Union{DecimalInput,Nothing}=nothing,
     wallet_type::String=WALLET_SPOT,
     validity_time::String=VALID_TIME_10S
 )
+    xor(isnothing(from_amount), isnothing(to_amount)) || throw(ArgumentError(
+        "Exactly one of from_amount or to_amount must be specified",
+    ))
+    wallet_type in (
+        WALLET_SPOT, WALLET_FUNDING, WALLET_EARN, WALLET_SPOT_FUNDING,
+        WALLET_FUNDING_EARN, WALLET_SPOT_EARN, WALLET_SPOT_FUNDING_EARN,
+    ) || throw(ArgumentError("Unsupported wallet_type: $wallet_type"))
+    validity_time in (VALID_TIME_10S, VALID_TIME_30S, VALID_TIME_1M, VALID_TIME_2M) ||
+        throw(ArgumentError("Unsupported validity_time: $validity_time"))
+
     params = Dict{String,Any}(
-        "fromAsset" => from_asset,
-        "toAsset" => to_asset,
+        "fromAsset" => uppercase(from_asset),
+        "toAsset" => uppercase(to_asset),
         "walletType" => wallet_type,
         "validTime" => validity_time
     )
 
     if !isnothing(from_amount)
-        params["fromAmount"] = from_amount
-    elseif !isnothing(to_amount)
-        params["toAmount"] = to_amount
+        params["fromAmount"] = to_decimal_string(from_amount)
     else
-        throw(ArgumentError("Either from_amount or to_amount must be specified"))
+        params["toAmount"] = to_decimal_string(to_amount)
     end
 
     response = make_request(client, "POST", "/sapi/v1/convert/getQuote"; params=params, signed=true)
@@ -620,14 +628,15 @@ status = convert_order_status(client; quote_id="f3b91c525b2644c7bc1e1cd31b6e1aa6
 Either `order_id` or `quote_id` must be provided, but not both.
 """
 function convert_order_status(client::RESTClient; order_id::String="", quote_id::String="")
+    xor(isempty(order_id), isempty(quote_id)) || throw(ArgumentError(
+        "Exactly one of order_id or quote_id must be specified",
+    ))
     params = Dict{String,Any}()
 
     if !isempty(order_id)
         params["orderId"] = order_id
     elseif !isempty(quote_id)
         params["quoteId"] = quote_id
-    else
-        throw(ArgumentError("Either order_id or quote_id must be specified"))
     end
 
     response = make_request(client, "GET", "/sapi/v1/convert/orderStatus"; params=params, signed=true)
@@ -681,6 +690,10 @@ function convert_trade_flow(
     if limit < 1 || limit > 1000
         throw(ArgumentError("Limit must be between 1 and 1000"))
     end
+    start_time <= end_time || throw(ArgumentError("start_time must not exceed end_time"))
+    end_time - start_time <= Dates.value(Day(30)) * 86_400_000 || throw(ArgumentError(
+        "The trade flow time range cannot exceed 30 days",
+    ))
 
     params = Dict{String,Any}(
         "startTime" => start_time,
@@ -736,10 +749,10 @@ function convert_limit_place_order(
     base_asset::String,
     quote_asset::String,
     side::String,
-    limit_price::Float64,
+    limit_price::DecimalInput,
     expired_type::String;
-    base_amount::Union{Float64,Nothing}=nothing,
-    quote_amount::Union{Float64,Nothing}=nothing,
+    base_amount::Union{DecimalInput,Nothing}=nothing,
+    quote_amount::Union{DecimalInput,Nothing}=nothing,
     wallet_type::String=WALLET_SPOT
     )
     # Validate side
@@ -752,22 +765,25 @@ function convert_limit_place_order(
     if !(expired_type in (EXPIRED_1D, EXPIRED_3D, EXPIRED_7D, EXPIRED_30D))
         throw(ArgumentError("expiredType must be one of: 1_D, 3_D, 7_D, 30_D"))
     end
+    xor(isnothing(base_amount), isnothing(quote_amount)) || throw(ArgumentError(
+        "Exactly one of base_amount or quote_amount must be specified",
+    ))
+    wallet_type in (WALLET_SPOT, WALLET_FUNDING) ||
+        throw(ArgumentError("Limit orders support only SPOT or FUNDING wallets"))
 
     params = Dict{String,Any}(
-        "baseAsset" => base_asset,
-        "quoteAsset" => quote_asset,
+        "baseAsset" => uppercase(base_asset),
+        "quoteAsset" => uppercase(quote_asset),
         "side" => side,
-        "limitPrice" => limit_price,
+        "limitPrice" => to_decimal_string(limit_price),
         "expiredType" => expired_type,
         "walletType" => wallet_type
     )
 
     if !isnothing(base_amount)
-        params["baseAmount"] = base_amount
-    elseif !isnothing(quote_amount)
-        params["quoteAmount"] = quote_amount
+        params["baseAmount"] = to_decimal_string(base_amount)
     else
-        throw(ArgumentError("Either base_amount or quote_amount must be specified"))
+        params["quoteAmount"] = to_decimal_string(quote_amount)
     end
 
     response = make_request(client, "POST", "/sapi/v1/convert/limit/placeOrder"; params=params, signed=true)
@@ -794,7 +810,7 @@ Weight: 200 (UID)
 result = convert_limit_cancel_order(client, 933256278426274426)
 ```
 """
-function convert_limit_cancel_order(client::RESTClient, order_id::Int64)
+function convert_limit_cancel_order(client::RESTClient, order_id::Integer)
     params = Dict{String,Any}("orderId" => order_id)
     return make_request(client, "POST", "/sapi/v1/convert/limit/cancelOrder"; params=params, signed=true)
 end
@@ -823,7 +839,7 @@ end
 """
 function convert_limit_query_open_orders(client::RESTClient)
     response = make_request(client, "GET", "/sapi/v1/convert/limit/queryOpenOrders"; signed=true)
-    return [StructTypes.construct(ConvertLimitOrder, item) for item in response]
+    return to_struct(Vector{ConvertLimitOrder}, response)
 end
 
 end # module Convert

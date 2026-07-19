@@ -47,12 +47,12 @@ using ..Types: PriceLevel
 using ..MarketDataStreams: subscribe_diff_depth, unsubscribe, MarketDataStreamClient
 using ..SBEMarketDataStreams: SBEStreamClient, sbe_subscribe_depth, sbe_subscribe_depth20, sbe_unsubscribe_depth, sbe_unsubscribe_depth20, DepthDiffEvent, DepthSnapshotEvent
 
-export OrderBookManager, start!, stop!, is_ready,
+export OrderBookManager, PriceQuantity, OrderBookSnapshot, start!, stop!, is_ready,
     get_best_bid, get_best_ask, get_spread, get_mid_price,
     get_bids, get_asks, get_orderbook_snapshot,
     calculate_vwap, calculate_depth_imbalance
 
-const DepthEvent = Union{Dict{String,Any}, DepthDiffEvent}
+const DepthEvent = Union{AbstractDict,DepthDiffEvent}
 
 # ============================================================================
 # Core Data Structures
@@ -150,6 +150,7 @@ mutable struct OrderBookManager{R,W,F}
     # separate messages), causing transient crosses that self-heal on the
     # next event. We only warn / suppress callbacks when the cross persists.
     consecutive_crosses::Ref{Int}
+    state_lock::ReentrantLock
 end
 
 """
@@ -222,7 +223,8 @@ function OrderBookManager(
         use_snapshot_stream,
         Ref{Int64}(0),
         Ref{Float64}(0.0),
-        Ref{Int}(0)                        # consecutive_crosses
+        Ref{Int}(0),                       # consecutive_crosses
+        ReentrantLock(),
     )
 end
 
@@ -315,32 +317,35 @@ Used by the SBE `@depth20` push stream when `use_snapshot_stream=true`.
 Bypasses the diff buffer/sync logic — every push is a complete picture.
 """
 function handle_snapshot_event!(manager::OrderBookManager, event::DepthSnapshotEvent)
-    empty!(manager.bids)
-    empty!(manager.asks)
-    clear_best_prices!(manager)
+    callback = lock(manager.state_lock) do
+        empty!(manager.bids)
+        empty!(manager.asks)
+        clear_best_prices!(manager)
 
-    @inbounds for level in event.bids
-        if level.quantity > 0.0 && !isnan(level.quantity)
-            apply_bid_level!(manager, level.price, level.quantity)
+        @inbounds for level in event.bids
+            if level.quantity > 0.0 && !isnan(level.quantity)
+                apply_bid_level!(manager, level.price, level.quantity)
+            end
         end
+
+        @inbounds for level in event.asks
+            if level.quantity > 0.0 && !isnan(level.quantity)
+                apply_ask_level!(manager, level.price, level.quantity)
+            end
+        end
+
+        manager.update_id[] = event.bookUpdateId
+        manager.total_updates[] += 1
+        manager.last_update_time[] = time()
+        manager.cache_valid[] = false
+        manager.consecutive_crosses[] = 0
+        manager.is_initialized[] = true
+        return manager.on_update
     end
 
-    @inbounds for level in event.asks
-        if level.quantity > 0.0 && !isnan(level.quantity)
-            apply_ask_level!(manager, level.price, level.quantity)
-        end
-    end
-
-    manager.update_id[] = event.bookUpdateId
-    manager.total_updates[] += 1
-    manager.last_update_time[] = time()
-    manager.cache_valid[] = false
-    manager.consecutive_crosses[] = 0
-    manager.is_initialized[] = true
-
-    if !isnothing(manager.on_update)
+    if !isnothing(callback)
         try
-            manager.on_update(manager)
+            callback(manager)
         catch e
             @error "Error in user callback" exception = e
         end
@@ -370,14 +375,15 @@ function stop!(manager::OrderBookManager)
         manager.stream_id[] = nothing
     end
 
-    # Reset state
-    manager.is_initialized[] = false
-    empty!(manager.bids)
-    empty!(manager.asks)
-    clear_best_prices!(manager)
-    empty!(manager.event_buffer)
-    manager.update_id[] = 0
-    manager.total_updates[] = 0
+    lock(manager.state_lock) do
+        manager.is_initialized[] = false
+        empty!(manager.bids)
+        empty!(manager.asks)
+        clear_best_prices!(manager)
+        empty!(manager.event_buffer)
+        manager.update_id[] = 0
+        manager.total_updates[] = 0
+    end
 
     println("[OrderBookManager] Stopped for $(manager.symbol)")
 end
@@ -387,23 +393,25 @@ end
 
 Check if the order book is initialized and ready for queries.
 """
-is_ready(manager::OrderBookManager) = manager.is_initialized[]
+is_ready(manager::OrderBookManager) = lock(manager.state_lock) do
+    manager.is_initialized[]
+end
 
 # ============================================================================
 # Internal Synchronization Logic
 # ============================================================================
 
 # Helper functions for event access (JSON Dict vs SBE Struct)
-get_first_update_id(event::Dict{String,Any}) = event["U"]
+get_first_update_id(event::AbstractDict) = event["U"]
 get_first_update_id(event::DepthDiffEvent) = event.firstBookUpdateId
 
-get_last_update_id(event::Dict{String,Any}) = event["u"]
+get_last_update_id(event::AbstractDict) = event["u"]
 get_last_update_id(event::DepthDiffEvent) = event.lastBookUpdateId
 
-get_bids_data(event::Dict{String,Any}) = event["b"]
+get_bids_data(event::AbstractDict) = event["b"]
 get_bids_data(event::DepthDiffEvent) = event.bids
 
-get_asks_data(event::Dict{String,Any}) = event["a"]
+get_asks_data(event::AbstractDict) = event["a"]
 get_asks_data(event::DepthDiffEvent) = event.asks
 
 # Helper to parse price/qty
@@ -480,18 +488,23 @@ Handle a depth update event from the WebSocket stream.
 Implements the corrected order book synchronization algorithm (2025-11-12).
 """
 function handle_depth_event!(manager::OrderBookManager, event)
-    if !manager.is_initialized[]
-        # Buffer events until we have enough to initialize
+    initialized, should_initialize = lock(manager.state_lock) do
+        if manager.is_initialized[]
+            return true, false
+        end
         push!(manager.event_buffer, event)
+        return false, length(manager.event_buffer) >= 3
+    end
 
-        # After buffering a few events, try to initialize
-        if length(manager.event_buffer) >= 3
+    if !initialized
+        if should_initialize
             try
                 initialize_from_snapshot!(manager)
             catch e
                 @error "Failed to initialize order book" symbol = manager.symbol exception = e
-                # Clear buffer and try again
-                empty!(manager.event_buffer)
+                lock(manager.state_lock) do
+                    empty!(manager.event_buffer)
+                end
             end
         end
     else
@@ -519,14 +532,11 @@ Follows Binance's corrected algorithm (2025-11-12):
 6. Apply all buffered events
 """
 function initialize_from_snapshot!(manager::OrderBookManager)
-    if isempty(manager.event_buffer)
-        error("No buffered events available")
+    first_event_U = lock(manager.state_lock) do
+        isempty(manager.event_buffer) && error("No buffered events available")
+        return get_first_update_id(first(manager.event_buffer))
     end
 
-    # Step 1: Note the U of the first buffered event
-    first_event_U = get_first_update_id(manager.event_buffer[1])
-
-    # Step 2: Fetch depth snapshot
     snapshot = get_orderbook(manager.rest_client, manager.symbol; limit=manager.max_depth)
     snapshot_last_update_id = snapshot["lastUpdateId"]
 
@@ -536,55 +546,57 @@ function initialize_from_snapshot!(manager::OrderBookManager)
         error("Snapshot too old (lastUpdateId: $snapshot_last_update_id < first event U: $first_event_U)")
     end
 
-    # Step 4: Load snapshot into order book
-    manager.update_id[] = snapshot_last_update_id
-    empty!(manager.bids)
-    empty!(manager.asks)
-    clear_best_prices!(manager)
+    callback, bid_count, ask_count, update_id, discarded_count = lock(manager.state_lock) do
+        manager.update_id[] = snapshot_last_update_id
+        empty!(manager.bids)
+        empty!(manager.asks)
+        clear_best_prices!(manager)
 
-    for bid in snapshot["bids"]
-        price = parse(Float64, bid[1])
-        quantity = parse(Float64, bid[2])
-        apply_bid_level!(manager, price, quantity)
-    end
-
-    for ask in snapshot["asks"]
-        price = parse(Float64, ask[1])
-        quantity = parse(Float64, ask[2])
-        apply_ask_level!(manager, price, quantity)
-    end
-
-    # Step 5: Discard outdated buffered events (where u <= lastUpdateId)
-    original_buffer_size = length(manager.event_buffer)
-    filter!(event -> get_last_update_id(event) > snapshot_last_update_id, manager.event_buffer)
-    discarded_count = original_buffer_size - length(manager.event_buffer)
-
-    # Step 6: Verify first remaining buffered event
-    if !isempty(manager.event_buffer)
-        first_remaining = manager.event_buffer[1]
-        U = get_first_update_id(first_remaining)
-        u = get_last_update_id(first_remaining)
-
-        # Snapshot's lastUpdateId should be within [U; u] range
-        if snapshot_last_update_id < U || snapshot_last_update_id > u
-            error("Invalid state: snapshot lastUpdateId ($snapshot_last_update_id) not in first event range [$U; $u]")
+        for bid in snapshot["bids"]
+            price, quantity = parse_price_qty(bid)
+            apply_bid_level!(manager, price, quantity)
         end
 
-        # Apply all buffered events
-        for event in manager.event_buffer
-            apply_update!(manager, event; skip_validation=true)
+        for ask in snapshot["asks"]
+            price, quantity = parse_price_qty(ask)
+            apply_ask_level!(manager, price, quantity)
         end
 
-        # Clear buffer
-        empty!(manager.event_buffer)
+        original_buffer_size = length(manager.event_buffer)
+        filter!(event -> get_last_update_id(event) > snapshot_last_update_id, manager.event_buffer)
+        discarded_count = original_buffer_size - length(manager.event_buffer)
+
+        if !isempty(manager.event_buffer)
+            first_remaining = first(manager.event_buffer)
+            U = get_first_update_id(first_remaining)
+            u = get_last_update_id(first_remaining)
+
+            if snapshot_last_update_id < U || snapshot_last_update_id > u
+                error("Invalid state: snapshot lastUpdateId ($snapshot_last_update_id) not in first event range [$U; $u]")
+            end
+
+            for event in manager.event_buffer
+                status = _apply_update_locked!(manager, event; skip_validation=true)
+                status == :restart && error("Buffered updates produced a crossed order book")
+            end
+            empty!(manager.event_buffer)
+        end
+
+        manager.is_initialized[] = true
+        manager.last_update_time[] = time()
+        callback = manager.consecutive_crosses[] == 0 ? manager.on_update : nothing
+        return callback, length(manager.bids), length(manager.asks), manager.update_id[], discarded_count
     end
 
-    manager.is_initialized[] = true
-    manager.last_update_time[] = time()
+    if !isnothing(callback)
+        try
+            callback(manager)
+        catch e
+            @error "Error in user callback" exception = (e, catch_backtrace())
+        end
+    end
 
-    println("[OrderBookManager] Initialized $(manager.symbol): " *
-            "$(length(manager.bids)) bids, $(length(manager.asks)) asks, " *
-            "update_id=$(manager.update_id[]), discarded=$discarded_count events")
+    @info "Order book initialized" symbol=manager.symbol bids=bid_count asks=ask_count update_id discarded_events=discarded_count
 end
 
 """
@@ -598,6 +610,23 @@ Returns:
 - `:restart` - Events were missed, need to restart synchronization
 """
 function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=false)
+    status, callback = lock(manager.state_lock) do
+        status = _apply_update_locked!(manager, event; skip_validation=skip_validation)
+        callback = status == :applied && manager.consecutive_crosses[] == 0 ? manager.on_update : nothing
+        return status, callback
+    end
+
+    if !isnothing(callback)
+        try
+            callback(manager)
+        catch e
+            @error "Error in user callback" exception = (e, catch_backtrace())
+        end
+    end
+    return status
+end
+
+function _apply_update_locked!(manager::OrderBookManager, event; skip_validation::Bool=false)
     event_U = get_first_update_id(event)  # First update ID
     event_u = get_last_update_id(event)   # Last update ID
 
@@ -641,12 +670,10 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
     # transient and self-heals on the next event. We suppress the user
     # callback while crossed (so the strategy doesn't trade on bad data),
     # and only warn / restart if the cross persists across many events.
-    crossed = false
     max_bid = manager.best_bid_price[]
     min_ask = manager.best_ask_price[]
     if !isnan(max_bid) && !isnan(min_ask)
         if max_bid >= min_ask
-            crossed = true
             manager.consecutive_crosses[] += 1
             # Persistent cross: warn periodically and request resync.
             if manager.consecutive_crosses[] == 20
@@ -656,15 +683,8 @@ function apply_update!(manager::OrderBookManager, event; skip_validation::Bool=f
         else
             manager.consecutive_crosses[] = 0
         end
-    end
-
-    # Call user callback if provided (skip while crossed)
-    if !isnothing(manager.on_update) && !crossed
-        try
-            manager.on_update(manager)
-        catch e
-            @error "Error in user callback" exception = e
-        end
+    else
+        manager.consecutive_crosses[] = 0
     end
 
     return :applied
@@ -678,17 +698,18 @@ Restart the order book synchronization from scratch.
 function restart_sync!(manager::OrderBookManager)
     @warn "Restarting order book synchronization" symbol = manager.symbol
 
-    # Reset state but keep stream active
-    manager.is_initialized[] = false
-    manager.update_id[] = 0
-    empty!(manager.bids)
-    empty!(manager.asks)
-    clear_best_prices!(manager)
-    empty!(manager.event_buffer)
-    empty!(manager.sorted_bids)
-    empty!(manager.sorted_asks)
-    manager.cache_valid[] = false
-    manager.consecutive_crosses[] = 0
+    lock(manager.state_lock) do
+        manager.is_initialized[] = false
+        manager.update_id[] = 0
+        empty!(manager.bids)
+        empty!(manager.asks)
+        clear_best_prices!(manager)
+        empty!(manager.event_buffer)
+        empty!(manager.sorted_bids)
+        empty!(manager.sorted_asks)
+        manager.cache_valid[] = false
+        manager.consecutive_crosses[] = 0
+    end
 
     # Events will start buffering again automatically
 end
@@ -703,6 +724,12 @@ end
 Rebuild the sorted cache arrays. Called lazily when cache is invalid.
 """
 function rebuild_cache!(manager::OrderBookManager)
+    return lock(manager.state_lock) do
+        _rebuild_cache_locked!(manager)
+    end
+end
+
+function _rebuild_cache_locked!(manager::OrderBookManager)
     if manager.cache_valid[]
         return
     end
@@ -741,23 +768,25 @@ Returns `nothing` if order book is not ready or has no bids.
 Returns `(price=Float64, quantity=Float64)` otherwise.
 """
 function get_best_bid(manager::OrderBookManager)
-    if !manager.is_initialized[]
-        return nothing
-    end
+    return lock(manager.state_lock) do
+        if !manager.is_initialized[]
+            return nothing
+        end
 
-    price = manager.best_bid_price[]
-    if isnan(price)
-        return nothing
-    end
+        price = manager.best_bid_price[]
+        if isnan(price)
+            return nothing
+        end
 
-    quantity = get(manager.bids, price, NaN)
-    if isnan(quantity)
-        price = recompute_best_bid!(manager)
-        isnan(price) && return nothing
-        quantity = manager.bids[price]
-    end
+        quantity = get(manager.bids, price, NaN)
+        if isnan(quantity)
+            price = recompute_best_bid!(manager)
+            isnan(price) && return nothing
+            quantity = manager.bids[price]
+        end
 
-    return (price=price, quantity=quantity)
+        return (price=price, quantity=quantity)
+    end
 end
 
 """
@@ -769,23 +798,25 @@ Returns `nothing` if order book is not ready or has no asks.
 Returns `(price=Float64, quantity=Float64)` otherwise.
 """
 function get_best_ask(manager::OrderBookManager)
-    if !manager.is_initialized[]
-        return nothing
-    end
+    return lock(manager.state_lock) do
+        if !manager.is_initialized[]
+            return nothing
+        end
 
-    price = manager.best_ask_price[]
-    if isnan(price)
-        return nothing
-    end
+        price = manager.best_ask_price[]
+        if isnan(price)
+            return nothing
+        end
 
-    quantity = get(manager.asks, price, NaN)
-    if isnan(quantity)
-        price = recompute_best_ask!(manager)
-        isnan(price) && return nothing
-        quantity = manager.asks[price]
-    end
+        quantity = get(manager.asks, price, NaN)
+        if isnan(quantity)
+            price = recompute_best_ask!(manager)
+            isnan(price) && return nothing
+            quantity = manager.asks[price]
+        end
 
-    return (price=price, quantity=quantity)
+        return (price=price, quantity=quantity)
+    end
 end
 
 """
@@ -796,14 +827,16 @@ Calculate the bid-ask spread.
 Returns `nothing` if order book is not ready or missing data.
 """
 function get_spread(manager::OrderBookManager)
-    best_bid = get_best_bid(manager)
-    best_ask = get_best_ask(manager)
+    return lock(manager.state_lock) do
+        best_bid = get_best_bid(manager)
+        best_ask = get_best_ask(manager)
 
-    if isnothing(best_bid) || isnothing(best_ask)
-        return nothing
+        if isnothing(best_bid) || isnothing(best_ask)
+            return nothing
+        end
+
+        return best_ask.price - best_bid.price
     end
-
-    return best_ask.price - best_bid.price
 end
 
 """
@@ -814,14 +847,16 @@ Calculate the mid price (average of best bid and best ask).
 Returns `nothing` if order book is not ready or missing data.
 """
 function get_mid_price(manager::OrderBookManager)
-    best_bid = get_best_bid(manager)
-    best_ask = get_best_ask(manager)
+    return lock(manager.state_lock) do
+        best_bid = get_best_bid(manager)
+        best_ask = get_best_ask(manager)
 
-    if isnothing(best_bid) || isnothing(best_ask)
-        return nothing
+        if isnothing(best_bid) || isnothing(best_ask)
+            return nothing
+        end
+
+        return (best_bid.price + best_ask.price) / 2.0
     end
-
-    return (best_bid.price + best_ask.price) / 2.0
 end
 
 """
@@ -832,22 +867,24 @@ Get the top N bid levels.
 Returns a vector of `PriceQuantity`, sorted by price descending (best first).
 """
 function get_bids(manager::OrderBookManager, n::Int=10)
-    if !manager.is_initialized[]
-        return PriceQuantity[]
+    n >= 0 || throw(ArgumentError("n must be non-negative"))
+    return lock(manager.state_lock) do
+        if !manager.is_initialized[]
+            return PriceQuantity[]
+        end
+
+        _rebuild_cache_locked!(manager)
+
+        count = min(n, length(manager.sorted_bids))
+        result = Vector{PriceQuantity}(undef, count)
+
+        @inbounds for i in 1:count
+            price, quantity = manager.sorted_bids[i]
+            result[i] = PriceQuantity(price, quantity)
+        end
+
+        return result
     end
-
-    # Use cached sorted array
-    rebuild_cache!(manager)
-
-    count = min(n, length(manager.sorted_bids))
-    result = Vector{PriceQuantity}(undef, count)
-
-    @inbounds for i in 1:count
-        price, quantity = manager.sorted_bids[i]
-        result[i] = PriceQuantity(price, quantity)
-    end
-
-    return result
 end
 
 """
@@ -858,22 +895,24 @@ Get the top N ask levels.
 Returns a vector of `PriceQuantity`, sorted by price ascending (best first).
 """
 function get_asks(manager::OrderBookManager, n::Int=10)
-    if !manager.is_initialized[]
-        return PriceQuantity[]
+    n >= 0 || throw(ArgumentError("n must be non-negative"))
+    return lock(manager.state_lock) do
+        if !manager.is_initialized[]
+            return PriceQuantity[]
+        end
+
+        _rebuild_cache_locked!(manager)
+
+        count = min(n, length(manager.sorted_asks))
+        result = Vector{PriceQuantity}(undef, count)
+
+        @inbounds for i in 1:count
+            price, quantity = manager.sorted_asks[i]
+            result[i] = PriceQuantity(price, quantity)
+        end
+
+        return result
     end
-
-    # Use cached sorted array
-    rebuild_cache!(manager)
-
-    count = min(n, length(manager.sorted_asks))
-    result = Vector{PriceQuantity}(undef, count)
-
-    @inbounds for i in 1:count
-        price, quantity = manager.sorted_asks[i]
-        result[i] = PriceQuantity(price, quantity)
-    end
-
-    return result
 end
 
 """
@@ -887,20 +926,23 @@ Get an immutable snapshot of the current order book.
 Returns an `OrderBookSnapshot` object.
 """
 function get_orderbook_snapshot(manager::OrderBookManager; max_levels::Int=100)
-    if !manager.is_initialized[]
-        error("Order book not initialized")
+    max_levels >= 0 || throw(ArgumentError("max_levels must be non-negative"))
+    return lock(manager.state_lock) do
+        if !manager.is_initialized[]
+            error("Order book not initialized")
+        end
+
+        bids = get_bids(manager, max_levels)
+        asks = get_asks(manager, max_levels)
+
+        return OrderBookSnapshot(
+            manager.symbol,
+            manager.update_id[],
+            bids,
+            asks,
+            manager.last_update_time[],
+        )
     end
-
-    bids = get_bids(manager, max_levels)
-    asks = get_asks(manager, max_levels)
-
-    return OrderBookSnapshot(
-        manager.symbol,
-        manager.update_id[],
-        bids,
-        asks,
-        manager.last_update_time[]
-    )
 end
 
 # ============================================================================
@@ -920,34 +962,36 @@ Returns `nothing` if insufficient liquidity or not ready.
 Returns `(vwap=Float64, total_cost=Float64)` otherwise.
 """
 function calculate_vwap(manager::OrderBookManager, size::Float64, side::Symbol)
-    if !manager.is_initialized[]
-        return nothing
-    end
-
-    # Use cached sorted levels
-    rebuild_cache!(manager)
-    sorted_levels = side == :buy ? manager.sorted_asks : manager.sorted_bids
-
-    remaining = size
-    total_cost = 0.0
-
-    @inbounds for (price, quantity) in sorted_levels
-        if remaining <= 0
-            break
+    size > 0 || throw(ArgumentError("size must be positive"))
+    side in (:buy, :sell) || throw(ArgumentError("side must be :buy or :sell"))
+    return lock(manager.state_lock) do
+        if !manager.is_initialized[]
+            return nothing
         end
 
-        fill = min(remaining, quantity)
-        total_cost += fill * price
-        remaining -= fill
-    end
+        _rebuild_cache_locked!(manager)
+        sorted_levels = side == :buy ? manager.sorted_asks : manager.sorted_bids
 
-    if remaining > 0
-        # Insufficient liquidity
-        return nothing
-    end
+        remaining = size
+        total_cost = 0.0
 
-    vwap = total_cost / size
-    return (vwap=vwap, total_cost=total_cost)
+        @inbounds for (price, quantity) in sorted_levels
+            if remaining <= 0
+                break
+            end
+
+            fill = min(remaining, quantity)
+            total_cost += fill * price
+            remaining -= fill
+        end
+
+        if remaining > 0
+            return nothing
+        end
+
+        vwap = total_cost / size
+        return (vwap=vwap, total_cost=total_cost)
+    end
 end
 
 """
@@ -963,33 +1007,35 @@ Returns a value between -1.0 and 1.0:
 Returns `nothing` if not ready.
 """
 function calculate_depth_imbalance(manager::OrderBookManager; levels::Int=5)
-    if !manager.is_initialized[]
-        return nothing
+    levels >= 0 || throw(ArgumentError("levels must be non-negative"))
+    return lock(manager.state_lock) do
+        if !manager.is_initialized[]
+            return nothing
+        end
+
+        _rebuild_cache_locked!(manager)
+
+        bid_volume = 0.0
+        count = min(levels, length(manager.sorted_bids))
+        @inbounds @simd for i in 1:count
+            _, qty = manager.sorted_bids[i]
+            bid_volume += qty
+        end
+
+        ask_volume = 0.0
+        count = min(levels, length(manager.sorted_asks))
+        @inbounds @simd for i in 1:count
+            _, qty = manager.sorted_asks[i]
+            ask_volume += qty
+        end
+
+        total = bid_volume + ask_volume
+        if total == 0.0
+            return 0.0
+        end
+
+        return (bid_volume - ask_volume) / total
     end
-
-    # Use cached sorted arrays
-    rebuild_cache!(manager)
-
-    bid_volume = 0.0
-    count = min(levels, length(manager.sorted_bids))
-    @inbounds @simd for i in 1:count
-        _, qty = manager.sorted_bids[i]
-        bid_volume += qty
-    end
-
-    ask_volume = 0.0
-    count = min(levels, length(manager.sorted_asks))
-    @inbounds @simd for i in 1:count
-        _, qty = manager.sorted_asks[i]
-        ask_volume += qty
-    end
-
-    total = bid_volume + ask_volume
-    if total == 0.0
-        return 0.0
-    end
-
-    return (bid_volume - ask_volume) / total
 end
 
 end # module OrderBookManagers

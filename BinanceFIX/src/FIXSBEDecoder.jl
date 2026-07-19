@@ -94,27 +94,34 @@ end
 # =============================================================================
 
 """Read little-endian integers from byte array (1-indexed)"""
-function read_uint16(data::Vector{UInt8}, offset::Int)
-    return reinterpret(UInt16, data[offset:offset+1])[1]
+@inline function read_uint16(data::Vector{UInt8}, offset::Int)
+    return UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
 end
 
-function read_uint32(data::Vector{UInt8}, offset::Int)
-    return reinterpret(UInt32, data[offset:offset+3])[1]
+@inline function read_uint32(data::Vector{UInt8}, offset::Int)
+    return UInt32(data[offset]) |
+           (UInt32(data[offset + 1]) << 8) |
+           (UInt32(data[offset + 2]) << 16) |
+           (UInt32(data[offset + 3]) << 24)
 end
 
-function read_uint64(data::Vector{UInt8}, offset::Int)
-    return reinterpret(UInt64, data[offset:offset+7])[1]
+@inline function read_uint64(data::Vector{UInt8}, offset::Int)
+    value = UInt64(0)
+    for shift in 0:8:56
+        value |= UInt64(data[offset + (shift >>> 3)]) << shift
+    end
+    return value
 end
 
-function read_int8(data::Vector{UInt8}, offset::Int)
-    return reinterpret(Int8, data[offset:offset])[1]
+@inline function read_int8(data::Vector{UInt8}, offset::Int)
+    return reinterpret(Int8, data[offset])
 end
 
-function read_int64(data::Vector{UInt8}, offset::Int)
-    return reinterpret(Int64, data[offset:offset+7])[1]
+@inline function read_int64(data::Vector{UInt8}, offset::Int)
+    return reinterpret(Int64, read_uint64(data, offset))
 end
 
-function read_uint8(data::Vector{UInt8}, offset::Int)
+@inline function read_uint8(data::Vector{UInt8}, offset::Int)
     return data[offset]
 end
 
@@ -131,10 +138,10 @@ end
 
 """Read fixed-length string, trimming null bytes"""
 function read_fixed_string(data::Vector{UInt8}, offset::Int, length::Int)
-    str_bytes = data[offset:offset+length-1]
+    str_bytes = view(data, offset:offset+length-1)
     null_pos = findfirst(==(0x00), str_bytes)
     if null_pos !== nothing
-        str_bytes = str_bytes[1:null_pos-1]
+        str_bytes = view(str_bytes, 1:null_pos-1)
     end
     return String(str_bytes)
 end
@@ -145,7 +152,7 @@ function read_var_string8(data::Vector{UInt8}, offset::Int)
     if length == 0
         return "", offset + 1
     end
-    str_bytes = data[offset+1:offset+length]
+    str_bytes = view(data, offset+1:offset+length)
     return String(str_bytes), offset + 1 + length
 end
 
@@ -155,7 +162,7 @@ function read_var_string16(data::Vector{UInt8}, offset::Int)
     if length == 0
         return "", offset + 2
     end
-    str_bytes = data[offset+2:offset+1+length]
+    str_bytes = view(data, offset+2:offset+1+length)
     return String(str_bytes), offset + 2 + length
 end
 
@@ -224,16 +231,24 @@ Decode a complete FIX SBE message including SOFH, header, and body.
 """
 function decode_fix_sbe_message(data::Vector{UInt8})
     sofh = decode_sofh(data)
+    message_length = Int(sofh.messageLength)
+    minimum_length = SBE_SOFH_SIZE + SBE_MESSAGE_HEADER_SIZE
+    message_length >= minimum_length || throw(ArgumentError(
+        "Invalid SOFH message length $message_length; minimum is $minimum_length",
+    ))
+    message_length <= length(data) || throw(ArgumentError(
+        "Truncated FIX SBE message: header declares $message_length bytes, received $(length(data))",
+    ))
     header = decode_message_header(data, SBE_SOFH_SIZE + 1)
 
     # Validate schema
     if header.schemaId != SBE_SCHEMA_ID_FIX
-        @warn "Unexpected schema ID: $(header.schemaId), expected $SBE_SCHEMA_ID_FIX"
+        throw(ArgumentError("Unexpected schema ID $(header.schemaId), expected $SBE_SCHEMA_ID_FIX"))
     end
 
     # Body starts after SOFH + message header
     body_offset = SBE_SOFH_SIZE + SBE_MESSAGE_HEADER_SIZE + 1
-    body_end = min(sofh.messageLength, length(data))
+    body_end = message_length
 
     body = body_offset <= body_end ? data[body_offset:body_end] : UInt8[]
 
@@ -244,9 +259,7 @@ end
 # Utility Functions
 # =============================================================================
 
-"""Get template name from template ID"""
-function get_template_name(templateId::UInt16)
-    names = Dict(
+const TEMPLATE_NAMES = Dict{UInt16,String}(
         # Admin Messages
         SBE_TEMPLATE_HEARTBEAT => "Heartbeat",
         SBE_TEMPLATE_TEST_REQUEST => "TestRequest",
@@ -279,15 +292,22 @@ function get_template_name(templateId::UInt16)
         SBE_TEMPLATE_MARKET_DATA_INCREMENTAL_TRADE => "MarketDataIncrementalTrade",
         SBE_TEMPLATE_MARKET_DATA_INCREMENTAL_BOOK_TICKER => "MarketDataIncrementalBookTicker",
         SBE_TEMPLATE_MARKET_DATA_INCREMENTAL_DEPTH => "MarketDataIncrementalDepth",
-    )
-    return get(names, templateId, "Unknown($templateId)")
+)
+
+"""Get template name from template ID"""
+function get_template_name(templateId::UInt16)
+    return get(TEMPLATE_NAMES, templateId, "Unknown($templateId)")
 end
 
 """Check if data contains a complete FIX SBE message"""
 function has_complete_message(data::Vector{UInt8})
     length(data) < SBE_SOFH_SIZE && return false
-    messageLength = read_uint32(data, 1)
-    return length(data) >= messageLength
+    message_length = Int(read_uint32(data, 1))
+    minimum_length = SBE_SOFH_SIZE + SBE_MESSAGE_HEADER_SIZE
+    message_length >= minimum_length || throw(ArgumentError(
+        "Invalid SOFH message length $message_length; minimum is $minimum_length",
+    ))
+    return length(data) >= message_length
 end
 
 """Extract a complete message from buffer, returns (message, remaining)"""
@@ -295,9 +315,9 @@ function extract_message(data::Vector{UInt8})
     if !has_complete_message(data)
         return nothing, data
     end
-    messageLength = read_uint32(data, 1)
-    message = data[1:messageLength]
-    remaining = data[messageLength+1:end]
+    message_length = Int(read_uint32(data, 1))
+    message = data[1:message_length]
+    remaining = data[message_length+1:end]
     return message, remaining
 end
 
@@ -680,8 +700,8 @@ function decode_news(header::FIXSBEMessageHeader, body::Vector{UInt8})
 end
 
 """Helper to read int32 (little-endian)"""
-function read_int32(data::Vector{UInt8}, offset::Int)
-    return reinterpret(Int32, data[offset:offset+3])[1]
+@inline function read_int32(data::Vector{UInt8}, offset::Int)
+    return reinterpret(Int32, read_uint32(data, offset))
 end
 
 """Decode ExecutionReport message"""

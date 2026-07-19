@@ -58,6 +58,10 @@ end
         @test isdefined(Binance, :PriceLevel)
         @test isdefined(Binance, :Signature)
         @test isdefined(Binance, :RsaSigner)
+        @test isempty(Symbol[
+            name for name in names(Binance; all=false, imported=false)
+            if !isdefined(Binance, name)
+        ])
     end
 
     @testset "HMAC signing is deterministic" begin
@@ -264,5 +268,95 @@ end
         @test Binance.SBEMarketDataStreams.SCHEMA_VERSION_CURRENT == UInt16(5)
         @test Binance.Types.to_struct(Binance.Types.SymbolStatus, "CANCEL_ONLY") ==
               Binance.Types.CANCEL_ONLY
+    end
+
+    @testset "Exact decimal filters avoid floating-point rejection" begin
+        price_filter = Binance.Types.PriceFilter(
+            "PRICE_FILTER", "0.0", "1000.0", "0.1",
+        )
+        parsed_price = Binance.Filters.parse_filter(price_filter)
+        @test Binance.Filters.validate_price(0.3, parsed_price)
+        @test_throws ArgumentError Binance.Filters.validate_price("0.31", parsed_price)
+
+        lot_filter = Binance.Types.LotSizeFilter(
+            "LOT_SIZE", "0.0", "1000.0", "0.01",
+        )
+        parsed_lot = Binance.Filters.parse_filter(lot_filter)
+        @test Binance.Filters.validate_quantity("0.03", parsed_lot)
+        @test_throws ArgumentError Binance.Filters.validate_quantity("0.031", parsed_lot)
+    end
+
+    @testset "OrderBookManager accepts JSON3 depth objects" begin
+        manager = Binance.OrderBookManager("BTCUSDT", nothing, nothing)
+        manager.is_initialized[] = true
+        manager.update_id[] = 1
+        event = JSON3.read("""
+        {"U":2,"u":2,"b":[["100.0","1.0"]],"a":[["101.0","2.0"]]}
+        """)
+        @test Binance.OrderBookManagers.apply_update!(manager, event) == :applied
+        @test Binance.get_best_bid(manager) == (price=100.0, quantity=1.0)
+        @test Binance.get_best_ask(manager) == (price=101.0, quantity=2.0)
+    end
+
+    @testset "Rate limit updates reuse REQUEST_WEIGHT limit" begin
+        limiter = Binance.BinanceRateLimit(test_binance_config())
+        updates = JSON3.read("""
+        [{"rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE",
+          "intervalNum":1,"limit":7000,"count":12}]
+        """)
+        Binance.RateLimiter.update_limits!(limiter, updates)
+        matching = filter(
+            limit -> limit.limit_type == "REQUEST_WEIGHT" && limit.interval_ms == 60_000,
+            limiter.limits,
+        )
+        @test length(matching) == 1
+        @test only(matching).limit == 7000
+    end
+
+    @testset "Configuration reads testnet credentials from TOML" begin
+        tmpdir = mktempdir()
+        config_path = joinpath(tmpdir, "config.toml")
+        write(config_path, """
+        [api]
+        api_key = "prod-key"
+        secret_key = "prod-secret"
+        testnet_api_key = "test-key"
+        testnet_secret_key = "test-secret"
+        signature_method = "HMAC_SHA256"
+
+        [connection]
+        testnet = true
+        """)
+        config = Binance.Config.from_toml(config_path)
+        @test config.testnet
+        @test config.api_key == "test-key"
+        @test config.api_secret == "test-secret"
+        @test Binance.load_config(config_path).testnet
+    end
+
+    @testset "NONE configuration creates an explicit no-op signer" begin
+        signer = Binance.create_signer(test_binance_config(
+            signature_method="NONE", api_secret="",
+        ))
+        @test signer isa Binance.NoSigner
+        @test_throws ArgumentError Binance.Signature.sign_message(signer, "payload")
+    end
+
+    @testset "Callback wrappers retain concrete function types" begin
+        stream_callback = Binance.MarketDataStreams.StreamCallback(identity)
+        sbe_callback = Binance.SBEMarketDataStreams.SBEStreamCallback(identity)
+        event_callback = Binance.WebSocketAPI.EventCallback(identity)
+        @test fieldtype(typeof(stream_callback), 1) === typeof(identity)
+        @test fieldtype(typeof(sbe_callback), 1) === typeof(identity)
+        @test fieldtype(typeof(event_callback), 1) === typeof(identity)
+    end
+
+    @testset "SBE decoder rejects impossible group sizes before allocation" begin
+        data = zeros(UInt8, 32)
+        data[3:4] .= (0x10, 0x27)  # templateId 10000
+        data[5:6] .= (0x03, 0x00)  # schemaId 3
+        data[7:8] .= (0x05, 0x00)  # version 5
+        data[29:32] .= 0xff
+        @test_throws ArgumentError Binance.SBEMarketDataStreams.SBEDecoder.decode_sbe_message(data)
     end
 end

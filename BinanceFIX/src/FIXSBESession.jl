@@ -20,10 +20,11 @@ using ..FIXConstants
 using ..FIXSBEEncoder
 using ..FIXSBEDecoder
 
-export SBESession, SBESessionType
+export SBESession, SBESessionType, SBEOrderEntry, SBEDropCopy, SBEMarketData
 export connect_sbe, logon_sbe, logout_sbe, close_sbe
 export heartbeat_sbe, test_request_sbe
 export new_order_single_sbe, order_cancel_request_sbe, order_mass_cancel_request_sbe
+export new_order_list_sbe, order_cancel_request_and_new_sbe
 export order_amend_keep_priority_sbe, limit_query_sbe
 export market_data_request_sbe, instrument_list_request_sbe
 export receive_sbe_message, process_sbe_messages
@@ -61,11 +62,11 @@ end
 # SBE Session Structure
 # =============================================================================
 
-struct SBESessionCallback
-    callback::Any
+struct SBESessionCallback{F}
+    callback::F
 end
 
-@inline (callback::SBESessionCallback)(args...) = callback.callback(args...)
+@inline (callback::SBESessionCallback{F})(args...) where {F} = callback.callback(args...)
 
 wrap_sbe_session_callback(::Nothing) = nothing
 wrap_sbe_session_callback(callback::SBESessionCallback) = callback
@@ -74,7 +75,7 @@ wrap_sbe_session_callback(callback) = SBESessionCallback(callback)
 mutable struct SBESession
     host::String
     port::Int
-    socket::Union{IO,Nothing}
+    socket::Union{TCPSocket,Nothing}
     seq_num::UInt32
     sender_comp_id::String
     target_comp_id::String
@@ -92,7 +93,9 @@ mutable struct SBESession
     test_req_sent_time::Union{DateTime,Nothing}
     maintenance_warning::Bool
     monitor_task::Union{Task,Nothing}
-    should_stop::Ref{Bool}
+    should_stop::Threads.Atomic{Bool}
+    read_lock::ReentrantLock
+    send_lock::ReentrantLock
 
     # Callbacks for connection events
     on_maintenance::Union{SBESessionCallback,Nothing}
@@ -115,7 +118,8 @@ mutable struct SBESession
         now_time = now(Dates.UTC)
         new(host, port, nothing, UInt32(1), sender_comp_id, target_comp_id, config, signer,
             session_type, false, UInt8[],
-            UInt32(30), now_time, now_time, "", nothing, false, nothing, Ref(false),
+            UInt32(30), now_time, now_time, "", nothing, false, nothing,
+            Threads.Atomic{Bool}(false), ReentrantLock(), ReentrantLock(),
             wrap_sbe_session_callback(on_maintenance),
             wrap_sbe_session_callback(on_disconnect),
             wrap_sbe_session_callback(on_message))
@@ -164,10 +168,10 @@ function connect_sbe(session::SBESession)
     try
         # TCP connection to local stunnel proxy
         # stunnel handles TLS termination to Binance FIX servers
-        println("DEBUG: Connecting to stunnel proxy for SBE at $(session.host):$(session.port)...")
+        @debug "Connecting to FIX SBE stunnel proxy" host=session.host port=session.port
         tcp_socket = connect(session.host, session.port)
         session.socket = tcp_socket
-        println("Connected to FIX SBE server via stunnel at $(session.host):$(session.port)")
+        @info "Connected to FIX SBE server via stunnel" host=session.host port=session.port
 
         # Reset timestamps on new connection
         now_time = now(Dates.UTC)
@@ -188,12 +192,16 @@ function close_sbe(session::SBESession)
     # Stop monitor if running
     stop_sbe_monitor(session)
 
-    if !isnothing(session.socket) && isopen(session.socket)
-        close(session.socket)
-        println("FIX SBE connection closed")
+    lock(session.read_lock) do
+        lock(session.send_lock) do
+            if !isnothing(session.socket) && isopen(session.socket)
+                close(session.socket)
+                @info "FIX SBE connection closed"
+            end
+            session.socket = nothing
+        end
     end
 
-    session.socket = nothing
     session.is_logged_in = false
 end
 
@@ -202,14 +210,18 @@ end
 # =============================================================================
 
 function send_sbe_message(session::SBESession, msg::Vector{UInt8})
-    if isnothing(session.socket) || !isopen(session.socket)
-        error("FIX SBE session not connected")
+    lock(session.send_lock) do
+        socket = session.socket
+        if isnothing(socket) || !isopen(socket)
+            error("FIX SBE session not connected")
+        end
+        write(socket, msg)
+        flush(socket)
+        @debug "Sent SBE message" bytes=length(msg)
+        session.seq_num += 1
+        session.last_sent_time = now(Dates.UTC)
     end
-    write(session.socket, msg)
-    flush(session.socket)
-    println("DEBUG: Sent SBE message ($(length(msg)) bytes)")
-    session.seq_num += 1
-    session.last_sent_time = now(Dates.UTC)
+    return nothing
 end
 
 # =============================================================================
@@ -269,7 +281,7 @@ function logon_sbe(session::SBESession;
         recv_window=recv_window
     )
 
-    println("Sending SBE Logon...")
+    @info "Sending SBE Logon"
     send_sbe_message(session, msg)
 
     # Wait for LogonAck response
@@ -293,7 +305,7 @@ function logon_sbe(session::SBESession;
 
             if msg_type == :logon_ack
                 session.is_logged_in = true
-                println("SBE Logon confirmed by server (uuid=$(decoded.uuid))")
+                @info "SBE Logon confirmed by server" uuid=decoded.uuid
                 break
             elseif msg_type == :logout
                 error("SBE Logon rejected by server: $(decoded.text)")
@@ -312,7 +324,7 @@ end
 
 function logout_sbe(session::SBESession; text::String="")
     msg = encode_logout(seq_num=session.seq_num, text=text)
-    println("Sending SBE Logout...")
+    @info "Sending SBE Logout"
     send_sbe_message(session, msg)
     session.is_logged_in = false
 end
@@ -608,64 +620,50 @@ Receive and return raw SBE message(s) from the session.
 Returns a vector of raw message byte arrays, or empty vector if no data available.
 """
 function receive_sbe_message(session::SBESession; timeout_ms::Int=0)
-    if isnothing(session.socket) || !isopen(session.socket)
-        return Vector{UInt8}[]
-    end
-
-    # Read data with timeout
-    try
-        max_wait_sec = timeout_ms > 0 ? timeout_ms / 1000.0 : 0.1
-
-        read_task = @async begin
+    timeout_ms >= 0 || throw(ArgumentError("timeout_ms must be non-negative"))
+    return lock(session.read_lock) do
+        socket = session.socket
+        if isnothing(socket) || !isopen(socket)
+            return Vector{UInt8}[]
+        end
+        try
+            max_wait_sec = timeout_ms > 0 ? timeout_ms / 1000 : 0.1
+            deadline = time() + max_wait_sec
             buf = Vector{UInt8}()
-            start_time = time()
-            while isopen(session.socket) && (time() - start_time) < max_wait_sec + 1.0
-                if bytesavailable(session.socket) > 0
-                    byte = read(session.socket, UInt8)
-                    push!(buf, byte)
+            while isopen(socket) && time() < deadline
+                available = bytesavailable(socket)
+                if available > 0
+                    append!(buf, read(socket, available))
                 else
-                    sleep(0.001)
+                    sleep(min(0.001, max(deadline - time(), 0.0)))
                 end
             end
-            return buf
-        end
-
-        timer = Timer(max_wait_sec)
-        while !istaskdone(read_task) && isopen(timer)
-            sleep(0.01)
-        end
-        close(timer)
-
-        if istaskdone(read_task)
-            data = fetch(read_task)
-            if !isempty(data)
-                append!(session.recv_buffer, data)
+            if !isempty(buf)
+                append!(session.recv_buffer, buf)
+            end
+        catch e
+            if !(e isa EOFError || e isa Base.IOError)
+                @warn "Error reading from SBE socket" exception=(e, catch_backtrace())
             end
         end
-    catch e
-        if !(e isa EOFError || e isa Base.IOError)
-            @warn "Error reading from SBE socket: $e"
+
+        messages = Vector{UInt8}[]
+        while true
+            msg, remaining = extract_message(session.recv_buffer)
+            if isnothing(msg)
+                break
+            end
+            push!(messages, msg)
+            session.recv_buffer = remaining
+            @debug "Extracted SBE message" bytes=length(msg)
         end
-    end
 
-    # Extract complete messages from buffer
-    messages = Vector{UInt8}[]
-    while true
-        msg, remaining = extract_message(session.recv_buffer)
-        if isnothing(msg)
-            break
+        if !isempty(messages)
+            session.last_recv_time = now(Dates.UTC)
         end
-        push!(messages, msg)
-        session.recv_buffer = remaining
-        println("DEBUG: Extracted SBE message ($(length(msg)) bytes)")
-    end
 
-    # Update last received time
-    if !isempty(messages)
-        session.last_recv_time = now(Dates.UTC)
+        return messages
     end
-
-    return messages
 end
 
 """
@@ -739,7 +737,7 @@ function start_sbe_monitor(session::SBESession)
 
     session.should_stop[] = false
 
-    session.monitor_task = @async begin
+    session.monitor_task = errormonitor(@async begin
         try
             sbe_monitor_loop(session)
         catch e
@@ -750,24 +748,22 @@ function start_sbe_monitor(session::SBESession)
                 end
             end
         end
-    end
+    end)
 
-    println("SBE Connection monitor started (HeartBtInt=$(session.heartbeat_interval)s)")
+    @info "SBE connection monitor started" heartbeat_interval=session.heartbeat_interval
 end
 
 function stop_sbe_monitor(session::SBESession)
     session.should_stop[] = true
 
     if !isnothing(session.monitor_task) && !istaskdone(session.monitor_task)
-        for _ in 1:10
-            if istaskdone(session.monitor_task)
-                break
-            end
-            sleep(0.1)
-        end
+        wait_status = timedwait(() -> istaskdone(session.monitor_task), 2.0)
+        wait_status == :timed_out && @warn "Timed out waiting for SBE monitor to stop"
     end
 
-    session.monitor_task = nothing
+    if isnothing(session.monitor_task) || istaskdone(session.monitor_task)
+        session.monitor_task = nothing
+    end
 end
 
 function sbe_monitor_loop(session::SBESession)
@@ -851,7 +847,7 @@ function reconnect_sbe(session::SBESession; heartbeat_interval::UInt32=session.h
     process_sbe_messages(session)
 
     if session.is_logged_in
-        println("SBE Reconnected successfully")
+        @info "SBE session reconnected successfully"
         start_sbe_monitor(session)
         return true
     else
