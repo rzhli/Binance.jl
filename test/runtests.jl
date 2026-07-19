@@ -264,8 +264,7 @@ end
         @test calc.externalCalculationId == 42
     end
 
-    @testset "Spot SBE 3:5 symbolStatus CANCEL_ONLY is supported" begin
-        @test Binance.SBEMarketDataStreams.SCHEMA_VERSION_CURRENT == UInt16(5)
+    @testset "Spot WebSocket API symbolStatus CANCEL_ONLY is supported" begin
         @test Binance.Types.to_struct(Binance.Types.SymbolStatus, "CANCEL_ONLY") ==
               Binance.Types.CANCEL_ONLY
     end
@@ -313,6 +312,18 @@ end
         @test only(matching).limit == 7000
     end
 
+    @testset "Rate limiter returns after reserving one request" begin
+        limiter = Binance.BinanceRateLimit(test_binance_config())
+        connection_limit = only(filter(
+            limit -> limit.limit_type == "CONNECTIONS",
+            limiter.limits,
+        ))
+
+        @test isempty(connection_limit.requests)
+        @test isnothing(Binance.check_and_wait(limiter, "CONNECTIONS"))
+        @test length(connection_limit.requests) == 1
+    end
+
     @testset "Configuration reads testnet credentials from TOML" begin
         tmpdir = mktempdir()
         config_path = joinpath(tmpdir, "config.toml")
@@ -351,11 +362,60 @@ end
         @test fieldtype(typeof(event_callback), 1) === typeof(identity)
     end
 
+    @testset "SBE market stream uses official schema 1:0" begin
+        decoder = Binance.SBEMarketDataStreams.SBEDecoder
+        @test decoder.SCHEMA_ID == UInt16(1)
+        @test decoder.SCHEMA_VERSION_CURRENT == UInt16(0)
+
+        append_u16!(data, value) = append!(data, UInt8[
+            value & 0xff, (value >> 8) & 0xff,
+        ])
+        append_u32!(data, value) = append!(data, UInt8[
+            value & 0xff, (value >> 8) & 0xff,
+            (value >> 16) & 0xff, (value >> 24) & 0xff,
+        ])
+        function append_i64!(data, value::Int64)
+            bits = reinterpret(UInt64, value)
+            for shift in 0:8:56
+                push!(data, UInt8((bits >> shift) & 0xff))
+            end
+            return data
+        end
+
+        data = UInt8[]
+        append_u16!(data, UInt16(18))     # root blockLength
+        append_u16!(data, UInt16(10000))  # TradesStreamEvent
+        append_u16!(data, UInt16(1))      # spot_stream schemaId
+        append_u16!(data, UInt16(0))      # schema version
+        append_i64!(data, Int64(1_700_000_000_000_000))
+        append_i64!(data, Int64(1_700_000_000_000_001))
+        push!(data, reinterpret(UInt8, Int8(-2)))
+        push!(data, reinterpret(UInt8, Int8(-8)))
+        append_u16!(data, UInt16(25))
+        append_u32!(data, UInt32(1))
+        append_i64!(data, Int64(42))
+        append_i64!(data, Int64(6_000_000))
+        append_i64!(data, Int64(100_000))
+        push!(data, UInt8(1))
+        symbol = codeunits("BTCUSDT")
+        push!(data, UInt8(length(symbol)))
+        append!(data, symbol)
+
+        event = decoder.decode_sbe_message(data)
+        @test event isa Binance.TradeEvent
+        @test event.symbol == "BTCUSDT"
+        @test length(event.trades) == 1
+        @test event.trades[1].id == 42
+        @test event.trades[1].price ≈ 60_000.0
+        @test event.trades[1].qty ≈ 0.001
+        @test event.trades[1].isBuyerMaker
+    end
+
     @testset "SBE decoder rejects impossible group sizes before allocation" begin
         data = zeros(UInt8, 32)
         data[3:4] .= (0x10, 0x27)  # templateId 10000
-        data[5:6] .= (0x03, 0x00)  # schemaId 3
-        data[7:8] .= (0x05, 0x00)  # version 5
+        data[5:6] .= (0x01, 0x00)  # schemaId 1
+        data[7:8] .= (0x00, 0x00)  # version 0
         data[29:32] .= 0xff
         @test_throws ArgumentError Binance.SBEMarketDataStreams.SBEDecoder.decode_sbe_message(data)
     end

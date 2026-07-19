@@ -24,6 +24,17 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.12.1 - Strategy startup and SBE stream hotfixes
+
+- **Immediate first connection** — Fixed a rate-limiter control-flow bug that
+  repeatedly reserved connection slots until the five-minute WebSocket limit
+  was exhausted, making strategy startup appear to hang.
+- **Regression coverage** — Added a test ensuring one connection attempt
+  consumes exactly one limiter slot and returns immediately.
+- **SBE market-stream schema** — Corrected the dedicated market-data decoder
+  from the WebSocket API schema ID `3` to the official `spot_stream` schema
+  `1:0`, restoring Trade, best-bid/ask, and depth stream decoding.
+
 ### v0.12.0 - Precision, concurrency, and protocol hardening
 
 - **Exact order validation** — Price and quantity filters accept decimal
@@ -39,21 +50,6 @@ Binance.jl provides complete access to Binance's trading infrastructure:
   `REQUEST_WEIGHT` rate-limit accounting.
 - **BinanceFIX 0.5.0** — Includes the corresponding session, framing,
   concurrency, and encoder/decoder improvements. Julia 1.11+ is supported.
-
-### v0.11.3 - SBE incremental depth 20ms rollout
-
-- **Faster SBE depth updates** — Binance will change both the SBE WebSocket
-  `<symbol>@depth` stream and FIX SBE `MarketDataIncrementalDepth` from 25ms
-  to 20ms on 2026-08-04 at approximately 07:00 UTC. No stream name, template,
-  or decoder changes are required; consumers should allow for roughly 25%
-  more depth callbacks. Text FIX incremental depth remains 100ms.
-
-### v0.11.2 - Spot SBE 3:5 and CANCEL_ONLY
-
-- **Spot symbol status support** — `SymbolStatus` now includes `CANCEL_ONLY`,
-  and REST/WebSocket API `exchangeInfo` accept it as a `symbolStatus` filter.
-- **SBE production lifecycle docs** — Schema 3:5 is documented as the current
-  schema for the 2026-07-07 rollout; schema 3:4 is deprecated.
 
 ---
 

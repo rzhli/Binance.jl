@@ -5,24 +5,14 @@ Implements decoding for Binance SBE (Simple Binary Encoding) messages
 based on the official SBE schema.
 
 Schema Information:
-- Schema ID: 3
-- Supported Versions: 1 (retires 2026-06-29 in production),
-  2 (deprecated 2026-03-25), 3 (deprecated 2026-05-08),
-  4 (deprecated 2026-07-01), 5 (current rollout starts 2026-07-07)
+- Package: spot_stream
+- Schema ID: 1
+- Version: 0
+- Semantic version: 5.2
 - Byte order: Little Endian
 
-Note: Binance's production SBE lifecycle was updated on 2026-07-01: schema
-3:1 retires on 2026-06-29, 3:2, 3:3, and 3:4 are deprecated, and the
-3:5 rollout starts on 2026-07-07.
-Version 3:4 adds:
-  - New message BlockTradesResponse
-  - New type blockTradeId
-  - New field expiryReason in OrderResponse and OrdersResponse
-Version 3:5 adds:
-  - New symbolStatus enum value CANCEL_ONLY
-
-Market data template structures used by this decoder are unchanged across
-3:3, 3:4, and 3:5; new template IDs are handled gracefully.
+This is Binance's dedicated market-stream schema (`stream_1_0.xml`). It is
+separate from the Spot WebSocket API response schema (`spot_3_x.xml`).
 
 Message Types (Market Data):
 - TradesStreamEvent (10000)
@@ -41,20 +31,10 @@ export SCHEMA_ID, SCHEMA_VERSION_DEPRECATED, SCHEMA_VERSION_CURRENT
 # Schema Version Constants
 # ============================================================================
 
-const SCHEMA_ID = UInt16(3)
-const SCHEMA_VERSION_DEPRECATED = UInt16(1)  # Retires in production on 2026-06-29
-const SCHEMA_VERSION_V2 = UInt16(2)          # Deprecated as of 2026-03-25
-const SCHEMA_VERSION_V3 = UInt16(3)          # Deprecated as of 2026-05-08
-const SCHEMA_VERSION_V4 = UInt16(4)          # Deprecated as of 2026-07-01
-const SCHEMA_VERSION_CURRENT = UInt16(5)     # Current version for the 2026-07-07 rollout
-
-# ============================================================================
-# SBE Null Value Constants (for optional fields)
-# ============================================================================
-# As of 2025-12-09, MDEntrySize fields in incremental book ticker/depth
-# are presence="optional" and use null sentinel values when absent.
-
-const INT64_NULL = typemax(Int64)  # 0x7FFFFFFFFFFFFFFF - null value for int64 mantissa
+const SCHEMA_ID = UInt16(1)
+const SCHEMA_VERSION_CURRENT = UInt16(0)
+# Compatibility alias retained for callers that imported the old constant.
+const SCHEMA_VERSION_DEPRECATED = SCHEMA_VERSION_CURRENT
 
 # ============================================================================
 # Message Header Structure
@@ -66,9 +46,8 @@ SBE Message Header (8 bytes)
 Fields:
 - blockLength: uint16 - Length of message body
 - templateId: uint16 - Message type identifier
-- schemaId: uint16 - Schema identifier (Binance uses 3)
-- version: uint16 - Schema version (1 retires 2026-06-29;
-  2, 3, and 4 deprecated; 5 rollout starts 2026-07-07)
+- schemaId: uint16 - Schema identifier (`1` for `spot_stream`)
+- version: uint16 - Schema version (`0`)
 """
 struct SBEMessageHeader
     blockLength::UInt16
@@ -346,11 +325,7 @@ function decode_trades_event(data::Vector{UInt8}, ::SBEMessageHeader)
     return TradeEvent(eventTime, transactTime, symbol, trades)
 end
 
-"""Decode BestBidAskStreamEvent (template ID: 10001)
-
-Note: As of 2025-12-09 schema update, MDEntrySize fields (bidQty, askQty) are presence="optional".
-When quantity is null (INT64_NULL), it is converted to NaN.
-"""
+"""Decode BestBidAskStreamEvent (template ID: 10001)."""
 function decode_best_bid_ask_event(data::Vector{UInt8}, ::SBEMessageHeader)
     offset = 9  # After header
 
@@ -381,11 +356,9 @@ function decode_best_bid_ask_event(data::Vector{UInt8}, ::SBEMessageHeader)
 
     # Convert to floats
     bidPrice = mantissa_to_float(bidPriceMantissa, priceExponent)
-    # Handle optional MDEntrySize: null value means quantity is not present
-    bidQty = bidQtyMantissa == INT64_NULL ? NaN : mantissa_to_float(bidQtyMantissa, qtyExponent)
+    bidQty = mantissa_to_float(bidQtyMantissa, qtyExponent)
     askPrice = mantissa_to_float(askPriceMantissa, priceExponent)
-    # Handle optional MDEntrySize: null value means quantity is not present
-    askQty = askQtyMantissa == INT64_NULL ? NaN : mantissa_to_float(askQtyMantissa, qtyExponent)
+    askQty = mantissa_to_float(askQtyMantissa, qtyExponent)
 
     # Read symbol
     symbol, _ = read_var_string(data, offset)
@@ -464,11 +437,7 @@ function decode_depth_snapshot_event(data::Vector{UInt8}, ::SBEMessageHeader)
     return DepthSnapshotEvent(eventTime, bookUpdateId, symbol, bids, asks)
 end
 
-"""Decode DepthDiffStreamEvent (template ID: 10003)
-
-Note: As of 2025-12-09 schema update, MDEntrySize fields are presence="optional".
-When quantity is null (INT64_NULL), it is converted to NaN.
-"""
+"""Decode DepthDiffStreamEvent (template ID: 10003)."""
 function decode_depth_diff_event(data::Vector{UInt8}, ::SBEMessageHeader)
     offset = 9  # After header
 
@@ -505,8 +474,7 @@ function decode_depth_diff_event(data::Vector{UInt8}, ::SBEMessageHeader)
         offset += 8
 
         price = mantissa_to_float(priceMantissa, priceExponent)
-        # Handle optional MDEntrySize: null value means quantity is not present
-        qty = qtyMantissa == INT64_NULL ? NaN : mantissa_to_float(qtyMantissa, qtyExponent)
+        qty = mantissa_to_float(qtyMantissa, qtyExponent)
 
         bids[i] = PriceLevel(price, qty)
     end
@@ -528,8 +496,7 @@ function decode_depth_diff_event(data::Vector{UInt8}, ::SBEMessageHeader)
         offset += 8
 
         price = mantissa_to_float(priceMantissa, priceExponent)
-        # Handle optional MDEntrySize: null value means quantity is not present
-        qty = qtyMantissa == INT64_NULL ? NaN : mantissa_to_float(qtyMantissa, qtyExponent)
+        qty = mantissa_to_float(qtyMantissa, qtyExponent)
 
         asks[i] = PriceLevel(price, qty)
     end

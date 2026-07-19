@@ -122,7 +122,7 @@ export sbe_subscribe_best_bid_ask, sbe_unsubscribe_best_bid_ask, sbe_subscribe_c
 export sbe_subscribe_depth, sbe_unsubscribe_depth, sbe_subscribe_depth20, sbe_unsubscribe_depth20
 export sbe_close_all, sbe_list_streams, connect_sbe!
 
-# Export SBE data types (WebSocket SBE - Schema 3:5)
+# Export dedicated SBE market-stream data types (stream schema 1:0)
 export TradeEvent, TradeData, BestBidAskEvent, DepthSnapshotEvent, DepthDiffEvent
 
 # Export WebSocket API functions - Authentication

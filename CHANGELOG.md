@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-07-19
+
+### Fixed
+- **WebSocket connection limiter** — A successful connection reservation now
+  returns immediately instead of looping until all 300 five-minute connection
+  slots are consumed and then sleeping for the remainder of the window. This
+  fixes Convert and other WebSocket strategies appearing to hang during
+  startup.
+- **SBE market-stream schema** — The dedicated SBE market-data endpoint uses
+  the official `spot_stream` schema `1:0` (`stream_1_0.xml`). The decoder had
+  incorrectly enforced the Spot WebSocket API response schema ID `3`, causing
+  every production Trade and depth frame to be rejected.
+
+### Tests
+- Added regression coverage ensuring a connection attempt reserves exactly one
+  limiter slot.
+- Added a binary `TradesStreamEvent` fixture encoded with schema `1:0`.
+
 ## [0.12.0] - 2026-07-19
 
 ### Added

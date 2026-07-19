@@ -118,7 +118,7 @@ module RateLimiter
                 return max(Dates.value(wait_period) / 1000, 0.0)
             end
 
-            sleep_seconds <= 0 && continue
+            sleep_seconds <= 0 && return nothing
             @debug "Approaching $(limit.limit_type) limit. Sleeping for $(round(sleep_seconds, digits=2)) seconds."
             sleep(sleep_seconds)
         end
