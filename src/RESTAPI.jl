@@ -24,6 +24,11 @@ module RESTAPI
 
     """
     A client for interacting with the Binance REST API.
+
+    Owns a reusable [`HTTP.Client`](@ref) (HTTP.jl 2.x connection pooling) so
+    that every request reuses pooled TCP/TLS connections instead of dialing a
+    fresh transport per call. Proxy policy lives on the `HTTP.Transport`; call
+    `close(client)` to release idle connections.
     """
     mutable struct RESTClient
         config::BinanceConfig
@@ -33,6 +38,7 @@ module RESTAPI
         exchange_info::Union{ExchangeInfo, Nothing}
         symbol_cache::Dict{String, SymbolInfo}  # 缓存 symbol -> SymbolInfo 映射
         cache_lock::ReentrantLock
+        http_client::HTTP.Client  # 可复用的连接池客户端（HTTP.jl 2.x）
 
         function RESTClient(config_path::String="config.toml")
             config = from_toml(config_path)
@@ -40,9 +46,25 @@ module RESTAPI
 
             signer = Signature.create_signer(config)
 
+            # Build one long-lived HTTP.Client + Transport per RESTClient so
+            # TCP/TLS connections (and ALPN HTTP/2) are pooled across requests.
+            # Proxy is configured on the Transport (documented HTTP.jl 2.x form:
+            # pass a proxy URL string or HTTP.ProxyConfig; nothing = direct).
+            proxy = isempty(config.proxy) ? nothing : config.proxy
+            transport = HTTP.Transport(
+                max_idle_per_host = 4,
+                max_idle_total = 16,
+                proxy = proxy,
+            )
+            http_client = HTTP.Client(
+                transport = transport,
+                cookiejar = nothing,          # Binance REST does not use cookies
+                prefer_http2 = true,          # ALPN h2 when available, else h1
+            )
+
             client = new(
                 config, signer, rate_limiter, 0, nothing,
-                Dict{String,SymbolInfo}(), ReentrantLock(),
+                Dict{String,SymbolInfo}(), ReentrantLock(), http_client,
             )
 
             try
@@ -57,6 +79,28 @@ module RESTAPI
 
             return client
         end
+    end
+
+    """
+        Base.close(client::RESTClient)
+
+    Close the underlying pooled [`HTTP.Client`](@ref), releasing idle
+    connections. Subsequent requests through this `RESTClient` raise
+    `ArgumentError` (HTTP.jl closed-client poisoning); construct a new
+    `RESTClient` to continue.
+    """
+    function Base.close(client::RESTClient)
+        close(client.http_client)
+        return nothing
+    end
+
+    """
+        Base.isopen(client::RESTClient) -> Bool
+
+    Return `true` while the underlying pooled [`HTTP.Client`](@ref) is open.
+    """
+    function Base.isopen(client::RESTClient)
+        return isopen(client.http_client)
     end
 
     function get_base_url(client::RESTClient)
@@ -199,29 +243,27 @@ module RESTAPI
         end
 
         try
-            proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
             timeout = network_timeout(client)
-            # Use direct keyword args to avoid Dict allocation on every request
+            # Route through the pooled HTTP.Client; proxy policy is already
+            # configured on its Transport. Phase-specific timeouts follow the
+            # HTTP.jl 2.x timeout model (connect / request / read_idle).
             if !isempty(body)
-                if proxy_url !== nothing
-                    response = HTTP.request(method, url; headers=headers, body=body, proxy=proxy_url,
-                                            connect_timeout=timeout, request_timeout=timeout,
-                                            read_idle_timeout=timeout)
-                else
-                    response = HTTP.request(method, url; headers=headers, body=body,
-                                            connect_timeout=timeout, request_timeout=timeout,
-                                            read_idle_timeout=timeout)
-                end
+                response = HTTP.request(method, url;
+                    client = client.http_client,
+                    headers = headers,
+                    body = body,
+                    connect_timeout = timeout,
+                    request_timeout = timeout,
+                    read_idle_timeout = timeout,
+                )
             else
-                if proxy_url !== nothing
-                    response = HTTP.request(method, url; headers=headers, proxy=proxy_url,
-                                            connect_timeout=timeout, request_timeout=timeout,
-                                            read_idle_timeout=timeout)
-                else
-                    response = HTTP.request(method, url; headers=headers,
-                                            connect_timeout=timeout, request_timeout=timeout,
-                                            read_idle_timeout=timeout)
-                end
+                response = HTTP.request(method, url;
+                    client = client.http_client,
+                    headers = headers,
+                    connect_timeout = timeout,
+                    request_timeout = timeout,
+                    read_idle_timeout = timeout,
+                )
             end
 
             if response.status in (200, 201, 202)

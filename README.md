@@ -24,6 +24,17 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.12.2 - REST connection pooling
+
+- **Reusable HTTP client** — `RESTClient` now owns a long-lived
+  `HTTP.Client` / `HTTP.Transport` (HTTP.jl 2.x) instead of creating a fresh
+  transport per request. TCP/TLS connections and ALPN HTTP/2 sessions are
+  pooled and reused across calls, cutting latency for rate-limited trading
+  loops. Proxy policy from `config.toml` is configured once on the transport.
+- **Lifecycle management** — Added `close(rest_client)` / `isopen(rest_client)`
+  to release idle connections; requests through a closed client raise
+  `ArgumentError` (HTTP.jl closed-client poisoning).
+
 ### v0.12.1 - Strategy startup and SBE stream hotfixes
 
 - **Immediate first connection** — Fixed a rate-limiter control-flow bug that
@@ -203,6 +214,10 @@ server_time = get_server_time(rest_client)
 account = get_account_info(rest_client)
 order = place_order(rest_client, "BTCUSDT", "BUY", "LIMIT";
                     quantity="0.001", price="60000.0", timeInForce="GTC")
+
+# RESTClient pools HTTP connections internally; release them when done
+close(rest_client)        # subsequent calls raise ArgumentError
+isopen(rest_client)       # false after close
 ```
 
 **WebSocket Market Streams:**

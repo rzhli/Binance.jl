@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-08-21
+
+### Changed
+- **REST connection pooling** — `RESTClient` now owns a long-lived
+  `HTTP.Client` / `HTTP.Transport` (HTTP.jl 2.x) instead of creating a fresh
+  transport per request. TCP/TLS connections and ALPN HTTP/2 sessions are
+  reused across calls, and the proxy policy from `config.toml` lives on the
+  Transport. Added `Base.close` / `Base.isopen` for lifecycle management;
+  requests through a closed client raise `ArgumentError`.
+
 ## [0.12.1] - 2026-07-19
 
 ### Fixed
