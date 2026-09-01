@@ -180,6 +180,60 @@ end
         @test JSON.parse(encoded, T.MarketTrade) == trade
     end
 
+    @testset "Macro-generated ticker types carry the timestamp tag" begin
+        # The five ticker types come from @define_mini_ticker / @define_full_ticker.
+        # Those macros now emit @binance_struct, so &UNIX_MS has to survive one
+        # extra layer of macro expansion — verify the timestamps actually lift.
+        T = Binance.Types
+        mini = """{"symbol":"BTCUSDT","openPrice":"1","highPrice":"2","lowPrice":"3","lastPrice":"4","volume":"5","quoteVolume":"6","openTime":1704067200000,"closeTime":1704153600000,"firstId":10,"lastId":20,"count":42}"""
+        full = """{"symbol":"ETHUSDT","priceChange":"1","priceChangePercent":"2","weightedAvgPrice":"3","openPrice":"4","highPrice":"5","lowPrice":"6","lastPrice":"7","volume":"8","quoteVolume":"9","openTime":1704067200000,"closeTime":1704153600000,"firstId":1,"lastId":2,"count":3}"""
+
+        for (Ty, raw) in ((T.Ticker24hrMini, mini), (T.TradingDayTickerMini, mini),
+                          (T.RollingWindowTickerMini, mini),
+                          (T.TradingDayTicker, full), (T.RollingWindowTicker, full))
+            from_json3 = T.to_struct(Ty, JSON3.read(raw))
+            @test from_json3 == T.to_struct(Ty, JSON.parse(raw))
+            @test from_json3 == JSON.parse(raw, Ty)
+            @test from_json3.openTime == DateTime(2024, 1, 1)
+            @test from_json3.closeTime == DateTime(2024, 1, 2)
+        end
+    end
+
+    @testset "Account and market history types deserialize field-by-field" begin
+        T = Binance.Types
+
+        trade_json = """{"symbol":"BTCUSDT","id":1,"orderId":2,"orderListId":-1,"price":"42000.5","qty":"0.5","quoteQty":"21000.25","commission":"0.001","commissionAsset":"BNB","time":1704067200000,"isBuyer":true,"isMaker":false,"isBestMatch":true}"""
+        trade = T.to_struct(T.Trade, JSON3.read(trade_json))
+        @test trade == T.to_struct(T.Trade, JSON.parse(trade_json))
+        @test trade == JSON.parse(trade_json, T.Trade)
+        @test trade.orderListId == -1          # sentinel for "not part of a list"
+        @test trade.commissionAsset == "BNB"
+        @test trade.time == DateTime(2024, 1, 1)
+        @test occursin("\"time\":1704067200000", JSON.json(trade))
+
+        # Single-letter field names must not be reordered: `a`/`f`/`l` are ids,
+        # `T` is the timestamp, `m`/`M` are distinct flags.
+        agg_json = """{"a":100,"p":"42000","q":"1.5","f":10,"l":20,"T":1704067200000,"m":true,"M":false}"""
+        agg = T.to_struct(T.AggregateTrade, JSON3.read(agg_json))
+        @test agg == JSON.parse(agg_json, T.AggregateTrade)
+        @test (agg.a, agg.f, agg.l) == (100, 10, 20)
+        @test agg.T == DateTime(2024, 1, 1)
+        @test agg.m === true && agg.M === false
+
+        # 21 fields, all strings but for the two timestamps and three counters —
+        # a shifted mapping would be silent, so check both ends and the middle.
+        rest_json = """{"symbol":"BTCUSDT","priceChange":"1","priceChangePercent":"2","weightedAvgPrice":"3","prevClosePrice":"4","lastPrice":"5","lastQty":"6","bidPrice":"7","bidQty":"8","askPrice":"9","askQty":"10","openPrice":"11","highPrice":"12","lowPrice":"13","volume":"14","quoteVolume":"15","openTime":1704067200000,"closeTime":1704153600000,"firstId":1,"lastId":2,"count":3}"""
+        rest = T.to_struct(T.Ticker24hrRest, JSON3.read(rest_json))
+        @test rest == JSON.parse(rest_json, T.Ticker24hrRest)
+        @test rest.symbol == "BTCUSDT"
+        @test rest.prevClosePrice == "4"
+        @test rest.askQty == "10"
+        @test rest.quoteVolume == "15"
+        @test rest.openTime == DateTime(2024, 1, 1)
+        @test rest.closeTime == DateTime(2024, 1, 2)
+        @test rest.count == 3
+    end
+
     @testset "Timestamp tags stay scoped to annotated fields" begin
         # The unix-milliseconds lift is attached per field rather than as a global
         # `StructUtils.lift(::Type{DateTime}, ::Number)` method, which would

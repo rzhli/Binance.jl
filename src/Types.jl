@@ -44,7 +44,7 @@ end
 """
 macro define_mini_ticker(name)
     esc(quote
-        struct $name
+        @binance_struct struct $name
             symbol::String
             openPrice::String
             highPrice::String
@@ -52,19 +52,12 @@ macro define_mini_ticker(name)
             lastPrice::String
             volume::String
             quoteVolume::String
-            openTime::DateTime
-            closeTime::DateTime
+            openTime::DateTime &UNIX_MS
+            closeTime::DateTime &UNIX_MS
             firstId::Int64
             lastId::Int64
             count::Int
         end
-        StructTypes.StructType(::Type{$name}) = StructTypes.CustomStruct()
-        StructTypes.construct(::Type{$name}, obj) = $name(
-            obj["symbol"], obj["openPrice"], obj["highPrice"], obj["lowPrice"],
-            obj["lastPrice"], obj["volume"], obj["quoteVolume"],
-            unix2datetime(obj["openTime"] / 1000), unix2datetime(obj["closeTime"] / 1000),
-            obj["firstId"], obj["lastId"], obj["count"]
-        )
     end)
 end
 
@@ -73,7 +66,7 @@ end
 """
 macro define_full_ticker(name)
     esc(quote
-        struct $name
+        @binance_struct struct $name
             symbol::String
             priceChange::String
             priceChangePercent::String
@@ -84,20 +77,12 @@ macro define_full_ticker(name)
             lastPrice::String
             volume::String
             quoteVolume::String
-            openTime::DateTime
-            closeTime::DateTime
+            openTime::DateTime &UNIX_MS
+            closeTime::DateTime &UNIX_MS
             firstId::Int64
             lastId::Int64
             count::Int
         end
-        StructTypes.StructType(::Type{$name}) = StructTypes.CustomStruct()
-        StructTypes.construct(::Type{$name}, obj) = $name(
-            obj["symbol"], obj["priceChange"], obj["priceChangePercent"], obj["weightedAvgPrice"],
-            obj["openPrice"], obj["highPrice"], obj["lowPrice"], obj["lastPrice"],
-            obj["volume"], obj["quoteVolume"],
-            unix2datetime(obj["openTime"] / 1000), unix2datetime(obj["closeTime"] / 1000),
-            obj["firstId"], obj["lastId"], obj["count"]
-        )
     end)
 end
 
@@ -599,7 +584,7 @@ StructTypes.construct(::Type{Order}, obj) = Order(
     haskey(obj, "expiryReason") ? obj["expiryReason"] : nothing
 )
 
-struct Trade
+@binance_struct struct Trade
     symbol::String
     id::Int64
     orderId::Int64
@@ -609,23 +594,11 @@ struct Trade
     quoteQty::String
     commission::String
     commissionAsset::String
-    time::DateTime
+    time::DateTime &UNIX_MS
     isBuyer::Bool
     isMaker::Bool
     isBestMatch::Bool
 end
-StructTypes.StructType(::Type{Trade}) = StructTypes.CustomStruct()
-StructTypes.lower(t::Trade) = (
-    symbol=t.symbol, id=t.id, orderId=t.orderId, orderListId=t.orderListId, price=t.price,
-    qty=t.qty, quoteQty=t.quoteQty, commission=t.commission, commissionAsset=t.commissionAsset,
-    time=Int64(round(datetime2unix(t.time) * 1000)), isBuyer=t.isBuyer, isMaker=t.isMaker,
-    isBestMatch=t.isBestMatch
-)
-StructTypes.construct(::Type{Trade}, obj) = Trade(
-    obj["symbol"], obj["id"], obj["orderId"], obj["orderListId"], obj["price"], obj["qty"],
-    obj["quoteQty"], obj["commission"], obj["commissionAsset"], unix2datetime(obj["time"] / 1000),
-    obj["isBuyer"], obj["isMaker"], obj["isBestMatch"]
-)
 
 struct Kline
     open_time::DateTime
@@ -899,30 +872,16 @@ function Base.show(io::IO, ::MIME"text/plain", t::WebSocketBlockTrade)
     @printf(io, "  Buyer was Maker: %s\n", t.isBuyerMaker)
 end
 
-struct AggregateTrade
+@binance_struct struct AggregateTrade
     a::Int64  # Aggregate trade ID
     p::String # Price
     q::String # Quantity
     f::Int64  # First trade ID
     l::Int64  # Last trade ID
-    T::DateTime # Timestamp
+    T::DateTime &UNIX_MS # Timestamp
     m::Bool   # Was the buyer the maker?
     M::Bool   # Was the trade the best price match?
 end
-StructTypes.StructType(::Type{AggregateTrade}) = StructTypes.CustomStruct()
-StructTypes.lower(t::AggregateTrade) = (
-    a=t.a, p=t.p, q=t.q, f=t.f, l=t.l,
-    T=Int64(round(datetime2unix(t.T) * 1000)), m=t.m, M=t.M
-)
-StructTypes.construct(::Type{AggregateTrade}, obj) = AggregateTrade(
-    obj["a"],
-    obj["p"],
-    obj["q"],
-    obj["f"], obj["l"],
-    unix2datetime(obj["T"] / 1000),
-    obj["m"],
-    obj["M"]
-)
 
 function Base.show(io::IO, ::MIME"text/plain", t::AggregateTrade)
     println(io, "AggregateTrade:")
@@ -948,7 +907,7 @@ function Base.show(io::IO, ::MIME"text/plain", ap::AveragePrice)
     @printf(io, "  Close Time:      %s\n", ap.closeTime)
 end
 
-struct Ticker24hrRest
+@binance_struct struct Ticker24hrRest
     symbol::String
     priceChange::String
     priceChangePercent::String
@@ -965,36 +924,12 @@ struct Ticker24hrRest
     lowPrice::String
     volume::String
     quoteVolume::String
-    openTime::DateTime
-    closeTime::DateTime
+    openTime::DateTime &UNIX_MS
+    closeTime::DateTime &UNIX_MS
     firstId::Int64
     lastId::Int64
     count::Int
 end
-StructTypes.StructType(::Type{Ticker24hrRest}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{Ticker24hrRest}, obj) = Ticker24hrRest(
-    obj["symbol"],
-    obj["priceChange"],
-    obj["priceChangePercent"],
-    obj["weightedAvgPrice"],
-    obj["prevClosePrice"],
-    obj["lastPrice"],
-    obj["lastQty"],
-    obj["bidPrice"],
-    obj["bidQty"],
-    obj["askPrice"],
-    obj["askQty"],
-    obj["openPrice"],
-    obj["highPrice"],
-    obj["lowPrice"],
-    obj["volume"],
-    obj["quoteVolume"],
-    unix2datetime(obj["openTime"] / 1000),
-    unix2datetime(obj["closeTime"] / 1000),
-    obj["firstId"],
-    obj["lastId"],
-    obj["count"]
-)
 
 # --- Mini Ticker 类型（使用宏生成，12字段精简版）---
 @define_mini_ticker(Ticker24hrMini)
