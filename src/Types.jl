@@ -680,32 +680,24 @@ struct PriceLevel
     price::Float64
     quantity::Float64
 end
-StructTypes.StructType(::Type{PriceLevel}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{PriceLevel}, arr::AbstractVector) = PriceLevel(
-    parse(Float64, arr[1]),
-    parse(Float64, arr[2])
-)
-StructTypes.lower(p::PriceLevel) = [string(p.price), string(p.quantity)]
+# Serialized as a two-element array of decimal strings (`["95000.10","1.5"]`),
+# not an object, so it opts out of struct-like treatment and converts through
+# lift/lower. Registering `structlike = false` for every `StructStyle` (rather
+# than only ours) is what keeps `StructUtils.make` and `JSON.parse` in agreement.
+StructUtils.structlike(::StructUtils.StructStyle, ::Type{PriceLevel}) = false
+StructUtils.lift(::Type{PriceLevel}, arr) =
+    PriceLevel(parse(Float64, arr[1]), parse(Float64, arr[2]))
+JSON.lower(p::PriceLevel) = [string(p.price), string(p.quantity)]
 
 struct OrderBook
     lastUpdateId::Int64
     bids::Vector{PriceLevel}
     asks::Vector{PriceLevel}
 end
-# CustomStruct: nested Vector{PriceLevel} elements are themselves CustomStruct,
-# which StructTypes' generic constructfrom cannot handle. Provide construct/lower
-# explicitly (same pattern as Order/ExchangeInfo).
-StructTypes.StructType(::Type{OrderBook}) = StructTypes.CustomStruct()
-StructTypes.lower(ob::OrderBook) = (
-    lastUpdateId=ob.lastUpdateId,
-    bids=[StructTypes.lower(b) for b in ob.bids],
-    asks=[StructTypes.lower(a) for a in ob.asks],
-)
-StructTypes.construct(::Type{OrderBook}, obj) = OrderBook(
-    obj["lastUpdateId"],
-    [StructTypes.construct(PriceLevel, b) for b in obj["bids"]],
-    [StructTypes.construct(PriceLevel, a) for a in obj["asks"]],
-)
+# Nothing to declare: the nested `Vector{PriceLevel}` elements are handled by
+# PriceLevel's own lift/lower. This is the case that needed a hand-written
+# construct under StructTypes, because `constructfrom` had no method for a
+# CustomStruct element type and every `depth()` call raised a MethodError.
 
 function Base.show(io::IO, ::MIME"text/plain", ob::OrderBook)
     println(io, "OrderBook (lastUpdateId: ", ob.lastUpdateId, ")")

@@ -293,32 +293,44 @@ end
         @test_throws MethodError JSON.parse("""{"t":1704067200000}""", UnannotatedStamp)
     end
 
-    @testset "OrderBook deserializes nested CustomStruct levels" begin
-        # `PriceLevel` is a CustomStruct, so the generic `constructfrom` used by
-        # `StructTypes.Struct()` has no method for the `bids`/`asks` elements and
-        # every `depth()` call raised a MethodError. `OrderBook` must therefore
-        # provide its own construct/lower pair.
-        @test StructTypes.StructType(Binance.Types.OrderBook) isa StructTypes.CustomStruct
+    @testset "OrderBook deserializes nested array-shaped levels" begin
+        # This is the shape that broke under StructTypes: `PriceLevel` arrives as a
+        # two-element array of decimal strings, and `constructfrom` had no method
+        # for a CustomStruct element type, so every `depth()` call raised a
+        # MethodError. PriceLevel now opts out of struct-like treatment and
+        # converts via lift/lower, which the nested vectors pick up automatically.
+        T = Binance.Types
+        @test StructUtils.structlike(StructUtils.DefaultStyle(), T.PriceLevel) == false
 
-        payload = JSON3.read("""
-        {"lastUpdateId":123456,
-         "bids":[["95000.10","1.5"],["94999.00","2.0"]],
-         "asks":[["95001.00","0.8"]]}
-        """)
-        book = Binance.Types.to_struct(Binance.Types.OrderBook, payload)
+        raw = """{"lastUpdateId":123456,"bids":[["95000.10","1.5"],["94999.00","2.0"]],"asks":[["95001.00","0.8"]]}"""
+
+        # OrderBook holds Vectors, so `==` compares them by identity; compare the
+        # contents instead of the wrapper.
+        same(x, y) = x.lastUpdateId == y.lastUpdateId && x.bids == y.bids && x.asks == y.asks
+
+        book = T.to_struct(T.OrderBook, JSON3.read(raw))
+        @test same(book, T.to_struct(T.OrderBook, JSON.parse(raw)))
+        @test same(book, JSON.parse(raw, T.OrderBook))
         @test book.lastUpdateId == 123456
         @test length(book.bids) == 2
         @test length(book.asks) == 1
-        @test book.bids[1].price == 95000.10
-        @test book.bids[1].quantity == 1.5
-        @test book.asks[1].price == 95001.00
+        @test book.bids[1] == T.PriceLevel(95000.10, 1.5)
+        @test book.bids[2] == T.PriceLevel(94999.00, 2.0)
+        @test book.asks[1] == T.PriceLevel(95001.00, 0.8)
 
-        # Round-trip: `lower` must emit the exchange's array-of-strings shape.
-        lowered = StructTypes.lower(book)
-        @test lowered.bids[1] == ["95000.1", "1.5"]
-        reparsed = Binance.Types.to_struct(Binance.Types.OrderBook, JSON3.read(JSON3.write(book)))
-        @test reparsed.lastUpdateId == book.lastUpdateId
-        @test reparsed.bids[1].price == book.bids[1].price
+        # A level parsed on its own must work too — SBE and depth-diff paths build
+        # levels without a surrounding book.
+        @test JSON.parse("""["1.25","3.5"]""", T.PriceLevel) == T.PriceLevel(1.25, 3.5)
+
+        # `lower` must put the array-of-strings shape back on the wire.
+        encoded = JSON.json(book)
+        @test occursin("""["95000.1","1.5"]""", encoded)
+        @test same(JSON.parse(encoded, T.OrderBook), book)
+
+        # An empty book is valid (illiquid or freshly listed symbol).
+        empty_book = JSON.parse("""{"lastUpdateId":1,"bids":[],"asks":[]}""", T.OrderBook)
+        @test empty_book.lastUpdateId == 1
+        @test isempty(empty_book.bids) && isempty(empty_book.asks)
     end
 
     @testset "OrderBookManager helper types" begin
