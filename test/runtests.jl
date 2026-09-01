@@ -458,6 +458,42 @@ end
         @test o2.expiryReason === nothing
     end
 
+    @testset "Order maps enums, timestamps and the optional expiry reason" begin
+        # Order carries four enum fields that used to be converted by explicit
+        # StructTypes.construct calls. StructUtils lifts a JSON string to an Enum
+        # by instance name, so the annotations are gone — assert each one, since a
+        # mismatch would produce the wrong side or status rather than an error.
+        T = Binance.Types
+        raw = """{"symbol":"BTCUSDT","orderId":123,"orderListId":-1,"clientOrderId":"abc","price":"42000.5","origQty":"1.0","executedQty":"0.5","cummulativeQuoteQty":"21000","status":"PARTIALLY_FILLED","timeInForce":"GTC","type":"LIMIT","side":"BUY","stopPrice":"0","icebergQty":"0","time":1704067200000,"updateTime":1704067260000,"isWorking":true,"origQuoteOrderQty":"0"}"""
+
+        order = T.to_struct(T.Order, JSON3.read(raw))
+        @test order == T.to_struct(T.Order, JSON.parse(raw))
+        @test order == JSON.parse(raw, T.Order)
+        @test order.status == T.PARTIALLY_FILLED
+        @test order.timeInForce == T.GTC
+        @test order.type == T.LIMIT
+        @test order.side == T.BUY
+        @test order.time == DateTime(2024, 1, 1)
+        @test order.updateTime == DateTime(2024, 1, 1, 0, 1)
+        @test order.orderListId == -1        # sentinel for "not in an order list"
+        @test order.expiryReason === nothing
+
+        expired = JSON.parse(
+            replace(raw,
+                    "\"status\":\"PARTIALLY_FILLED\"" => "\"status\":\"EXPIRED\"",
+                    "\"isWorking\":true" => "\"isWorking\":false,\"expiryReason\":\"PRICE_RANGE\""),
+            T.Order)
+        @test expired.status == T.EXPIRED
+        @test expired.expiryReason == "PRICE_RANGE"
+
+        # Enums must go back out as strings, timestamps as milliseconds.
+        encoded = JSON.json(order)
+        @test occursin("\"status\":\"PARTIALLY_FILLED\"", encoded)
+        @test occursin("\"side\":\"BUY\"", encoded)
+        @test occursin("\"time\":1704067200000", encoded)
+        @test JSON.parse(encoded, T.Order) == order
+    end
+
     @testset "serverShutdown handling on SBE text control frames" begin
         tmpdir = mktempdir()
         key_path = joinpath(tmpdir, "ed25519-private.pem")

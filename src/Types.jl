@@ -551,7 +551,10 @@ end
 
 # --- Structs for Account Data ---
 
-struct Order
+# The four enum fields need no annotation: StructUtils lifts a JSON string to an
+# `Enum` by matching the instance name, which is exactly what the old
+# `StructTypes.construct(OrderStatus, ...)` calls did by hand.
+@binance_struct struct Order
     symbol::String
     orderId::Int64
     orderListId::Int64
@@ -566,35 +569,15 @@ struct Order
     side::OrderSide
     stopPrice::String
     icebergQty::String
-    time::DateTime
-    updateTime::DateTime
+    time::DateTime &UNIX_MS
+    updateTime::DateTime &UNIX_MS
     isWorking::Bool
     origQuoteOrderQty::String
     # Conditional: present only for expired orders, including those expired by the
     # price-range execution rule. Added in REST/WS API on 2026-05-08.
+    # Absent (not null) in every other response, so the Union default applies.
     expiryReason::Union{String, Nothing}
 end
-StructTypes.StructType(::Type{Order}) = StructTypes.CustomStruct()
-StructTypes.lower(o::Order) = (
-    symbol=o.symbol, orderId=o.orderId, orderListId=o.orderListId, clientOrderId=o.clientOrderId,
-    price=o.price, origQty=o.origQty, executedQty=o.executedQty, cummulativeQuoteQty=o.cummulativeQuoteQty,
-    status=o.status, timeInForce=o.timeInForce, type=o.type, side=o.side, stopPrice=o.stopPrice,
-    icebergQty=o.icebergQty, time=Int64(round(datetime2unix(o.time) * 1000)),
-    updateTime=Int64(round(datetime2unix(o.updateTime) * 1000)), isWorking=o.isWorking,
-    origQuoteOrderQty=o.origQuoteOrderQty, expiryReason=o.expiryReason
-)
-StructTypes.construct(::Type{Order}, obj) = Order(
-    obj["symbol"], obj["orderId"], obj["orderListId"], obj["clientOrderId"], obj["price"],
-    obj["origQty"], obj["executedQty"], obj["cummulativeQuoteQty"],
-    StructTypes.construct(OrderStatus, obj["status"]),
-    StructTypes.construct(TimeInForce, obj["timeInForce"]),
-    StructTypes.construct(OrderTypes, obj["type"]),
-    StructTypes.construct(OrderSide, obj["side"]),
-    obj["stopPrice"], obj["icebergQty"],
-    unix2datetime(obj["time"] / 1000), unix2datetime(obj["updateTime"] / 1000),
-    obj["isWorking"], obj["origQuoteOrderQty"],
-    haskey(obj, "expiryReason") ? obj["expiryReason"] : nothing
-)
 
 @binance_struct struct Trade
     symbol::String
