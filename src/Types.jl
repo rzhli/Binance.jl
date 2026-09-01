@@ -1,6 +1,7 @@
 module Types
 
 using Dates, StructTypes, JSON3, Printf
+using JSON, StructUtils
 using FixedPointDecimals
 
 # ======================= 代码生成宏 =======================
@@ -112,26 +113,80 @@ export DecimalPrice, DecimalInput, to_decimal_string, to_struct
 """
     to_struct(T, value)
 
-Construct a `T` instance directly from a JSON3-parsed value without
-round-tripping through a string. This avoids the extra allocations from
-`JSON3.write`/`JSON3.read` when the data is already materialized.
+Construct a `T` instance from an already-parsed JSON value, without
+round-tripping through a string.
+
+# Migration bridge (JSON3/StructTypes -> JSON.jl/StructUtils)
+
+Types that still declare `StructTypes.CustomStruct()` keep using their hand
+written `StructTypes.construct`. Types that have been migrated no longer
+declare a `StructType` at all, so `StructTypes.StructType(T)` falls back to
+`UnorderedStruct()` and they route to `StructUtils.make`, which honours
+`@tags` field tags, `@defaults`, and `JSON.@choosetype`.
+
+This lets the migration proceed one file at a time with the test suite green
+at every step. Once no `CustomStruct` declarations remain, the first branch
+and the StructTypes dependency can both be dropped.
 """
 @inline function to_struct(::Type{T}, value) where {T}
-    # CustomStructs are expected to provide StructTypes.construct, not constructfrom.
     st = StructTypes.StructType(T)
-    return st isa StructTypes.CustomStruct ? StructTypes.construct(T, value) : StructTypes.constructfrom(T, value)
+    return st isa StructTypes.CustomStruct ?
+        StructTypes.construct(T, value) :
+        StructUtils.make(T, value)
 end
 
-# Specialized method for Vector of types that might contain CustomStruct elements
+# Vector needs its own method: a `CustomStruct` element type has no
+# `constructfrom` method, so the element-wise loop must be explicit.
 @inline function to_struct(::Type{Vector{T}}, value) where {T}
     st = StructTypes.StructType(T)
-    if st isa StructTypes.CustomStruct
-        # Element type is CustomStruct, manually construct each element
-        return T[StructTypes.construct(T, elem) for elem in value]
-    else
-        # Use standard constructfrom for the entire vector
-        return StructTypes.constructfrom(Vector{T}, value)
+    return st isa StructTypes.CustomStruct ?
+        T[StructTypes.construct(T, elem) for elem in value] :
+        StructUtils.make(Vector{T}, value)
+end
+
+# ===================== JSON 字段 tag =====================
+#
+# Binance sends every timestamp as unix milliseconds, but StructUtils' stock
+# `lift` for `DateTime` only accepts ISO strings. Such fields therefore carry an
+# explicit lift/lower tag.
+#
+# `@tags` splices field tags at lowering time and requires a *literal* named
+# tuple: a `const` binding parses as a bare `Symbol` and trips
+# `FieldExpr`'s `Union{None,Expr}` conversion. `@binance_struct` exists to avoid
+# repeating the same closure pair on every timestamp field — it rewrites
+# `&UNIX_MS` into the literal tag before handing the definition to `@tags`.
+#
+# The tag is deliberately *not* namespaced under `json=(...)`: an un-namespaced
+# tag is visible to `StructUtils.make` as well as `JSON.parse`, which is what
+# lets `to_struct` keep working on already-materialized responses during the
+# migration.
+#
+# Scoping note: this only affects annotated fields. Unannotated `DateTime`
+# fields keep the stock ISO-string behaviour, unlike a global
+# `StructUtils.lift(::Type{DateTime}, ::Number)` method, which would hijack
+# every package's `DateTime` parsing.
+const UNIX_MS_TAG = :((lift = x -> unix2datetime(x / 1000),
+                       lower = d -> Int64(round(datetime2unix(d) * 1000))))
+
+_splice_field_tags(x) = x
+function _splice_field_tags(ex::Expr)
+    # `field::T &UNIX_MS` parses as Expr(:call, :&, :(field::T), :UNIX_MS)
+    if ex.head === :call && length(ex.args) == 3 &&
+       ex.args[1] === :& && ex.args[3] === :UNIX_MS
+        return Expr(:call, :&, _splice_field_tags(ex.args[2]), copy(UNIX_MS_TAG))
     end
+    return Expr(ex.head, map(_splice_field_tags, ex.args)...)
+end
+
+"""
+    @binance_struct struct T ... end
+
+`StructUtils.@tags` with `&UNIX_MS` expanded into the unix-milliseconds
+timestamp tag. Use it for any response struct with `DateTime` fields.
+"""
+macro binance_struct(expr)
+    return esc(Expr(:macrocall, GlobalRef(StructUtils, Symbol("@tags")),
+                    __source__, _splice_field_tags(expr)))
 end
 
 """
@@ -720,30 +775,15 @@ function print_price_levels(io::IO, levels::Vector{PriceLevel})
     end
 end
 
-struct MarketTrade
+@binance_struct struct MarketTrade
     id::Int64
     price::String
     qty::String
     quoteQty::String
-    time::DateTime
+    time::DateTime &UNIX_MS
     isBuyerMaker::Bool
     isBestMatch::Bool
 end
-StructTypes.StructType(::Type{MarketTrade}) = StructTypes.CustomStruct()
-StructTypes.lower(t::MarketTrade) = (
-    id=t.id, price=t.price, qty=t.qty, quoteQty=t.quoteQty,
-    time=Int64(round(datetime2unix(t.time) * 1000)), isBuyerMaker=t.isBuyerMaker,
-    isBestMatch=t.isBestMatch
-)
-StructTypes.construct(::Type{MarketTrade}, obj) = MarketTrade(
-    obj["id"],
-    obj["price"],
-    obj["qty"],
-    obj["quoteQty"],
-    unix2datetime(obj["time"] / 1000),
-    obj["isBuyerMaker"],
-    obj["isBestMatch"]
-)
 
 function Base.show(io::IO, ::MIME"text/plain", t::MarketTrade)
     println(io, "MarketTrade:")
@@ -760,27 +800,14 @@ end
 # Endpoint introduced 2026-05-08 (REST: GET /api/v3/historicalBlockTrades,
 # WS API: blockTrades.historical). Response shape differs from MarketTrade:
 # no isBestMatch field.
-struct BlockTrade
+@binance_struct struct BlockTrade
     id::Int64
     price::String
     qty::String
     quoteQty::String
-    time::DateTime
+    time::DateTime &UNIX_MS
     isBuyerMaker::Bool
 end
-StructTypes.StructType(::Type{BlockTrade}) = StructTypes.CustomStruct()
-StructTypes.lower(t::BlockTrade) = (
-    id=t.id, price=t.price, qty=t.qty, quoteQty=t.quoteQty,
-    time=Int64(round(datetime2unix(t.time) * 1000)), isBuyerMaker=t.isBuyerMaker
-)
-StructTypes.construct(::Type{BlockTrade}, obj) = BlockTrade(
-    obj["id"],
-    obj["price"],
-    obj["qty"],
-    obj["quoteQty"],
-    unix2datetime(obj["time"] / 1000),
-    obj["isBuyerMaker"]
-)
 
 function Base.show(io::IO, ::MIME"text/plain", t::BlockTrade)
     println(io, "BlockTrade:")
@@ -908,22 +935,11 @@ function Base.show(io::IO, ::MIME"text/plain", t::AggregateTrade)
     @printf(io, "  Buyer was Maker:  %s\n", t.m)
 end
 
-struct AveragePrice
+@binance_struct struct AveragePrice
     mins::Int
     price::String
-    closeTime::DateTime
+    closeTime::DateTime &UNIX_MS
 end
-StructTypes.StructType(::Type{AveragePrice}) = StructTypes.CustomStruct()
-StructTypes.lower(ap::AveragePrice) = (
-    mins=ap.mins,
-    price=ap.price,
-    closeTime=Int64(round(datetime2unix(ap.closeTime) * 1000))
-)
-StructTypes.construct(::Type{AveragePrice}, obj) = AveragePrice(
-    obj["mins"],
-    obj["price"],
-    unix2datetime(obj["closeTime"] / 1000)
-)
 
 function Base.show(io::IO, ::MIME"text/plain", ap::AveragePrice)
     println(io, "AveragePrice:")
@@ -994,11 +1010,6 @@ struct PriceTicker
     symbol::String
     price::String
 end
-StructTypes.StructType(::Type{PriceTicker}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{PriceTicker}, obj) = PriceTicker(
-    obj["symbol"],
-    obj["price"]
-)
 
 function Base.show(io::IO, ::MIME"text/plain", pt::PriceTicker)
     @printf(io, "PriceTicker for %s: %f\n", pt.symbol, parse(Float64, pt.price))
@@ -1011,14 +1022,6 @@ struct BookTicker
     askPrice::String
     askQty::String
 end
-StructTypes.StructType(::Type{BookTicker}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{BookTicker}, obj) = BookTicker(
-    obj["symbol"],
-    obj["bidPrice"],
-    obj["bidQty"],
-    obj["askPrice"],
-    obj["askQty"]
-)
 
 function Base.show(io::IO, ::MIME"text/plain", bt::BookTicker)
     println(io, "BookTicker for ", bt.symbol, ":")
@@ -1048,17 +1051,13 @@ struct ExecutionRulesResponse
 end
 StructTypes.StructType(::Type{ExecutionRulesResponse}) = StructTypes.Struct()
 
-struct ReferencePrice
+@binance_struct struct ReferencePrice
     symbol::String
+    # Absent (not just null) when the engine has no price yet; `@tags` supplies
+    # `nothing` for a missing Union{T,Nothing} field.
     referencePrice::Union{String, Nothing}
-    timestamp::DateTime
+    timestamp::DateTime &UNIX_MS
 end
-StructTypes.StructType(::Type{ReferencePrice}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{ReferencePrice}, obj) = ReferencePrice(
-    obj["symbol"],
-    get(obj, "referencePrice", nothing),
-    unix2datetime(obj["timestamp"] / 1000)
-)
 
 abstract type AbstractReferencePriceCalculation end
 

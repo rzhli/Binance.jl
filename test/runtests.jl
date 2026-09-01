@@ -5,6 +5,14 @@ using Dates
 using HTTP
 using JSON3
 using StructTypes
+using StructUtils
+import JSON
+
+# Plain struct with an unannotated DateTime, used to prove the unix-millis
+# timestamp tag does not leak into unrelated types.
+struct UnannotatedStamp
+    t::DateTime
+end
 
 const RSA_TEST_PRIVATE_KEY = """
 -----BEGIN PRIVATE KEY-----
@@ -118,6 +126,68 @@ end
         lvl = Binance.Types.PriceLevel(100.5, 2.0)
         @test lvl.price == 100.5
         @test lvl.quantity == 2.0
+    end
+
+    @testset "Migrated types deserialize from both JSON backends" begin
+        # These types dropped their hand-written `StructTypes.construct` in favour
+        # of StructUtils field tags. `to_struct` must keep working on values
+        # materialized by either backend, since `make_request` still hands over an
+        # already-parsed object. Each case is asserted field-by-field: a wrong tag
+        # silently yields a default or shifted value rather than an error.
+        T = Binance.Types
+        cases = (
+            (T.AveragePrice,
+             """{"mins":5,"price":"42000.50","closeTime":1704067200000}""",
+             ap -> (ap.mins == 5, ap.price == "42000.50",
+                    ap.closeTime == DateTime(2024, 1, 1))),
+            (T.MarketTrade,
+             """{"id":9,"price":"42000.5","qty":"0.5","quoteQty":"21000.25","time":1704067200000,"isBuyerMaker":true,"isBestMatch":false}""",
+             t -> (t.id == 9, t.price == "42000.5", t.qty == "0.5",
+                   t.quoteQty == "21000.25", t.time == DateTime(2024, 1, 1),
+                   t.isBuyerMaker === true, t.isBestMatch === false)),
+            (T.BlockTrade,
+             """{"id":11,"price":"1.5","qty":"2.5","quoteQty":"3.75","time":1704067260000,"isBuyerMaker":false}""",
+             t -> (t.id == 11, t.price == "1.5", t.qty == "2.5", t.quoteQty == "3.75",
+                   t.time == DateTime(2024, 1, 1, 0, 1), t.isBuyerMaker === false)),
+            (T.PriceTicker,
+             """{"symbol":"BTCUSDT","price":"95000.10"}""",
+             p -> (p.symbol == "BTCUSDT", p.price == "95000.10")),
+            (T.BookTicker,
+             """{"symbol":"ETHUSDT","bidPrice":"1","bidQty":"2","askPrice":"3","askQty":"4"}""",
+             b -> (b.symbol == "ETHUSDT", b.bidPrice == "1", b.bidQty == "2",
+                   b.askPrice == "3", b.askQty == "4")),
+            (T.ReferencePrice,
+             """{"symbol":"BTCUSDT","referencePrice":"42000.0","timestamp":1704067200000}""",
+             r -> (r.symbol == "BTCUSDT", r.referencePrice == "42000.0",
+                   r.timestamp == DateTime(2024, 1, 1))),
+        )
+
+        for (Ty, raw, check) in cases
+            @test all(check(T.to_struct(Ty, JSON3.read(raw))))
+            @test all(check(T.to_struct(Ty, JSON.parse(raw))))
+            @test all(check(JSON.parse(raw, Ty)))
+        end
+
+        # A missing (not null) optional field must land as `nothing`.
+        absent = T.to_struct(T.ReferencePrice,
+                             JSON3.read("""{"symbol":"X","timestamp":1704067200000}"""))
+        @test absent.referencePrice === nothing
+
+        # The tag's `lower` half must put milliseconds back on the wire.
+        trade = T.to_struct(T.MarketTrade, JSON3.read(cases[2][2]))
+        encoded = JSON.json(trade)
+        @test occursin("\"time\":1704067200000", encoded)
+        @test JSON.parse(encoded, T.MarketTrade) == trade
+    end
+
+    @testset "Timestamp tags stay scoped to annotated fields" begin
+        # The unix-milliseconds lift is attached per field rather than as a global
+        # `StructUtils.lift(::Type{DateTime}, ::Number)` method, which would
+        # hijack DateTime parsing for every other package. Verify an unannotated
+        # struct keeps the stock ISO-string behaviour and still rejects millis.
+        @test JSON.parse("""{"t":"2024-01-01T00:00:00"}""", UnannotatedStamp).t ==
+              DateTime(2024, 1, 1)
+        @test_throws MethodError JSON.parse("""{"t":1704067200000}""", UnannotatedStamp)
     end
 
     @testset "OrderBook deserializes nested CustomStruct levels" begin
