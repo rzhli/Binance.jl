@@ -234,6 +234,55 @@ end
         @test rest.count == 3
     end
 
+    @testset "Abbreviated stream keys map to the right fields" begin
+        # These types name every field via a `name` tag. The wire format uses
+        # case-sensitive pairs with unrelated meanings (p/P, b/B, a/A, q/Q) and
+        # puts `l` (low price) next to `L` (last trade id), so a case slip would
+        # silently swap values instead of erroring. Distinct sentinel strings make
+        # any such swap visible.
+        T = Binance.Types
+
+        ws_json = """{"e":"trade","E":1704067200000,"s":"BTCUSDT","t":9,"p":"42000.5","q":"0.5","T":1704067260000,"m":true,"M":false}"""
+        ws = T.to_struct(T.WebSocketTrade, JSON3.read(ws_json))
+        @test ws == T.to_struct(T.WebSocketTrade, JSON.parse(ws_json))
+        @test ws == JSON.parse(ws_json, T.WebSocketTrade)
+        @test (ws.eventType, ws.symbol, ws.tradeId) == ("trade", "BTCUSDT", 9)
+        @test (ws.price, ws.quantity) == ("42000.5", "0.5")
+        @test ws.eventTime == DateTime(2024, 1, 1)
+        @test ws.tradeTime == DateTime(2024, 1, 1, 0, 1)
+        @test ws.isBuyerMaker === true && ws.ignore === false
+        ws_out = JSON.json(ws)
+        @test occursin("\"E\":1704067200000", ws_out)
+        @test occursin("\"T\":1704067260000", ws_out)
+        @test JSON.parse(ws_out, T.WebSocketTrade) == ws
+
+        blk_json = """{"e":"blockTrade","E":1704067200000,"s":"BTCUSDT","t":5,"p":"1","q":"2","T":1704067260000,"m":false}"""
+        blk = T.to_struct(T.WebSocketBlockTrade, JSON3.read(blk_json))
+        @test blk == JSON.parse(blk_json, T.WebSocketBlockTrade)
+        @test blk.eventType == "blockTrade" && blk.tradeId == 5
+        @test blk.eventTime == DateTime(2024, 1, 1)
+        @test blk.tradeTime == DateTime(2024, 1, 1, 0, 1)
+        @test blk.isBuyerMaker === false
+
+        tick_json = """{"e":"24hrTicker","E":1704067200000,"s":"BTCUSDT","p":"P1","P":"P2","w":"W","x":"X","c":"C","Q":"Q","b":"B_low","B":"B_up","a":"A_low","A":"A_up","o":"O","h":"H","l":"L_low","v":"V","q":"Q_low","O":1704067200000,"C":1704153600000,"F":11,"L":22,"n":33}"""
+        tick = T.to_struct(T.Ticker24hr, JSON3.read(tick_json))
+        @test tick == T.to_struct(T.Ticker24hr, JSON.parse(tick_json))
+        @test tick == JSON.parse(tick_json, T.Ticker24hr)
+        @test tick.priceChange == "P1" && tick.priceChangePercent == "P2"
+        @test tick.bestBidPrice == "B_low" && tick.bestBidQuantity == "B_up"
+        @test tick.bestAskPrice == "A_low" && tick.bestAskQuantity == "A_up"
+        @test tick.lastQuantity == "Q" && tick.totalTradedQuoteAssetVolume == "Q_low"
+        @test tick.lowPrice == "L_low" && tick.lastTradeId == 22
+        @test tick.weightedAvgPrice == "W" && tick.firstTradePrice == "X"
+        @test tick.lastPrice == "C" && tick.openPrice == "O" && tick.highPrice == "H"
+        @test tick.totalTradedBaseAssetVolume == "V"
+        @test tick.firstTradeId == 11 && tick.totalNumberOfTrades == 33
+        @test tick.eventTime == DateTime(2024, 1, 1)
+        @test tick.statisticsOpenTime == DateTime(2024, 1, 1)
+        @test tick.statisticsCloseTime == DateTime(2024, 1, 2)
+        @test JSON.parse(JSON.json(tick), T.Ticker24hr) == tick
+    end
+
     @testset "Timestamp tags stay scoped to annotated fields" begin
         # The unix-milliseconds lift is attached per field rather than as a global
         # `StructUtils.lift(::Type{DateTime}, ::Number)` method, which would

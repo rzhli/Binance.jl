@@ -153,12 +153,24 @@ end
 const UNIX_MS_TAG = :((lift = x -> unix2datetime(x / 1000),
                        lower = d -> Int64(round(datetime2unix(d) * 1000))))
 
+# `(name="E",)` and `UNIX_MS` on the same field must end up as one literal named
+# tuple: `@tags` reads a single tags expression per field, so chained `&` has to
+# be flattened rather than nested.
+_merge_tag_tuples(a::Expr, b::Expr) = Expr(:tuple, a.args..., b.args...)
+
 _splice_field_tags(x) = x
 function _splice_field_tags(ex::Expr)
-    # `field::T &UNIX_MS` parses as Expr(:call, :&, :(field::T), :UNIX_MS)
+    # `field::T &UNIX_MS` parses as Expr(:call, :&, :(field::T), :UNIX_MS);
+    # `field::T &(name="E",) &UNIX_MS` nests another `&` call on the left.
     if ex.head === :call && length(ex.args) == 3 &&
        ex.args[1] === :& && ex.args[3] === :UNIX_MS
-        return Expr(:call, :&, _splice_field_tags(ex.args[2]), copy(UNIX_MS_TAG))
+        inner = ex.args[2]
+        if inner isa Expr && inner.head === :call && length(inner.args) == 3 &&
+           inner.args[1] === :&
+            return Expr(:call, :&, _splice_field_tags(inner.args[2]),
+                        _merge_tag_tuples(inner.args[3], copy(UNIX_MS_TAG)))
+        end
+        return Expr(:call, :&, _splice_field_tags(inner), copy(UNIX_MS_TAG))
     end
     return Expr(ex.head, map(_splice_field_tags, ex.args)...)
 end
@@ -650,48 +662,34 @@ function Base.show(io::IO, ::MIME"text/plain", k::Kline)
     @printf(io, "  Taker Quote Vol:%8f\n", k.taker_quote_volume)
 end
 
-struct Ticker24hr
-    eventType::String
-    eventTime::DateTime
-    symbol::String
-    priceChange::String
-    priceChangePercent::String
-    weightedAvgPrice::String
-    firstTradePrice::String
-    lastPrice::String
-    lastQuantity::String
-    bestBidPrice::String
-    bestBidQuantity::String
-    bestAskPrice::String
-    bestAskQuantity::String
-    openPrice::String
-    highPrice::String
-    lowPrice::String
-    totalTradedBaseAssetVolume::String
-    totalTradedQuoteAssetVolume::String
-    statisticsOpenTime::DateTime
-    statisticsCloseTime::DateTime
-    firstTradeId::Int64
-    lastTradeId::Int64
-    totalNumberOfTrades::Int
+# 23 fields, all abbreviated on the wire. Note `p`/`P`, `b`/`B`, `a`/`A` and
+# `q`/`Q` are case-sensitive pairs with unrelated meanings, and `l` (lowercase L,
+# low price) sits next to `L` (last trade id).
+@binance_struct struct Ticker24hr
+    eventType::String                  &(name="e",)
+    eventTime::DateTime                &(name="E",) &UNIX_MS
+    symbol::String                     &(name="s",)
+    priceChange::String                &(name="p",)
+    priceChangePercent::String         &(name="P",)
+    weightedAvgPrice::String           &(name="w",)
+    firstTradePrice::String            &(name="x",)
+    lastPrice::String                  &(name="c",)
+    lastQuantity::String               &(name="Q",)
+    bestBidPrice::String               &(name="b",)
+    bestBidQuantity::String            &(name="B",)
+    bestAskPrice::String               &(name="a",)
+    bestAskQuantity::String            &(name="A",)
+    openPrice::String                  &(name="o",)
+    highPrice::String                  &(name="h",)
+    lowPrice::String                   &(name="l",)
+    totalTradedBaseAssetVolume::String &(name="v",)
+    totalTradedQuoteAssetVolume::String &(name="q",)
+    statisticsOpenTime::DateTime       &(name="O",) &UNIX_MS
+    statisticsCloseTime::DateTime      &(name="C",) &UNIX_MS
+    firstTradeId::Int64                &(name="F",)
+    lastTradeId::Int64                 &(name="L",)
+    totalNumberOfTrades::Int           &(name="n",)
 end
-StructTypes.StructType(::Type{Ticker24hr}) = StructTypes.CustomStruct()
-StructTypes.lower(t::Ticker24hr) = (
-    e=t.eventType, E=Int64(round(datetime2unix(t.eventTime) * 1000)), s=t.symbol,
-    p=t.priceChange, P=t.priceChangePercent, w=t.weightedAvgPrice, x=t.firstTradePrice,
-    c=t.lastPrice, Q=t.lastQuantity, b=t.bestBidPrice, B=t.bestBidQuantity,
-    a=t.bestAskPrice, A=t.bestAskQuantity, o=t.openPrice, h=t.highPrice, l=t.lowPrice,
-    v=t.totalTradedBaseAssetVolume, q=t.totalTradedQuoteAssetVolume,
-    O=Int64(round(datetime2unix(t.statisticsOpenTime) * 1000)),
-    C=Int64(round(datetime2unix(t.statisticsCloseTime) * 1000)),
-    F=t.firstTradeId, L=t.lastTradeId, n=t.totalNumberOfTrades
-)
-StructTypes.construct(::Type{Ticker24hr}, obj) = Ticker24hr(
-    obj["e"], unix2datetime(obj["E"] / 1000), obj["s"], obj["p"], obj["P"], obj["w"], obj["x"],
-    obj["c"], obj["Q"], obj["b"], obj["B"], obj["a"], obj["A"], obj["o"], obj["h"], obj["l"],
-    obj["v"], obj["q"], unix2datetime(obj["O"] / 1000), unix2datetime(obj["C"] / 1000),
-    obj["F"], obj["L"], obj["n"]
-)
 
 # --- Structs for Market Data ---
 
@@ -794,34 +792,19 @@ end
 
 # WebSocket Trade Stream struct (different from REST API MarketTrade)
 # Maps the abbreviated field names from Binance WebSocket trade stream
-struct WebSocketTrade
-    eventType::String      # e - Event type ("trade")
-    eventTime::DateTime    # E - Event time
-    symbol::String         # s - Symbol
-    tradeId::Int64         # t - Trade ID
-    price::String          # p - Price
-    quantity::String       # q - Quantity
-    tradeTime::DateTime    # T - Trade time
-    isBuyerMaker::Bool     # m - Is the buyer the market maker?
-    ignore::Bool           # M - Ignore
+# The stream sends abbreviated keys, so every field needs an explicit `name`
+# tag. `UNIX_MS` supplies the timestamp lift/lower; the tags compose.
+@binance_struct struct WebSocketTrade
+    eventType::String    &(name="e",)        # Event type ("trade")
+    eventTime::DateTime  &(name="E",) &UNIX_MS
+    symbol::String       &(name="s",)
+    tradeId::Int64       &(name="t",)
+    price::String        &(name="p",)
+    quantity::String     &(name="q",)
+    tradeTime::DateTime  &(name="T",) &UNIX_MS
+    isBuyerMaker::Bool   &(name="m",)        # Is the buyer the market maker?
+    ignore::Bool         &(name="M",)
 end
-StructTypes.StructType(::Type{WebSocketTrade}) = StructTypes.CustomStruct()
-StructTypes.lower(t::WebSocketTrade) = (
-    e=t.eventType, E=Int64(round(datetime2unix(t.eventTime) * 1000)), s=t.symbol,
-    t=t.tradeId, p=t.price, q=t.quantity,
-    T=Int64(round(datetime2unix(t.tradeTime) * 1000)), m=t.isBuyerMaker, M=t.ignore
-)
-StructTypes.construct(::Type{WebSocketTrade}, obj) = WebSocketTrade(
-    obj["e"],
-    unix2datetime(obj["E"] / 1000),
-    obj["s"],
-    obj["t"],
-    obj["p"],
-    obj["q"],
-    unix2datetime(obj["T"] / 1000),
-    obj["m"],
-    obj["M"]
-)
 
 function Base.show(io::IO, ::MIME"text/plain", t::WebSocketTrade)
     println(io, "WebSocketTrade:")
@@ -835,32 +818,17 @@ end
 
 # WebSocket Block Trade Stream — <symbol>@blockTrade (rollout 2026-05-12).
 # Same shape as WebSocketTrade minus the trailing `M` (best-match) flag.
-struct WebSocketBlockTrade
-    eventType::String      # e - Event type ("blockTrade")
-    eventTime::DateTime    # E - Event time
-    symbol::String         # s - Symbol
-    tradeId::Int64         # t - Block trade ID
-    price::String          # p - Price
-    quantity::String       # q - Quantity
-    tradeTime::DateTime    # T - Trade time
-    isBuyerMaker::Bool     # m - Is the buyer the market maker?
+# Same shape as WebSocketTrade minus the trailing `M` best-match flag.
+@binance_struct struct WebSocketBlockTrade
+    eventType::String    &(name="e",)        # Event type ("blockTrade")
+    eventTime::DateTime  &(name="E",) &UNIX_MS
+    symbol::String       &(name="s",)
+    tradeId::Int64       &(name="t",)        # Block trade ID
+    price::String        &(name="p",)
+    quantity::String     &(name="q",)
+    tradeTime::DateTime  &(name="T",) &UNIX_MS
+    isBuyerMaker::Bool   &(name="m",)
 end
-StructTypes.StructType(::Type{WebSocketBlockTrade}) = StructTypes.CustomStruct()
-StructTypes.lower(t::WebSocketBlockTrade) = (
-    e=t.eventType, E=Int64(round(datetime2unix(t.eventTime) * 1000)), s=t.symbol,
-    t=t.tradeId, p=t.price, q=t.quantity,
-    T=Int64(round(datetime2unix(t.tradeTime) * 1000)), m=t.isBuyerMaker
-)
-StructTypes.construct(::Type{WebSocketBlockTrade}, obj) = WebSocketBlockTrade(
-    obj["e"],
-    unix2datetime(obj["E"] / 1000),
-    obj["s"],
-    obj["t"],
-    obj["p"],
-    obj["q"],
-    unix2datetime(obj["T"] / 1000),
-    obj["m"]
-)
 
 function Base.show(io::IO, ::MIME"text/plain", t::WebSocketBlockTrade)
     println(io, "WebSocketBlockTrade:")
