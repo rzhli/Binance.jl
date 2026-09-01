@@ -4,6 +4,13 @@ module MarketDataStreams
     using ..Config
     using ..Filters
     using ..Types
+    using ..RateLimiter: backoff_delay
+
+    # Binance market-data streams send a WebSocket ping frame every 20 seconds.
+    # Three missed pings means the connection is gone (a silently dropped TCP
+    # connection otherwise leaves the reader blocked forever). HTTP.jl surfaces
+    # this as a 1006 close, which the reconnect loop below handles.
+    const STREAM_READ_IDLE_TIMEOUT = 60
 
     export MarketDataStreamClient, subscribe, subscribe_ticker, subscribe_mini_ticker,
         subscribe_all_tickers, subscribe_all_mini_tickers, subscribe_book_ticker,
@@ -68,28 +75,34 @@ module MarketDataStreams
         end
 
         uri = client.ws_base_url * stream_name
-        proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
         timeout = network_timeout(client)
+        # An empty proxy in config.toml means "use the standard proxy environment
+        # variables" (HTTP.jl's default), not "force a direct connection".
+        open_kwargs = if isempty(client.config.proxy)
+            (; suppress_close_error=true, connect_timeout=timeout,
+               request_timeout=timeout, read_idle_timeout=STREAM_READ_IDLE_TIMEOUT)
+        else
+            (; suppress_close_error=true, connect_timeout=timeout,
+               request_timeout=timeout, read_idle_timeout=STREAM_READ_IDLE_TIMEOUT,
+               proxy=client.config.proxy)
+        end
 
         task = errormonitor(@async begin
+            failures = 0
             while reconnect_enabled(client, stream_name)
                 try
-                    # 根据是否有 proxy 选择不同的调用方式，避免每次创建 Dict
-                    if proxy_url !== nothing
-                        HTTP.WebSockets.open(uri; suppress_close_error=true, proxy=proxy_url,
-                                             connect_timeout=timeout, request_timeout=timeout) do ws
-                            _handle_ws_messages(client, ws, stream_name, struct_type)
-                        end
-                    else
-                        HTTP.WebSockets.open(uri; suppress_close_error=true,
-                                             connect_timeout=timeout, request_timeout=timeout) do ws
-                            _handle_ws_messages(client, ws, stream_name, struct_type)
-                        end
+                    HTTP.WebSockets.open(uri; open_kwargs...) do ws
+                        # A completed handshake resets the backoff so a long-lived
+                        # stream that drops once does not inherit an old delay.
+                        failures = 0
+                        _handle_ws_messages(client, ws, stream_name, struct_type)
                     end
 
                     if reconnect_enabled(client, stream_name)
-                        @info "WebSocket connection closed; reconnecting" stream_name delay=client.config.reconnect_delay
-                        sleep(client.config.reconnect_delay)
+                        failures += 1
+                        delay = backoff_delay(client.config.reconnect_delay, failures)
+                        @info "WebSocket connection closed; reconnecting" stream_name delay
+                        sleep(delay)
                     end
 
                 catch e
@@ -97,10 +110,10 @@ module MarketDataStreams
                         @debug "WebSocket task received stop signal" stream_name
                         break # Exit the while loop
                     end
-                    if reconnect_enabled(client, stream_name)
-                        @error "WebSocket connection error; retrying" stream_name delay=client.config.reconnect_delay exception=(e, catch_backtrace())
-                        sleep(client.config.reconnect_delay)
-                    end
+                    failures += 1
+                    delay = backoff_delay(client.config.reconnect_delay, failures)
+                    @error "WebSocket connection error; retrying" stream_name delay attempt=failures exception=(e, catch_backtrace())
+                    sleep(delay)
                 end
             end
             @debug "WebSocket task terminated" stream_name

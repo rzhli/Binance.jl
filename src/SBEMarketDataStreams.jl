@@ -26,6 +26,12 @@ module SBEMarketDataStreams
 using HTTP, JSON3, Dates, URIs
 using ..Config
 using ..Types
+using ..RateLimiter: backoff_delay
+
+# Binance sends a WebSocket ping every 20 seconds on the SBE stream endpoint;
+# 60 seconds without any inbound frame means the connection is dead. HTTP.jl
+# turns the idle timeout into a 1006 close, which drives the reconnect loop.
+const SBE_READ_IDLE_TIMEOUT = 60
 
 include("SBEDecoder.jl")
 using .SBEDecoder
@@ -206,34 +212,36 @@ function connect_sbe!(client::SBEStreamClient)
         "X-MBX-APIKEY" => client.config.api_key
     ]
 
-    # Proxy settings
-    proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
+    # Proxy settings: an empty proxy means "follow the standard proxy environment
+    # variables" (HTTP.jl's default), not "force direct".
     timeout = network_timeout(client)
+    open_kwargs = if isempty(client.config.proxy)
+        (; headers=headers, suppress_close_error=true, subprotocols=["stream"],
+           connect_timeout=timeout, request_timeout=timeout,
+           read_idle_timeout=SBE_READ_IDLE_TIMEOUT)
+    else
+        (; headers=headers, suppress_close_error=true, subprotocols=["stream"],
+           connect_timeout=timeout, request_timeout=timeout,
+           read_idle_timeout=SBE_READ_IDLE_TIMEOUT, proxy=client.config.proxy)
+    end
 
     @info "Connecting to SBE stream: $uri"
 
     client.ws_task = errormonitor(@async begin
+        failures = 0
         while client.should_reconnect
             try
                 # Binance SBE streams require the "stream" subprotocol during handshake
-                # Use direct keyword args to avoid NamedTuple merge overhead
-                if proxy_url !== nothing
-                    HTTP.WebSockets.open(uri; headers=headers, suppress_close_error=true,
-                                         subprotocols=["stream"], proxy=proxy_url,
-                                         connect_timeout=timeout, request_timeout=timeout) do ws
-                        _handle_sbe_ws_session(client, ws)
-                    end
-                else
-                    HTTP.WebSockets.open(uri; headers=headers, suppress_close_error=true,
-                                         subprotocols=["stream"],
-                                         connect_timeout=timeout, request_timeout=timeout) do ws
-                        _handle_sbe_ws_session(client, ws)
-                    end
+                HTTP.WebSockets.open(uri; open_kwargs...) do ws
+                    failures = 0
+                    _handle_sbe_ws_session(client, ws)
                 end
 
                 if client.should_reconnect
-                    @info "SBE WebSocket closed. Reconnecting in $(client.config.reconnect_delay) seconds..."
-                    sleep(client.config.reconnect_delay)
+                    failures += 1
+                    delay = backoff_delay(client.config.reconnect_delay, failures)
+                    @info "SBE WebSocket closed. Reconnecting in $(round(delay, digits=2)) seconds..."
+                    sleep(delay)
                 end
 
             catch e
@@ -242,17 +250,17 @@ function connect_sbe!(client::SBEStreamClient)
                     break
                 end
 
-                if client.should_reconnect
-                    @error """SBE WebSocket error: $e
-                    Connection details:
-                      URI: $uri
-                      Proxy: $(client.config.proxy)
-                      API key configured: $(!isempty(client.config.api_key))
-                    Retrying in $(client.config.reconnect_delay) seconds..."""
-                    # Print the full exception for debugging
-                    @error "Full error:" exception = (e, catch_backtrace())
-                    sleep(client.config.reconnect_delay)
-                end
+                failures += 1
+                delay = backoff_delay(client.config.reconnect_delay, failures)
+                @error """SBE WebSocket error: $e
+                Connection details:
+                  URI: $uri
+                  Proxy: $(isempty(client.config.proxy) ? "(environment)" : client.config.proxy)
+                  API key configured: $(!isempty(client.config.api_key))
+                Retrying in $(round(delay, digits=2)) seconds (attempt $failures)..."""
+                # Print the full exception for debugging
+                @error "Full error:" exception = (e, catch_backtrace())
+                sleep(delay)
             end
         end
 
@@ -278,7 +286,7 @@ function connect_sbe!(client::SBEStreamClient)
     @error """Failed to establish SBE WebSocket connection after $timeout seconds.
     Possible reasons:
       1. Network connectivity issues
-      2. Proxy configuration problem (current: $(client.config.proxy))
+      2. Proxy configuration problem (current: $(isempty(client.config.proxy) ? "(environment)" : client.config.proxy))
       3. Invalid API key or wrong signature method (current: $(client.config.signature_method))
       4. Binance SBE service may be unavailable
 

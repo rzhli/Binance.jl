@@ -2,7 +2,9 @@ using Test
 using Binance
 using Base64
 using Dates
+using HTTP
 using JSON3
+using StructTypes
 
 const RSA_TEST_PRIVATE_KEY = """
 -----BEGIN PRIVATE KEY-----
@@ -118,6 +120,34 @@ end
         @test lvl.quantity == 2.0
     end
 
+    @testset "OrderBook deserializes nested CustomStruct levels" begin
+        # `PriceLevel` is a CustomStruct, so the generic `constructfrom` used by
+        # `StructTypes.Struct()` has no method for the `bids`/`asks` elements and
+        # every `depth()` call raised a MethodError. `OrderBook` must therefore
+        # provide its own construct/lower pair.
+        @test StructTypes.StructType(Binance.Types.OrderBook) isa StructTypes.CustomStruct
+
+        payload = JSON3.read("""
+        {"lastUpdateId":123456,
+         "bids":[["95000.10","1.5"],["94999.00","2.0"]],
+         "asks":[["95001.00","0.8"]]}
+        """)
+        book = Binance.Types.to_struct(Binance.Types.OrderBook, payload)
+        @test book.lastUpdateId == 123456
+        @test length(book.bids) == 2
+        @test length(book.asks) == 1
+        @test book.bids[1].price == 95000.10
+        @test book.bids[1].quantity == 1.5
+        @test book.asks[1].price == 95001.00
+
+        # Round-trip: `lower` must emit the exchange's array-of-strings shape.
+        lowered = StructTypes.lower(book)
+        @test lowered.bids[1] == ["95000.1", "1.5"]
+        reparsed = Binance.Types.to_struct(Binance.Types.OrderBook, JSON3.read(JSON3.write(book)))
+        @test reparsed.lastUpdateId == book.lastUpdateId
+        @test reparsed.bids[1].price == book.bids[1].price
+    end
+
     @testset "OrderBookManager helper types" begin
         pq = Binance.OrderBookManagers.PriceQuantity(100.0, 1.0)
         @test pq.price == 100.0
@@ -174,6 +204,28 @@ end
         response = Binance.WebSocketAPI.take_response!(response_channel, 1, "ping", "test-request-id")
         @test response.status == 200
         @test response.result.ok === true
+    end
+
+    @testset "WebSocket response helper wakes on a late-arriving reply" begin
+        take_response! = Binance.WebSocketAPI.take_response!
+
+        # A reply that arrives after the call started must be delivered by the
+        # blocking `take!` rather than waited out on a polling interval.
+        channel = Channel{Any}(1)
+        @async begin
+            sleep(0.05)
+            put!(channel, JSON3.read("{\"status\":200,\"result\":1}"))
+        end
+        @test take_response!(channel, 5, "ping", "late-reply").result == 1
+
+        # Exhausting the deadline raises, and the channel is left closed so the
+        # socket reader can detect that nobody is waiting anymore.
+        timed_out = Channel{Any}(1)
+        @test_throws ErrorException take_response!(timed_out, 0.05, "ping", "timeout")
+        @test !isopen(timed_out)
+        @test_throws InvalidStateException put!(timed_out, JSON3.read("{}"))
+
+        @test_throws ArgumentError take_response!(Channel{Any}(1), -1, "ping", "negative")
     end
 
     @testset "WebSocket network timeout has a positive floor" begin
@@ -322,6 +374,83 @@ end
         @test isempty(connection_limit.requests)
         @test isnothing(Binance.check_and_wait(limiter, "CONNECTIONS"))
         @test length(connection_limit.requests) == 1
+    end
+
+    @testset "Reconnect backoff grows and stays jittered within bounds" begin
+        backoff_delay = Binance.RateLimiter.backoff_delay
+
+        # base == 0 disables waiting entirely.
+        @test backoff_delay(0, 1) == 0.0
+
+        # attempt 1 => [0.5*base, base]; attempt n doubles the ceiling, bounded by `cap`.
+        for attempt in 1:6
+            ceiling = min(5.0 * 2.0^(attempt - 1), 60.0)
+            delay = backoff_delay(5, attempt)
+            @test 0.5 * ceiling <= delay <= ceiling
+        end
+
+        # The cap bounds the ceiling, and a huge attempt count must not overflow.
+        @test backoff_delay(5, 30; cap=60.0) <= 60.0
+        @test backoff_delay(5, 10_000; cap=60.0) <= 60.0
+
+        # A base above the cap is still honoured rather than shrinking below it.
+        @test 60.0 <= backoff_delay(120, 1; cap=60.0) <= 120.0
+
+        # Jitter: repeated calls must not all return the same value.
+        @test length(unique(backoff_delay(5, 4) for _ in 1:32)) > 1
+    end
+
+    @testset "REST error mapping records Retry-After backoff" begin
+        limiter = Binance.BinanceRateLimit(test_binance_config())
+        handle_error = Binance.RESTAPI.handle_error
+
+        rate_limited = HTTP.Response(
+            429;
+            headers = ["Retry-After" => "7"],
+            body = "{\"code\":-1003,\"msg\":\"Too many requests\"}",
+        )
+        @test_throws Binance.RateLimitError handle_error(limiter, rate_limited)
+        # `set_backoff!` moved the sentinel forward, so a backoff is now armed.
+        @test limiter.backoff_until != typemin(DateTime)
+
+        # Header lookup must be case-insensitive (HTTP.jl canonicalizes keys) and
+        # an unparseable value must warn rather than throw a bare ArgumentError.
+        limiter2 = Binance.BinanceRateLimit(test_binance_config())
+        banned = HTTP.Response(418; headers = ["retry-after" => "120"], body = "{}")
+        @test_throws Binance.IPAutoBannedError handle_error(limiter2, banned)
+        @test limiter2.backoff_until != typemin(DateTime)
+
+        limiter3 = Binance.BinanceRateLimit(test_binance_config())
+        malformed = HTTP.Response(429; headers = ["Retry-After" => "soon"], body = "{}")
+        @test_logs (:warn, r"unparseable Retry-After") match_mode=:any begin
+            @test_throws Binance.RateLimitError handle_error(limiter3, malformed)
+        end
+        @test limiter3.backoff_until == typemin(DateTime)
+
+        # Status-to-exception mapping for the remaining documented codes.
+        @test_throws Binance.WAFViolationError handle_error(limiter, HTTP.Response(403; body="{}"))
+        @test_throws Binance.UnauthorizedError handle_error(limiter, HTTP.Response(401; body="{}"))
+        @test_throws Binance.CancelReplacePartialSuccess handle_error(limiter, HTTP.Response(409; body="{}"))
+        @test_throws Binance.MalformedRequestError handle_error(limiter, HTTP.Response(400; body="{}"))
+        @test_logs (:warn, r"Binance Server Error") match_mode=:any begin
+            @test_throws Binance.BinanceServerError handle_error(limiter, HTTP.Response(503; body="{}"))
+        end
+    end
+
+    @testset "REST retry policy never retries rate-limit responses" begin
+        retry_if = Binance.RESTAPI.binance_retry_if
+        request = HTTP.Request("GET", "/api/v3/time")
+
+        # 429/418/403 must be surfaced immediately: HTTP.jl retrying them would
+        # escalate a rate-limit violation into an IP ban.
+        for status in (429, 418, 403)
+            @test retry_if(1, nothing, request, HTTP.Response(status)) === false
+        end
+
+        # Everything else defers to HTTP.jl's built-in classification.
+        @test retry_if(1, nothing, request, HTTP.Response(503)) === nothing
+        @test retry_if(1, nothing, request, HTTP.Response(200)) === nothing
+        @test retry_if(1, HTTP.RequestRetryError(EOFError()), request, nothing) === nothing
     end
 
     @testset "Configuration reads testnet credentials from TOML" begin

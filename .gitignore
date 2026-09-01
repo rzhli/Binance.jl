@@ -47,6 +47,10 @@ single_run_test.jl
 
 # Personal trading strategies
 strategy/
+src/Indicators.jl
+strategy/AnalysisWorkflow.jl
+strategy/Indicators.jl
+strategy/Monitoring.jl
 # Add specific local-only strategy files here if needed; do not ignore *.jl
 # globally, or new package source and test files will be invisible to Git.
 

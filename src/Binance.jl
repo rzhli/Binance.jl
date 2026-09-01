@@ -81,6 +81,7 @@ orders_all(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.all_order
 
 # Export client types and configuration
 export RESTClient, MarketDataStreamClient, SBEStreamClient, WebSocketClient, BinanceConfig, BinanceRateLimit
+export close_idle_connections!
 
 # Export exception types
 export BinanceException, BinanceError, MalformedRequestError, UnauthorizedError,

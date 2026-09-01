@@ -683,7 +683,20 @@ struct OrderBook
     bids::Vector{PriceLevel}
     asks::Vector{PriceLevel}
 end
-StructTypes.StructType(::Type{OrderBook}) = StructTypes.Struct()
+# CustomStruct: nested Vector{PriceLevel} elements are themselves CustomStruct,
+# which StructTypes' generic constructfrom cannot handle. Provide construct/lower
+# explicitly (same pattern as Order/ExchangeInfo).
+StructTypes.StructType(::Type{OrderBook}) = StructTypes.CustomStruct()
+StructTypes.lower(ob::OrderBook) = (
+    lastUpdateId=ob.lastUpdateId,
+    bids=[StructTypes.lower(b) for b in ob.bids],
+    asks=[StructTypes.lower(a) for a in ob.asks],
+)
+StructTypes.construct(::Type{OrderBook}, obj) = OrderBook(
+    obj["lastUpdateId"],
+    [StructTypes.construct(PriceLevel, b) for b in obj["bids"]],
+    [StructTypes.construct(PriceLevel, a) for a in obj["asks"]],
+)
 
 function Base.show(io::IO, ::MIME"text/plain", ob::OrderBook)
     println(io, "OrderBook (lastUpdateId: ", ob.lastUpdateId, ")")

@@ -24,6 +24,44 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.12.3 - HTTP.jl 2.x alignment
+
+- **Fixed `depth()` deserialization** — `OrderBook` used the generic
+  `StructTypes.Struct()` mapping, which cannot construct its `CustomStruct`
+  `PriceLevel` elements; every `depth(ws_client, symbol)` call raised a
+  `MethodError`. It now provides explicit `construct`/`lower` methods.
+- **Error-safe retries** — Signed REST requests are no longer replayed by the
+  HTTP client (a replay reuses the original `timestamp`/`signature`, so it can
+  land outside `recvWindow`, and amend/cancel would be re-sent against live
+  orders). Rate-limit responses (`429`/`418`/`403`) are never retried on the
+  transport level, since retrying them escalates a violation into an IP ban.
+- **Single error path** — Non-2xx responses now stay on the normal return path
+  (`status_exception = false`), so `handle_error` is the only place that maps
+  Binance error payloads to exceptions. `401` maps to `UnauthorizedError`.
+  `Retry-After` is read through `HTTP.header` (case-insensitive, canonicalized)
+  and an unparseable value warns instead of throwing.
+- **Credential safety** — REST requests no longer follow redirects: HTTP.jl only
+  strips standard credential headers across origins, so `X-MBX-APIKEY` would
+  otherwise be replayed to a redirect target. The API key is now a `Client`
+  default header instead of being rebuilt per call.
+- **Dead-connection detection** — All WebSocket connections (market streams,
+  WebSocket API, SBE streams) set `read_idle_timeout`, so a silently dropped TCP
+  connection surfaces as a 1006 close and triggers a reconnect instead of
+  blocking the reader forever.
+- **Jittered reconnect backoff** — Reconnect loops use exponential backoff with
+  jitter (`RateLimiter.backoff_delay`) instead of a fixed delay, and every
+  re-dial reserves a connection-limiter slot, so an exchange-side outage cannot
+  exhaust the 300-connections-per-5-minutes budget in lockstep.
+- **Proxy defaults** — An empty `proxy` in `config.toml` now means "use the
+  standard `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY` environment
+  variables" (HTTP.jl's default) rather than forcing a direct connection.
+- **Idle-connection control** — Added `close_idle_connections!(rest_client)` to
+  drop pooled connections that intermediaries may have silently dropped, without
+  closing the client.
+- **Lower request latency** — WebSocket API response waiting blocks on the
+  response channel instead of polling it every 50 ms, and REST JSON is parsed
+  straight from the response byte buffer without an intermediate `String` copy.
+
 ### v0.12.2 - REST connection pooling
 
 - **Reusable HTTP client** — `RESTClient` now owns a long-lived
@@ -157,7 +195,9 @@ private_key_pass = "YOUR_PASSWORD"
 
 [connection]
 testnet = false
-proxy = ""  # Optional: "http://127.0.0.1:7890"
+# Leave empty to use the standard HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY
+# environment variables; set explicitly to override them.
+proxy = ""  # e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:7891"
 ```
 
 See `config_example.toml` for all options.
@@ -216,6 +256,7 @@ order = place_order(rest_client, "BTCUSDT", "BUY", "LIMIT";
                     quantity="0.001", price="60000.0", timeInForce="GTC")
 
 # RESTClient pools HTTP connections internally; release them when done
+close_idle_connections!(rest_client)  # drop idle pooled connections, stay usable
 close(rest_client)        # subsequent calls raise ArgumentError
 isopen(rest_client)       # false after close
 ```

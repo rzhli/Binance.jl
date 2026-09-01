@@ -1,6 +1,6 @@
 name = "Binance"
 uuid = "cea3082c-a500-42ba-b008-7fc426d310bc"
-version = "0.12.2"
+version = "0.12.3"
 authors = ["rzhli <tayuebuliuhen@gmail.com>"]
 
 [deps]
@@ -33,7 +33,8 @@ URIs = "1.6.1"
 julia = "1.11"
 
 [extras]
+HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test"]
+test = ["HTTP", "Test"]

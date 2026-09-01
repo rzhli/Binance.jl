@@ -10,6 +10,7 @@ module RESTAPI
     using ..Errors
 
     export RESTClient, make_request, get_server_time, get_exchange_info, ping,
+        close_idle_connections!,
         place_order, cancel_order, cancel_all_orders, get_order,
         get_open_orders, get_all_orders, get_orderbook,
         get_order_list, get_all_order_lists, get_open_order_lists,
@@ -48,9 +49,10 @@ module RESTAPI
 
             # Build one long-lived HTTP.Client + Transport per RESTClient so
             # TCP/TLS connections (and ALPN HTTP/2) are pooled across requests.
-            # Proxy is configured on the Transport (documented HTTP.jl 2.x form:
-            # pass a proxy URL string or HTTP.ProxyConfig; nothing = direct).
-            proxy = isempty(config.proxy) ? nothing : config.proxy
+            # Proxy policy lives on the Transport: an explicit `proxy` from
+            # config.toml wins, otherwise fall back to HTTP.jl's own default of
+            # reading HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY.
+            proxy = isempty(config.proxy) ? HTTP.ProxyFromEnvironment() : config.proxy
             transport = HTTP.Transport(
                 max_idle_per_host = 4,
                 max_idle_total = 16,
@@ -60,6 +62,8 @@ module RESTAPI
                 transport = transport,
                 cookiejar = nothing,          # Binance REST does not use cookies
                 prefer_http2 = true,          # ALPN h2 when available, else h1
+                default_headers = isempty(config.api_key) ?
+                    Pair{String,String}[] : ["X-MBX-APIKEY" => config.api_key],
             )
 
             client = new(
@@ -95,6 +99,21 @@ module RESTAPI
     end
 
     """
+        close_idle_connections!(client::RESTClient)
+
+    Drop pooled connections that are currently idle without closing the client.
+
+    Binance (and intermediate NATs/load balancers) silently discard keep-alive
+    connections that have been idle for a while; a subsequent request then fails
+    on a dead socket. Call this after a long pause in trading to force fresh
+    dials, or periodically from a supervisory task. The client stays usable.
+    """
+    function close_idle_connections!(client::RESTClient)
+        HTTP.close_idle_connections!(client.http_client)
+        return nothing
+    end
+
+    """
         Base.isopen(client::RESTClient) -> Bool
 
     Return `true` while the underlying pooled [`HTTP.Client`](@ref) is open.
@@ -120,12 +139,10 @@ module RESTAPI
     end
 
     function build_headers(client::RESTClient)
-        # 返回类型稳定的 Vector{Pair{String,String}}
-        if !isempty(client.config.api_key)
-            return ["X-MBX-APIKEY" => client.config.api_key]
-        else
-            return Pair{String,String}[]
-        end
+        # X-MBX-APIKEY 已经作为 default_headers 挂在 HTTP.Client 上（HTTP.jl 会在
+        # 每个请求上补齐未显式提供的默认头），这里只需返回类型稳定的空向量，
+        # 供 POST/PUT 追加 Content-Type 使用。
+        return Pair{String,String}[]
     end
 
     function build_query_string(params::Dict{String,Any})
@@ -165,9 +182,25 @@ module RESTAPI
     end
 
     function handle_error(client::RESTClient, response)
+        return handle_error(client.rate_limiter, response)
+    end
+
+    """
+        handle_error(rate_limiter::BinanceRateLimit, response)
+
+    Translate a non-2xx HTTP response into the matching `BinanceException`.
+
+    Rate-limit responses (`429`/`418`) additionally record the server-provided
+    `Retry-After` backoff on `rate_limiter` before throwing, so subsequent calls
+    wait instead of escalating the violation into an IP ban.
+
+    Always throws.
+    """
+    function handle_error(rate_limiter::BinanceRateLimit, response)
         status = response.status
+        # `String(::Vector{UInt8})` aliases (and empties) the body buffer, which is
+        # fine here: this is the terminal use of the failed response.
         body = String(response.body)
-        headers = response.headers
         code = 0
         msg = body
 
@@ -182,18 +215,23 @@ module RESTAPI
         end
 
         if status == 429 || status == 418
-            # 避免使用 filter 闭包，直接循环查找
-            for h in headers
-                if lowercase(h[1]) == "retry-after"
-                    retry_seconds = parse(Int, h[2])
-                    set_backoff!(client.rate_limiter, retry_seconds)
-                    break
+            # HTTP.jl canonicalizes header keys and `HTTP.header` matches
+            # case-insensitively, so no manual scan/lowercase is needed.
+            retry_after = HTTP.header(response.headers, "Retry-After", "")
+            if !isempty(retry_after)
+                retry_seconds = tryparse(Int, strip(retry_after))
+                if retry_seconds === nothing
+                    @warn "Ignoring unparseable Retry-After header" retry_after
+                else
+                    set_backoff!(rate_limiter, retry_seconds)
                 end
             end
         end
 
         if status == 403
             throw(WAFViolationError())
+        elseif status == 401
+            throw(UnauthorizedError(code, msg))
         elseif status == 409
             throw(CancelReplacePartialSuccess(code, msg))
         elseif status == 429
@@ -208,6 +246,25 @@ module RESTAPI
         else
             throw(BinanceError(status, code, msg))
         end
+    end
+
+    """
+        binance_retry_if(attempt, err, request, response) -> Union{Bool,Nothing}
+
+    `retry_if` hook for the HTTP.jl client retry policy.
+
+    Binance escalates repeated rate-limit violations from `429` to a `418` IP ban,
+    so rate-limit and WAF responses must never be retried on the transport level;
+    they are surfaced to the caller and the `Retry-After` backoff is recorded in
+    the [`BinanceRateLimit`](@ref) instead. Everything else defers to HTTP.jl's
+    built-in policy (transient transport errors plus retryable 5xx/408 for
+    replayable idempotent requests).
+    """
+    function binance_retry_if(attempt::Int, err, request, response)
+        response === nothing && return nothing
+        status = response.status
+        (status == 429 || status == 418 || status == 403) && return false
+        return nothing
     end
 
     function make_request(
@@ -244,22 +301,47 @@ module RESTAPI
 
         try
             timeout = network_timeout(client)
-            # Route through the pooled HTTP.Client; proxy policy is already
-            # configured on its Transport. Phase-specific timeouts follow the
-            # HTTP.jl 2.x timeout model (connect / request / read_idle).
-            if !isempty(body)
-                response = HTTP.request(method, url;
+            # Route through the pooled HTTP.Client; the API key (default header)
+            # and proxy policy already live on the client/transport. Phase-specific
+            # timeouts follow the HTTP.jl 2.x timeout model
+            # (connect / request / read_idle).
+            #
+            # `status_exception = false` keeps every non-2xx response on the
+            # normal return path so `handle_error` is the single place that maps
+            # Binance error payloads onto exceptions.
+            #
+            # `redirect = false`: the Binance REST API never redirects, and
+            # HTTP.jl only strips the standard credential headers
+            # (Authorization/Cookie/...) across origins — `X-MBX-APIKEY` would be
+            # replayed to whatever host a redirect pointed at.
+            #
+            # `retry = !signed`: HTTP.jl replays the exact same bytes, and a signed
+            # request carries a fixed `timestamp`/`signature` pair. After a backoff
+            # sleep the replay can land outside `recvWindow` (-1021), and PUT/DELETE
+            # (order amend/cancel) — which HTTP.jl classifies as idempotent — would
+            # be re-sent against live orders. Public endpoints keep the built-in
+            # transient-failure retries.
+            response = if isempty(body)
+                HTTP.request(method, url;
                     client = client.http_client,
                     headers = headers,
-                    body = body,
+                    status_exception = false,
+                    redirect = false,
+                    retry = !signed,
+                    retry_if = binance_retry_if,
                     connect_timeout = timeout,
                     request_timeout = timeout,
                     read_idle_timeout = timeout,
                 )
             else
-                response = HTTP.request(method, url;
+                HTTP.request(method, url;
                     client = client.http_client,
                     headers = headers,
+                    body = body,
+                    status_exception = false,
+                    redirect = false,
+                    retry = !signed,
+                    retry_if = binance_retry_if,
                     connect_timeout = timeout,
                     request_timeout = timeout,
                     read_idle_timeout = timeout,
@@ -267,11 +349,16 @@ module RESTAPI
             end
 
             if response.status in (200, 201, 202)
-                return JSON3.read(String(response.body))
+                # Parse straight from the byte buffer: `String(response.body)`
+                # would allocate an extra copy of every payload.
+                return JSON3.read(response.body)
             else
                 handle_error(client, response)
             end
         catch e
+            # `status_exception = false` means a StatusError can only reach here
+            # from a redirect/SSE edge case, but keep the mapping so error
+            # payloads are still translated instead of leaking HTTP types.
             if e isa HTTP.StatusError
                 handle_error(client, e.response)
             else

@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-09-01
+
+### Fixed
+- **`depth()` order-book deserialization** — `OrderBook` was registered as
+  `StructTypes.Struct()`, but its `bids`/`asks` elements are `PriceLevel`, which
+  is a `CustomStruct`. `StructTypes.constructfrom` has no method for a
+  `CustomStruct` element type, so every `depth(ws_client, symbol)` call raised
+  `MethodError: no method matching constructfrom(::StructTypes.CustomStruct,
+  ::Type{PriceLevel}, ::JSON3.Array{...})`. `OrderBook` now provides explicit
+  `construct`/`lower` methods, matching the pattern already used by `Order` and
+  `ExchangeInfo`.
+- **Signed-request retries** — Signed REST requests are no longer retried by the
+  HTTP client. HTTP.jl replays the exact original bytes, so a retry after a
+  backoff sleep reuses the original `timestamp`/`signature` and can be rejected
+  as `-1021` (outside `recvWindow`); worse, `PUT`/`DELETE` (order amend and
+  cancel) are classified as idempotent by the built-in policy and would be
+  re-sent against live orders. Public endpoints keep transient-failure retries.
+- **Rate-limit escalation** — Added a `retry_if` policy that never retries
+  `429`/`418`/`403`. Retrying a rate-limit response escalates the violation
+  into an IP ban; the `Retry-After` backoff is recorded on the rate limiter and
+  the error is surfaced to the caller instead.
+- **Credential leakage on redirect** — REST requests now disable redirect
+  following. HTTP.jl only strips the standard credential headers
+  (`Authorization`, `Cookie`, ...) across origins, so `X-MBX-APIKEY` would have
+  been replayed to whatever host a redirect pointed at.
+- **Dead WebSocket connections** — Market streams, the WebSocket API, and SBE
+  streams now set `read_idle_timeout`. A silently dropped TCP connection
+  previously left the reader blocked forever with no reconnect; it now surfaces
+  as a 1006 close and drives the reconnect loop.
+- **Reconnect stampede** — Reconnect loops use jittered exponential backoff
+  (`RateLimiter.backoff_delay`) instead of a fixed delay, and each WebSocket API
+  re-dial reserves a connection-limiter slot. Previously only the first connect
+  was accounted for, so a reconnect storm could exceed the 300-connections-per-
+  5-minutes limit.
+- **`Retry-After` parsing** — The header is read through `HTTP.header`
+  (case-insensitive over canonicalized keys) instead of a manual lowercase scan,
+  and a non-numeric value now warns instead of throwing `ArgumentError` from
+  inside the error handler.
+- **Session re-authentication** — `is_authenticated` is no longer cleared when a
+  WebSocket API connection drops, so the post-reconnect setup task can still
+  detect that it must replay `session.logon` and re-subscribe the user stream.
+
+### Changed
+- **Empty proxy semantics** — An empty `proxy` in `config.toml` now means "use
+  the standard `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY` environment
+  variables" (HTTP.jl's default) instead of forcing a direct connection.
+- **Single error path** — REST requests pass `status_exception = false` so every
+  non-2xx response reaches `handle_error`, which is now the only place mapping
+  Binance error payloads onto exceptions. `401` maps to `UnauthorizedError`, and
+  `handle_error` also accepts a bare `BinanceRateLimit` for testability.
+- **API key as a client default header** — `X-MBX-APIKEY` is registered as an
+  `HTTP.Client` default header instead of being rebuilt for every request.
+
+### Added
+- **`close_idle_connections!(rest_client)`** — Drop pooled connections that are
+  currently idle (intermediaries silently discard long-idle keep-alives) without
+  closing the client.
+- **`RateLimiter.backoff_delay`** — Exported helper computing a jittered
+  exponential reconnect delay bounded by a cap.
+
+### Performance
+- **WebSocket API latency** — `take_response!` now blocks on the response channel
+  (bounded by a timer) instead of polling it every 50 ms, removing up to 50 ms of
+  latency from every request round-trip. A reply that races the deadline is still
+  delivered, and a reply arriving after the deadline is dropped with a debug log
+  instead of crashing the socket reader.
+- **REST parsing** — JSON is parsed straight from the response byte buffer,
+  removing one full copy of every payload.
+
+### Tests
+- Added coverage for the reconnect backoff bounds and jitter, the REST
+  status-to-exception mapping including `Retry-After` handling, the retry
+  policy's refusal to retry rate-limit responses, and `take_response!` waking on
+  a late reply / closing its channel on timeout.
+
 ## [0.12.2] - 2026-08-21
 
 ### Changed

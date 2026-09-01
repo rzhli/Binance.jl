@@ -3,7 +3,7 @@ module RateLimiter
     using Dates
     using ..Config
 
-    export BinanceRateLimit, check_and_wait, set_backoff!, update_limits!
+    export BinanceRateLimit, check_and_wait, set_backoff!, update_limits!, backoff_delay
 
     # Store interval as milliseconds for type stability and fast comparison
     # This avoids the abstract Period type which causes type instability
@@ -58,6 +58,27 @@ module RateLimiter
             push!(limits, APILimit("RAW_REQUESTS", Minute(5), config.max_raw_requests_per_5m))
         end
         return BinanceRateLimit(limits, NO_BACKOFF, ReentrantLock())
+    end
+
+    """
+        backoff_delay(base::Real, attempt::Integer; cap::Real=60.0) -> Float64
+
+    Exponentially increasing, jittered delay (in seconds) for reconnect loops.
+
+    `attempt` is 1-based: the first attempt waits roughly `base` seconds and each
+    subsequent attempt doubles the ceiling up to `cap`. The returned value is
+    randomized within 50–100% of the ceiling so that many streams reconnecting
+    after the same network drop do not hit Binance in lockstep and burn through
+    the 300-connections-per-5-minutes limit.
+    """
+    function backoff_delay(base::Real, attempt::Integer; cap::Real=60.0)::Float64
+        base_seconds = max(Float64(base), 0.0)
+        base_seconds == 0.0 && return 0.0
+        # Cap the exponent before it is applied so large attempt counts cannot
+        # overflow the shift.
+        exponent = min(max(attempt - 1, 0), 16)
+        ceiling = min(base_seconds * 2.0^exponent, max(Float64(cap), base_seconds))
+        return ceiling * (0.5 + 0.5 * rand())
     end
 
     """

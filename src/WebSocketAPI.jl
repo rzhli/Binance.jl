@@ -4,6 +4,16 @@ module WebSocketAPI
     import HTTP.WebSockets
 
     using ..Config, ..Signature, ..Types, ..Filters, ..RESTAPI, ..RateLimiter, ..Account, ..Events, ..Errors
+    using ..RateLimiter: backoff_delay
+
+    # Binance pings the WebSocket API connection roughly every 20 seconds, and the
+    # client additionally sends its own ping frame every `heartbeat_interval`
+    # (60s) which the server answers with a pong. 180 seconds of complete inbound
+    # silence therefore means the connection is dead — HTTP.jl reports the idle
+    # timeout as a 1006 close so the reconnect loop can re-dial instead of
+    # blocking forever on a socket that will never produce another frame. Kept at
+    # 3× the heartbeat so a single delayed pong cannot tear down a healthy session.
+    const WS_READ_IDLE_TIMEOUT = 180
 
     # ✨✨ 关键步骤 ✨✨
     # 使用 import 关键字，将 RESTAPI.place_order 函数本身引入当前作用域, 为它添加新方法，
@@ -130,15 +140,24 @@ module WebSocketAPI
 
     function take_response!(response_channel::Channel, timeout::Real, method::String, request_id::String)
         timeout >= 0 || throw(ArgumentError("timeout must be non-negative"))
-        deadline = Base.time() + timeout
-        while !isready(response_channel)
-            remaining = deadline - Base.time()
-            if remaining <= 0
+        isready(response_channel) && return take!(response_channel)
+        # Block on the channel instead of polling it. `put!` from the socket reader
+        # wakes this task immediately, whereas the previous 50 ms poll loop added
+        # up to 50 ms to every request round-trip. A timer bounds the wait by
+        # closing the channel, which makes the blocked `take!` throw
+        # `InvalidStateException` (a closed-but-non-empty channel still yields its
+        # buffered response first, so a reply racing the deadline is not lost).
+        timer = Timer(_ -> close(response_channel), timeout)
+        try
+            return take!(response_channel)
+        catch err
+            if err isa InvalidStateException && !isopen(response_channel)
                 error("Timed out after $timeout seconds waiting for WebSocket API response to '$method' (id=$request_id)")
             end
-            sleep(min(0.05, remaining))
+            rethrow()
+        finally
+            close(timer)
         end
-        return take!(response_channel)
     end
 
     function get_response_channel(client::WebSocketClient, request_id::String)
@@ -249,11 +268,21 @@ module WebSocketAPI
                 end
 
                 try
-                    proxy_url = isempty(client.config.proxy) ? nothing : client.config.proxy
                     timeout = network_timeout(client)
-                    open_kwargs = proxy_url === nothing ?
-                        (; connect_timeout=timeout, request_timeout=timeout) :
-                        (; connect_timeout=timeout, request_timeout=timeout, proxy=proxy_url)
+                    # Each re-dial consumes one of the 300 connections allowed per
+                    # 5 minutes per IP, so reserve a slot on every attempt rather
+                    # than only for the first connect.
+                    attempt > 1 && check_and_wait(client.rate_limiter, "CONNECTIONS")
+                    # An empty proxy in config.toml means "use the standard proxy
+                    # environment variables" (HTTP.jl's default), not "direct".
+                    # `read_idle_timeout` bounds inbound inactivity after the
+                    # upgrade so a silently dropped TCP connection surfaces as a
+                    # 1006 close instead of blocking the reader forever.
+                    open_kwargs = isempty(client.config.proxy) ?
+                        (; connect_timeout=timeout, request_timeout=timeout,
+                           read_idle_timeout=WS_READ_IDLE_TIMEOUT) :
+                        (; connect_timeout=timeout, request_timeout=timeout,
+                           read_idle_timeout=WS_READ_IDLE_TIMEOUT, proxy=client.config.proxy)
                     WebSockets.open(client.base_url; open_kwargs...) do ws
                         client.ws_connection = ws
                         @info "Successfully connected to WebSocket API."
@@ -341,7 +370,19 @@ module WebSocketAPI
                                 request_id = haskey(data, :id) ? string(data.id) : ""
                                 response_channel = isempty(request_id) ? nothing : get_response_channel(client, request_id)
                                 if response_channel !== nothing
-                                    put!(response_channel, data)
+                                    # The waiter closes its channel when its
+                                    # deadline expires; a late reply must not take
+                                    # down the reader loop.
+                                    if isopen(response_channel)
+                                        try
+                                            put!(response_channel, data)
+                                        catch put_error
+                                            put_error isa InvalidStateException || rethrow()
+                                            @debug "Dropping response for a request that already timed out" request_id
+                                        end
+                                    else
+                                        @debug "Dropping response for a request that already timed out" request_id
+                                    end
                                 # Check if this is a user data stream event
                                 else
                                     event_payload = nothing
@@ -394,7 +435,12 @@ module WebSocketAPI
                         end
                     end
                 catch e
-                    @error "WebSocket connection error: $e"
+                    if e isa InterruptException || !client.should_reconnect
+                        @info "WebSocket API task stopped"
+                        client.should_reconnect = false
+                    else
+                        @error "WebSocket connection error: $e"
+                    end
                 finally
                     # Stop heartbeat task if running
                     if !isnothing(client.heartbeat_task) && !istaskdone(client.heartbeat_task)
@@ -402,9 +448,16 @@ module WebSocketAPI
                     end
                     client.heartbeat_task = nothing
                     client.ws_connection = nothing
+                    # NOTE: `is_authenticated` is intentionally left untouched here
+                    # — the setup task uses it after a reconnect to decide whether
+                    # to replay `session.logon` and re-subscribe the user stream.
                     if client.should_reconnect && attempt <= client.config.max_reconnect_attempts
-                        @info "Attempting to reconnect in $(client.config.reconnect_delay) seconds... (Attempt $attempt of $(client.config.max_reconnect_attempts))"
-                        sleep(client.config.reconnect_delay)
+                        # Jittered exponential backoff: a Binance-side outage
+                        # otherwise makes every client re-dial in lockstep and
+                        # burn the 300-connections-per-5-minutes budget.
+                        delay = backoff_delay(client.config.reconnect_delay, attempt)
+                        @info "Attempting to reconnect in $(round(delay, digits=2)) seconds... (Attempt $attempt of $(client.config.max_reconnect_attempts))"
+                        sleep(delay)
                     elseif client.should_reconnect
                         @error "Maximum reconnect attempts reached. Giving up."
                         client.should_reconnect = false
