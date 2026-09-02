@@ -3,8 +3,6 @@ using Binance
 using Base64
 using Dates
 using HTTP
-using JSON3
-using StructTypes
 using StructUtils
 import JSON
 
@@ -128,12 +126,12 @@ end
         @test lvl.quantity == 2.0
     end
 
-    @testset "Migrated types deserialize from both JSON backends" begin
-        # These types dropped their hand-written `StructTypes.construct` in favour
-        # of StructUtils field tags. `to_struct` must keep working on values
-        # materialized by either backend, since `make_request` still hands over an
-        # already-parsed object. Each case is asserted field-by-field: a wrong tag
-        # silently yields a default or shifted value rather than an error.
+    @testset "Response types deserialize lazily and materialized" begin
+        # Both entry points must agree: `JSON.parse(raw, T)` fills the struct
+        # straight from the bytes, while `to_struct` works on an already-decoded
+        # object (what the WebSocket paths have). Each case is asserted
+        # field-by-field: a wrong tag silently yields a default or shifted value
+        # rather than an error.
         T = Binance.Types
         cases = (
             (T.AveragePrice,
@@ -163,18 +161,16 @@ end
         )
 
         for (Ty, raw, check) in cases
-            @test all(check(T.to_struct(Ty, JSON3.read(raw))))
             @test all(check(T.to_struct(Ty, JSON.parse(raw))))
             @test all(check(JSON.parse(raw, Ty)))
         end
 
         # A missing (not null) optional field must land as `nothing`.
-        absent = T.to_struct(T.ReferencePrice,
-                             JSON3.read("""{"symbol":"X","timestamp":1704067200000}"""))
+        absent = JSON.parse("""{"symbol":"X","timestamp":1704067200000}""", T.ReferencePrice)
         @test absent.referencePrice === nothing
 
         # The tag's `lower` half must put milliseconds back on the wire.
-        trade = T.to_struct(T.MarketTrade, JSON3.read(cases[2][2]))
+        trade = JSON.parse(cases[2][2], T.MarketTrade)
         encoded = JSON.json(trade)
         @test occursin("\"time\":1704067200000", encoded)
         @test JSON.parse(encoded, T.MarketTrade) == trade
@@ -191,11 +187,10 @@ end
         for (Ty, raw) in ((T.Ticker24hrMini, mini), (T.TradingDayTickerMini, mini),
                           (T.RollingWindowTickerMini, mini),
                           (T.TradingDayTicker, full), (T.RollingWindowTicker, full))
-            from_json3 = T.to_struct(Ty, JSON3.read(raw))
-            @test from_json3 == T.to_struct(Ty, JSON.parse(raw))
-            @test from_json3 == JSON.parse(raw, Ty)
-            @test from_json3.openTime == DateTime(2024, 1, 1)
-            @test from_json3.closeTime == DateTime(2024, 1, 2)
+            ticker = JSON.parse(raw, Ty)
+            @test ticker == T.to_struct(Ty, JSON.parse(raw))
+            @test ticker.openTime == DateTime(2024, 1, 1)
+            @test ticker.closeTime == DateTime(2024, 1, 2)
         end
     end
 
@@ -203,9 +198,8 @@ end
         T = Binance.Types
 
         trade_json = """{"symbol":"BTCUSDT","id":1,"orderId":2,"orderListId":-1,"price":"42000.5","qty":"0.5","quoteQty":"21000.25","commission":"0.001","commissionAsset":"BNB","time":1704067200000,"isBuyer":true,"isMaker":false,"isBestMatch":true}"""
-        trade = T.to_struct(T.Trade, JSON3.read(trade_json))
+        trade = JSON.parse(trade_json, T.Trade)
         @test trade == T.to_struct(T.Trade, JSON.parse(trade_json))
-        @test trade == JSON.parse(trade_json, T.Trade)
         @test trade.orderListId == -1          # sentinel for "not part of a list"
         @test trade.commissionAsset == "BNB"
         @test trade.time == DateTime(2024, 1, 1)
@@ -214,8 +208,8 @@ end
         # Single-letter field names must not be reordered: `a`/`f`/`l` are ids,
         # `T` is the timestamp, `m`/`M` are distinct flags.
         agg_json = """{"a":100,"p":"42000","q":"1.5","f":10,"l":20,"T":1704067200000,"m":true,"M":false}"""
-        agg = T.to_struct(T.AggregateTrade, JSON3.read(agg_json))
-        @test agg == JSON.parse(agg_json, T.AggregateTrade)
+        agg = JSON.parse(agg_json, T.AggregateTrade)
+        @test agg == T.to_struct(T.AggregateTrade, JSON.parse(agg_json))
         @test (agg.a, agg.f, agg.l) == (100, 10, 20)
         @test agg.T == DateTime(2024, 1, 1)
         @test agg.m === true && agg.M === false
@@ -223,8 +217,8 @@ end
         # 21 fields, all strings but for the two timestamps and three counters —
         # a shifted mapping would be silent, so check both ends and the middle.
         rest_json = """{"symbol":"BTCUSDT","priceChange":"1","priceChangePercent":"2","weightedAvgPrice":"3","prevClosePrice":"4","lastPrice":"5","lastQty":"6","bidPrice":"7","bidQty":"8","askPrice":"9","askQty":"10","openPrice":"11","highPrice":"12","lowPrice":"13","volume":"14","quoteVolume":"15","openTime":1704067200000,"closeTime":1704153600000,"firstId":1,"lastId":2,"count":3}"""
-        rest = T.to_struct(T.Ticker24hrRest, JSON3.read(rest_json))
-        @test rest == JSON.parse(rest_json, T.Ticker24hrRest)
+        rest = JSON.parse(rest_json, T.Ticker24hrRest)
+        @test rest == T.to_struct(T.Ticker24hrRest, JSON.parse(rest_json))
         @test rest.symbol == "BTCUSDT"
         @test rest.prevClosePrice == "4"
         @test rest.askQty == "10"
@@ -243,9 +237,8 @@ end
         T = Binance.Types
 
         ws_json = """{"e":"trade","E":1704067200000,"s":"BTCUSDT","t":9,"p":"42000.5","q":"0.5","T":1704067260000,"m":true,"M":false}"""
-        ws = T.to_struct(T.WebSocketTrade, JSON3.read(ws_json))
+        ws = JSON.parse(ws_json, T.WebSocketTrade)
         @test ws == T.to_struct(T.WebSocketTrade, JSON.parse(ws_json))
-        @test ws == JSON.parse(ws_json, T.WebSocketTrade)
         @test (ws.eventType, ws.symbol, ws.tradeId) == ("trade", "BTCUSDT", 9)
         @test (ws.price, ws.quantity) == ("42000.5", "0.5")
         @test ws.eventTime == DateTime(2024, 1, 1)
@@ -257,17 +250,16 @@ end
         @test JSON.parse(ws_out, T.WebSocketTrade) == ws
 
         blk_json = """{"e":"blockTrade","E":1704067200000,"s":"BTCUSDT","t":5,"p":"1","q":"2","T":1704067260000,"m":false}"""
-        blk = T.to_struct(T.WebSocketBlockTrade, JSON3.read(blk_json))
-        @test blk == JSON.parse(blk_json, T.WebSocketBlockTrade)
+        blk = JSON.parse(blk_json, T.WebSocketBlockTrade)
+        @test blk == T.to_struct(T.WebSocketBlockTrade, JSON.parse(blk_json))
         @test blk.eventType == "blockTrade" && blk.tradeId == 5
         @test blk.eventTime == DateTime(2024, 1, 1)
         @test blk.tradeTime == DateTime(2024, 1, 1, 0, 1)
         @test blk.isBuyerMaker === false
 
         tick_json = """{"e":"24hrTicker","E":1704067200000,"s":"BTCUSDT","p":"P1","P":"P2","w":"W","x":"X","c":"C","Q":"Q","b":"B_low","B":"B_up","a":"A_low","A":"A_up","o":"O","h":"H","l":"L_low","v":"V","q":"Q_low","O":1704067200000,"C":1704153600000,"F":11,"L":22,"n":33}"""
-        tick = T.to_struct(T.Ticker24hr, JSON3.read(tick_json))
+        tick = JSON.parse(tick_json, T.Ticker24hr)
         @test tick == T.to_struct(T.Ticker24hr, JSON.parse(tick_json))
-        @test tick == JSON.parse(tick_json, T.Ticker24hr)
         @test tick.priceChange == "P1" && tick.priceChangePercent == "P2"
         @test tick.bestBidPrice == "B_low" && tick.bestBidQuantity == "B_up"
         @test tick.bestAskPrice == "A_low" && tick.bestAskQuantity == "A_up"
@@ -301,9 +293,8 @@ end
         T = Binance.Types
         raw = """[[1704067200000,"42000.5","43000.1","41000.0","42500.0","123.456",1704070800000,"5000000.0",1234,"60.0","2500000.0","0"]]"""
 
-        bars = T.to_struct(Vector{T.Kline}, JSON3.read(raw))
+        bars = JSON.parse(raw, Vector{T.Kline})
         @test bars == T.to_struct(Vector{T.Kline}, JSON.parse(raw))
-        @test bars == JSON.parse(raw, Vector{T.Kline})
         @test length(bars) == 1
 
         bar = bars[1]
@@ -331,7 +322,7 @@ end
     end
 
     @testset "OrderBook deserializes nested array-shaped levels" begin
-        # This is the shape that broke under StructTypes: `PriceLevel` arrives as a
+        # `PriceLevel` arrives as a
         # two-element array of decimal strings, and `constructfrom` had no method
         # for a CustomStruct element type, so every `depth()` call raised a
         # MethodError. PriceLevel now opts out of struct-like treatment and
@@ -345,9 +336,8 @@ end
         # contents instead of the wrapper.
         same(x, y) = x.lastUpdateId == y.lastUpdateId && x.bids == y.bids && x.asks == y.asks
 
-        book = T.to_struct(T.OrderBook, JSON3.read(raw))
+        book = JSON.parse(raw, T.OrderBook)
         @test same(book, T.to_struct(T.OrderBook, JSON.parse(raw)))
-        @test same(book, JSON.parse(raw, T.OrderBook))
         @test book.lastUpdateId == 123456
         @test length(book.bids) == 2
         @test length(book.asks) == 1
@@ -372,10 +362,8 @@ end
 
     @testset "Filters dispatch on filterType" begin
         # A symbol's filter list is heterogeneous and the concrete type is only
-        # known from the `filterType` string, so this replaces StructTypes'
-        # subtypekey/subtypes dispatch. All three entry paths must agree: lazy
-        # (`JSON.parse(raw, T)`) and the two materialized ones that `to_struct`
-        # sees during the migration.
+        # known from the `filterType` string. Both entry paths must agree: the lazy
+        # `JSON.parse(raw, T)` and the materialized one `to_struct` sees.
         T = Binance.Types
         raw = """[{"filterType":"LOT_SIZE","minQty":"0.001","maxQty":"9000","stepSize":"0.001"},
                   {"filterType":"ICEBERG_PARTS","limit":10},
@@ -383,7 +371,6 @@ end
                   {"filterType":"NOTIONAL","minNotional":"5.0","applyMinToMarket":true,"maxNotional":"9000000","applyMaxToMarket":false,"avgPriceMins":5}]"""
 
         filters = JSON.parse(raw, Vector{T.AbstractFilter})
-        @test filters == T.to_struct(Vector{T.AbstractFilter}, JSON3.read(raw))
         @test filters == T.to_struct(Vector{T.AbstractFilter}, JSON.parse(raw))
         @test map(typeof, filters) == [T.LotSizeFilter, T.IcebergPartsFilter,
                                        T.TrailingDeltaFilter, T.NotionalFilter]
@@ -416,8 +403,8 @@ end
     end
 
     @testset "ExchangeInfo nests filters, symbols and rate limits" begin
-        # This was the last CustomStruct: its hand-written construct lifted
-        # serverTime from millis and recursed into the three vectors by hand.
+        # serverTime arrives as millis and the three vectors nest further types,
+        # so this exercises the deepest conversion in the package.
         T = Binance.Types
         raw = """{"timezone":"UTC","serverTime":1704067200000,
                   "rateLimits":[{"rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE","intervalNum":1,"limit":6000}],
@@ -431,7 +418,6 @@ end
                   "allowedSelfTradePreventionModes":["NONE","EXPIRE_MAKER"]}]}"""
 
         for info in (JSON.parse(raw, T.ExchangeInfo),
-                     T.to_struct(T.ExchangeInfo, JSON3.read(raw)),
                      T.to_struct(T.ExchangeInfo, JSON.parse(raw)))
             @test info.timezone == "UTC"
             @test info.serverTime == DateTime(2024, 1, 1)
@@ -455,9 +441,8 @@ end
             @test sym.allowedSelfTradePreventionModes == [T.NONE, T.EXPIRE_MAKER]
             @test sym.filters == [T.LotSizeFilter("LOT_SIZE", "0.001", "9000", "0.001")]
 
-            # Absent from this payload: the field defaults stand in, as
-            # StructTypes.defaults used to do. Endpoints that omit them must not
-            # leave the field undefined.
+            # Absent from this payload: the field defaults stand in. Endpoints that
+            # omit them must not leave the field undefined.
             @test sym.otoAllowed === false
             @test sym.opoAllowed === false
         end
@@ -481,7 +466,6 @@ end
         raw = """{"e":"outboundAccountPosition","E":1704067200000,"u":1704067200001,
                   "B":[{"a":"BTC","f":"1.5","l":"0.2"},{"a":"USDT","f":"1000","l":"0"}]}"""
         for pos in (JSON.parse(raw, E.OutboundAccountPosition),
-                    T.to_struct(E.OutboundAccountPosition, JSON3.read(raw)),
                     T.to_struct(E.OutboundAccountPosition, JSON.parse(raw)))
             @test pos.e == "outboundAccountPosition"
             @test pos.E == 1704067200000
@@ -491,7 +475,7 @@ end
 
         raw = """{"e":"balanceUpdate","E":1704067200000,"a":"BTC","d":"-0.5","T":1704067200002}"""
         update = JSON.parse(raw, E.BalanceUpdate)
-        @test update == T.to_struct(E.BalanceUpdate, JSON3.read(raw))
+        @test update == T.to_struct(E.BalanceUpdate, JSON.parse(raw))
         @test (update.a, update.d, update.T) == ("BTC", "-0.5", 1704067200002)
 
         raw = """{"e":"listStatus","E":1704067200000,"s":"BTCUSDT","g":9,"c":"OCO","l":"ALL_DONE",
@@ -502,13 +486,12 @@ end
               ("BTCUSDT", 9, "OCO", "ALL_DONE", "ALL_DONE", "NONE", "cid")
         @test status.O == [E.OrderInListStatus("BTCUSDT", 11, "c1"),
                            E.OrderInListStatus("BTCUSDT", 12, "c2")]
-        @test status.O == T.to_struct(E.ListStatus, JSON3.read(raw)).O
+        @test status.O == T.to_struct(E.ListStatus, JSON.parse(raw)).O
 
-        # `@depth20` snapshots reuse PriceLevel, so this was the second type that
-        # needed a hand-written construct under StructTypes.
+        # `@depth20` snapshots reuse PriceLevel.
         raw = """{"lastUpdateId":123,"bids":[["95000.1","1.5"],["94999.0","2.0"]],"asks":[["95001.0","0.8"]]}"""
         for book in (JSON.parse(raw, E.PartialBookDepth),
-                     T.to_struct(E.PartialBookDepth, JSON3.read(raw)))
+                     T.to_struct(E.PartialBookDepth, JSON.parse(raw)))
             @test book.lastUpdateId == 123
             @test book.bids == [T.PriceLevel(95000.10, 1.5), T.PriceLevel(94999.00, 2.0)]
             @test book.asks == [T.PriceLevel(95001.00, 0.8)]
@@ -523,7 +506,7 @@ end
                       "T":1704067200001,"t":-1,"I":8,"w":true,"m":false,"M":false,"O":1704067200000,
                       "Z":"0","Y":"0","Q":"0","V":"NONE"}"""
         report = JSON.parse(minimal, E.ExecutionReport)
-        @test report == T.to_struct(E.ExecutionReport, JSON3.read(minimal))
+        @test report == T.to_struct(E.ExecutionReport, JSON.parse(minimal))
         @test (report.s, report.S, report.o, report.X, report.i) ==
               ("BTCUSDT", "BUY", "LIMIT", "NEW", 42)
         @test report.w && !report.m
@@ -537,7 +520,7 @@ end
         conditional = """"V":"NONE","W":1704067200004,"d":13,"eR":"PRICE_RANGE","Cs":"ETHUSDT","uS":true"""
         full = replace(minimal, "\"V\":\"NONE\"" => conditional)
         report = JSON.parse(full, E.ExecutionReport)
-        @test report == T.to_struct(E.ExecutionReport, JSON3.read(full))
+        @test report == T.to_struct(E.ExecutionReport, JSON.parse(full))
         @test report.W == 1704067200004
         @test report.d == 13
         @test report.eR == "PRICE_RANGE"
@@ -561,7 +544,6 @@ end
                   "permissions":["SPOT"],"uid":123456}"""
 
         for info in (JSON.parse(raw, A.AccountInfo),
-                     T.to_struct(A.AccountInfo, JSON3.read(raw)),
                      T.to_struct(A.AccountInfo, JSON.parse(raw)))
             @test info.balances == [A.Balance("BTC", 1.5, 0.2), A.Balance("USDT", 1000.0, 0.0)]
             @test info.balances[1].free isa Float64
@@ -593,7 +575,6 @@ end
         raw = """{"quoteId":"q1","ratio":"95000.5","inverseRatio":"0.0000105",
                   "validTimestamp":1704067200000,"toAmount":"95000.5","fromAmount":"1.0"}"""
         quote_ = JSON.parse(raw, C.ConvertQuote)
-        @test quote_ == T.to_struct(C.ConvertQuote, JSON3.read(raw))
         @test quote_ == T.to_struct(C.ConvertQuote, JSON.parse(raw))
         @test quote_.quoteId == "q1"
         @test quote_.ratio == "95000.5"
@@ -607,7 +588,7 @@ end
 
         raw = """{"orderId":"o1","createTime":1704067200000,"orderStatus":"PROCESS"}"""
         accepted = JSON.parse(raw, C.ConvertAcceptQuote)
-        @test accepted == T.to_struct(C.ConvertAcceptQuote, JSON3.read(raw))
+        @test accepted == T.to_struct(C.ConvertAcceptQuote, JSON.parse(raw))
         @test (accepted.orderId, accepted.orderStatus) == ("o1", "PROCESS")
         @test accepted.createTime == DateTime(2024, 1, 1)
 
@@ -617,7 +598,7 @@ end
                   "inverseRatio":"0.0000105","createTime":1704067200000}],
                   "startTime":1704067200000,"endTime":1704153600000,"limit":100,"moreData":false}"""
         for flow in (JSON.parse(raw, C.ConvertTradeFlowResponse),
-                     T.to_struct(C.ConvertTradeFlowResponse, JSON3.read(raw)))
+                     T.to_struct(C.ConvertTradeFlowResponse, JSON.parse(raw)))
             @test flow.startTime == DateTime(2024, 1, 1)
             @test flow.endTime == DateTime(2024, 1, 2)
             @test flow.limit == 100
@@ -635,17 +616,17 @@ end
                   "inverseRatio":"0.00001","createTime":1704067200000,
                   "expiredTimestamp":1704153600000}"""
         order = JSON.parse(raw, C.ConvertLimitOrder)
-        @test order == T.to_struct(C.ConvertLimitOrder, JSON3.read(raw))
+        @test order == T.to_struct(C.ConvertLimitOrder, JSON.parse(raw))
         @test order.createTime == DateTime(2024, 1, 1)
         @test order.expiredTimestamp == DateTime(2024, 1, 2)
     end
 
-    @testset "Untyped responses keep the JSON3 access patterns" begin
+    @testset "Untyped responses support the accessors call sites use" begin
         # `make_request` and the WebSocket reader hand decoded-but-untyped payloads
         # to callers and to internal branches. 30 REST call sites return one
-        # directly, so every accessor those sites relied on under JSON3 must still
-        # work: property access, symbol and string indexing, haskey, and
-        # `isa AbstractDict` to tell an object from an array.
+        # directly, so every accessor those sites rely on must work: property
+        # access, symbol and string indexing, haskey, and `isa AbstractDict` to
+        # tell an object from an array.
         payload = JSON.parse("""{"id":"a","status":200,"result":{"symbol":"BTCUSDT"},
                                  "rateLimits":[{"rateLimitType":"REQUEST_WEIGHT"}]}""")
 
@@ -746,7 +727,7 @@ end
 
     @testset "WebSocket response helper returns ready messages" begin
         response_channel = Channel{Any}(1)
-        put!(response_channel, JSON3.read("{\"status\":200,\"result\":{\"ok\":true}}"))
+        put!(response_channel, JSON.parse("{\"status\":200,\"result\":{\"ok\":true}}"))
         response = Binance.WebSocketAPI.take_response!(response_channel, 1, "ping", "test-request-id")
         @test response.status == 200
         @test response.result.ok === true
@@ -760,7 +741,7 @@ end
         channel = Channel{Any}(1)
         @async begin
             sleep(0.05)
-            put!(channel, JSON3.read("{\"status\":200,\"result\":1}"))
+            put!(channel, JSON.parse("{\"status\":200,\"result\":1}"))
         end
         @test take_response!(channel, 5, "ping", "late-reply").result == 1
 
@@ -769,7 +750,7 @@ end
         timed_out = Channel{Any}(1)
         @test_throws ErrorException take_response!(timed_out, 0.05, "ping", "timeout")
         @test !isopen(timed_out)
-        @test_throws InvalidStateException put!(timed_out, JSON3.read("{}"))
+        @test_throws InvalidStateException put!(timed_out, JSON.parse("{}"))
 
         @test_throws ArgumentError take_response!(Channel{Any}(1), -1, "ping", "negative")
     end
@@ -832,16 +813,14 @@ end
     end
 
     @testset "Order maps enums, timestamps and the optional expiry reason" begin
-        # Order carries four enum fields that used to be converted by explicit
-        # StructTypes.construct calls. StructUtils lifts a JSON string to an Enum
-        # by instance name, so the annotations are gone — assert each one, since a
-        # mismatch would produce the wrong side or status rather than an error.
+        # Order carries four enum fields, lifted from JSON strings by instance
+        # name with no annotation. Assert each one: a mismatch would produce the
+        # wrong side or status rather than an error.
         T = Binance.Types
         raw = """{"symbol":"BTCUSDT","orderId":123,"orderListId":-1,"clientOrderId":"abc","price":"42000.5","origQty":"1.0","executedQty":"0.5","cummulativeQuoteQty":"21000","status":"PARTIALLY_FILLED","timeInForce":"GTC","type":"LIMIT","side":"BUY","stopPrice":"0","icebergQty":"0","time":1704067200000,"updateTime":1704067260000,"isWorking":true,"origQuoteOrderQty":"0"}"""
 
-        order = T.to_struct(T.Order, JSON3.read(raw))
+        order = JSON.parse(raw, T.Order)
         @test order == T.to_struct(T.Order, JSON.parse(raw))
-        @test order == JSON.parse(raw, T.Order)
         @test order.status == T.PARTIALLY_FILLED
         @test order.timeInForce == T.GTC
         @test order.type == T.LIMIT
@@ -919,11 +898,11 @@ end
         @test_throws ArgumentError Binance.Filters.validate_quantity("0.031", parsed_lot)
     end
 
-    @testset "OrderBookManager accepts JSON3 depth objects" begin
+    @testset "OrderBookManager accepts decoded depth objects" begin
         manager = Binance.OrderBookManager("BTCUSDT", nothing, nothing)
         manager.is_initialized[] = true
         manager.update_id[] = 1
-        event = JSON3.read("""
+        event = JSON.parse("""
         {"U":2,"u":2,"b":[["100.0","1.0"]],"a":[["101.0","2.0"]]}
         """)
         @test Binance.OrderBookManagers.apply_update!(manager, event) == :applied
@@ -933,7 +912,7 @@ end
 
     @testset "Rate limit updates reuse REQUEST_WEIGHT limit" begin
         limiter = Binance.BinanceRateLimit(test_binance_config())
-        updates = JSON3.read("""
+        updates = JSON.parse("""
         [{"rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE",
           "intervalNum":1,"limit":7000,"count":12}]
         """)

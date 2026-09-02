@@ -117,10 +117,8 @@ struct ServerShutdown
     E::Int64            # Event Time (ms)
 end
 
-# Same shape as `Types.OrderBook`, and likewise needs no declaration: the nested
-# `PriceLevel` elements convert through their own lift/lower. The hand-written
-# construct this replaces existed only because a CustomStruct element type had no
-# `constructfrom` method.
+# Same shape as `Types.OrderBook`: the nested `PriceLevel` elements convert
+# through their own lift/lower, so nothing needs declaring here.
 struct PartialBookDepth
     lastUpdateId::Int64
     bids::Vector{PriceLevel}

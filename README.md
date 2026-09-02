@@ -24,6 +24,27 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.13.0 - JSON.jl 1.x
+
+- **Replaced JSON3.jl and StructTypes.jl with JSON.jl 1.x** — JSON3 is marked
+  `[deprecated]` upstream; JSON.jl 1.0 absorbed its design and moved struct
+  mapping to StructUtils.jl. All 63 `StructTypes` declarations are gone, replaced
+  by field tags on the struct definitions themselves.
+- **Faster typed parsing** — filling a struct straight from the bytes is
+  **3.7x faster and allocates 6.2x less** than decode-then-convert (1000
+  `myTrades`: 0.76 ms / 546 KiB vs 2.83 ms / 3363 KiB). `exchangeInfo` for 100
+  symbols is 1.5x faster, 2.5x less memory.
+- **`make_request` now returns a `JSON.Object`** instead of a `JSON3.Object`.
+  Property access, symbol/string indexing, `haskey`, `get` and
+  `isa AbstractDict` all behave the same, so pass-through call sites are
+  unaffected. Code that tested `isa JSON3.Object` should test `isa AbstractDict`.
+- **Clearer filter errors** — an unrecognised `filterType` raises an
+  `ArgumentError` naming the value instead of a `FieldError` about an internal
+  NamedTuple. Unknown filters still fail loudly rather than being dropped:
+  silently losing a `LOT_SIZE` would let an order violate `stepSize`.
+- 285 new deserialization tests (113 → 398), asserting every response type field
+  by field in both the lazy and the materialized path.
+
 ### v0.12.3 - HTTP.jl 2.x alignment
 
 - **Fixed `depth()` deserialization** — `OrderBook` used the generic

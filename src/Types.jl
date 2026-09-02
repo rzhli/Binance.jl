@@ -1,6 +1,6 @@
 module Types
 
-using Dates, StructTypes, JSON3, Printf
+using Dates, Printf
 using JSON, StructUtils
 using FixedPointDecimals
 
@@ -99,33 +99,17 @@ export DecimalPrice, DecimalInput, to_decimal_string, to_struct
 Construct a `T` instance from an already-parsed JSON value, without
 round-tripping through a string.
 
-# Migration bridge (JSON3/StructTypes -> JSON.jl/StructUtils)
+Accepts anything `StructUtils.make` accepts: a `JSON.Object`, a plain `Dict`, a
+`Vector` of either, or a value already of the right type. Field tags declared
+with [`@binance_struct`](@ref) apply, as do `@noarg` defaults and
+`JSON.@choosetype` subtype selection.
 
-Types that still declare `StructTypes.CustomStruct()` keep using their hand
-written `StructTypes.construct`. Types that have been migrated no longer
-declare a `StructType` at all, so `StructTypes.StructType(T)` falls back to
-`UnorderedStruct()` and they route to `StructUtils.make`, which honours
-`@tags` field tags, `@defaults`, and `JSON.@choosetype`.
-
-This lets the migration proceed one file at a time with the test suite green
-at every step. Once no `CustomStruct` declarations remain, the first branch
-and the StructTypes dependency can both be dropped.
+Prefer `JSON.parse(bytes, T)` when the bytes are still at hand: it fills the
+struct directly instead of materializing an intermediate object. `to_struct`
+exists for the WebSocket paths, where the payload has to be inspected (to find
+the event type or match a request id) before its target type is known.
 """
-@inline function to_struct(::Type{T}, value) where {T}
-    st = StructTypes.StructType(T)
-    return st isa StructTypes.CustomStruct ?
-        StructTypes.construct(T, value) :
-        StructUtils.make(T, value)
-end
-
-# Vector needs its own method: a `CustomStruct` element type has no
-# `constructfrom` method, so the element-wise loop must be explicit.
-@inline function to_struct(::Type{Vector{T}}, value) where {T}
-    st = StructTypes.StructType(T)
-    return st isa StructTypes.CustomStruct ?
-        T[StructTypes.construct(T, elem) for elem in value] :
-        StructUtils.make(Vector{T}, value)
-end
+@inline to_struct(::Type{T}, value) where {T} = StructUtils.make(T, value)
 
 # ===================== JSON 字段 tag =====================
 #
@@ -141,9 +125,8 @@ end
 # name into the literal tag before handing the definition to `@tags`.
 #
 # The tags are deliberately *not* namespaced under `json=(...)`: an un-namespaced
-# tag is visible to `StructUtils.make` as well as `JSON.parse`, which is what
-# lets `to_struct` keep working on already-materialized responses during the
-# migration.
+# tag is visible to `StructUtils.make` as well as `JSON.parse`, so `to_struct`
+# and a direct typed parse agree.
 #
 # Scoping note: this only affects annotated fields. Unannotated `DateTime`
 # fields keep the stock ISO-string behaviour, unlike a global
@@ -376,8 +359,8 @@ Base.show(io::IO, f::TrailingDeltaFilter) = print(io,
 
 # --- Filter 多态分发 ---
 #
-# Replaces `StructTypes.AbstractType()` + `subtypekey` + `subtypes`. The table is
-# the same mapping; only the dispatch mechanism changed.
+# `filterType` selects the concrete type; `@choosetype` below performs the
+# dispatch.
 const FILTER_TYPES = (
     PRICE_FILTER = PriceFilter,
     PERCENT_PRICE = PercentPriceFilter,
@@ -406,10 +389,10 @@ const FILTER_TYPES = (
 
 Read the `filterType` discriminator out of a decoded JSON object.
 
-Four source shapes reach this during the migration and all must work: a lazy
-`JSON.LazyValue` (from `JSON.parse(raw, T)`), an already-materialized
-`JSON.Object` or `JSON3.Object` (from `to_struct`), and a plain `Dict`. Lazy
-values hand back a `LazyValue` for the field, hence the `[]` materialization.
+Three source shapes reach this and all must work: a lazy `JSON.LazyValue` (from
+`JSON.parse(raw, T)`), an already-materialized `JSON.Object` (from `to_struct` on
+a WebSocket payload), and a plain `Dict`. Lazy values hand back a `LazyValue` for
+the field, hence the `[]` materialization.
 """
 function filter_type_name(source)
     raw = get(source, :filterType, nothing)
@@ -421,9 +404,8 @@ function filter_type_name(source)
     return raw isa AbstractString ? String(raw) : String(raw[])
 end
 
-# Both failure modes throw, as before (previously a `KeyError` for a missing key
-# and a `FieldError` on the subtypes NamedTuple for an unknown one). The messages
-# now name the offending value.
+# Both failure modes throw rather than silently dropping the filter: losing a
+# LOT_SIZE would let an order violate stepSize.
 function _choose_filter(source)
     name = filter_type_name(source)
     name === nothing &&
@@ -453,9 +435,9 @@ struct RateLimit
     limit::Int
 end
 
-# `@noarg` replaces `StructTypes.Mutable()`: it emits the no-arg constructor and
-# marks the type as "construct empty, then setfield! each key", which is what
-# `Mutable()` requested. Field defaults replace `StructTypes.defaults`.
+# `@noarg` marks the type as "construct empty, then setfield! each key present in
+# the payload", and emits the no-arg constructor that `RESTClient`'s symbol cache
+# seeds itself with.
 @noarg mutable struct SymbolInfo
     symbol::String
     status::SymbolStatus
@@ -468,8 +450,7 @@ end
     orderTypes::Vector{OrderTypes}
     icebergAllowed::Bool
     ocoAllowed::Bool
-    # Not sent by every endpoint, so they keep the defaults that
-    # `StructTypes.defaults` used to supply.
+    # Not sent by every endpoint, hence the defaults.
     otoAllowed::Bool = false
     opoAllowed::Bool = false
     quoteOrderQtyMarketAllowed::Bool
@@ -579,8 +560,7 @@ end
 # --- Structs for Account Data ---
 
 # The four enum fields need no annotation: StructUtils lifts a JSON string to an
-# `Enum` by matching the instance name, which is exactly what the old
-# `StructTypes.construct(OrderStatus, ...)` calls did by hand.
+# `Enum` by matching the instance name.
 @binance_struct struct Order
     symbol::String
     orderId::Int64
@@ -727,9 +707,7 @@ struct OrderBook
     asks::Vector{PriceLevel}
 end
 # Nothing to declare: the nested `Vector{PriceLevel}` elements are handled by
-# PriceLevel's own lift/lower. This is the case that needed a hand-written
-# construct under StructTypes, because `constructfrom` had no method for a
-# CustomStruct element type and every `depth()` call raised a MethodError.
+# PriceLevel's own lift/lower.
 
 function Base.show(io::IO, ::MIME"text/plain", ob::OrderBook)
     println(io, "OrderBook (lastUpdateId: ", ob.lastUpdateId, ")")

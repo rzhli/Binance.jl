@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-02
+
+### Changed
+- **Replaced JSON3.jl and StructTypes.jl with JSON.jl 1.x** — JSON3 is marked
+  `[deprecated]` upstream. JSON.jl 1.0 absorbed its design and moved struct
+  mapping to StructUtils.jl. Both old dependencies are gone; `JSON` and
+  `StructUtils` replace them.
+
+  Deserialization now happens through StructUtils field tags instead of
+  hand-written `StructTypes.construct` methods. 63 declarations disappeared,
+  including all 18 `CustomStruct` types whose `construct` methods did nothing but
+  copy fields while lifting a unix-millisecond timestamp:
+
+  | Was | Count | Now |
+  |---|---|---|
+  | `StructType(T) = Struct()` | 33 | nothing — inferred |
+  | `CustomStruct` + timestamp lift | 18 | `@binance_struct` + `&UNIX_MS` |
+  | `CustomStruct` + abbreviated keys | 3 | `&(name="E",) &UNIX_MS` |
+  | `CustomStruct` + array shape | 3 | `structlike = false` + `lift`/`lower` |
+  | `AbstractType` + `subtypekey` | 1 | `JSON.@choosetype` |
+  | `Mutable` + `defaults` | 1 | `@noarg` + field defaults |
+  | `construct(OrderStatus, str)` | 4 | nothing — enums lift by name |
+
+  A typed parse of an object-shaped response is now **3.7x faster and allocates
+  6.2x less** than decode-then-convert (1000 `myTrades`: 0.76 ms / 546 KiB vs
+  2.83 ms / 3363 KiB). `exchangeInfo` for 100 symbols is 1.5x faster and
+  allocates 2.5x less.
+
+### API changes
+- `to_struct(T, value)` no longer consults StructTypes; it forwards to
+  `StructUtils.make`. It accepts the same inputs as before (`JSON.Object`,
+  `Dict`, `Vector` of either) plus anything `make` accepts. Prefer
+  `JSON.parse(bytes, T)` when the bytes are at hand.
+- `make_request` returns a `JSON.Object` where it used to return a `JSON3.Object`.
+  Both support property access, symbol and string indexing, `haskey`, `get`, and
+  `isa AbstractDict`, so call sites that pass the value through are unaffected.
+  Code that pattern-matched on `JSON3.Object` explicitly needs updating to
+  `AbstractDict`.
+- An unknown `filterType` now raises `ArgumentError` naming the value, rather
+  than a `FieldError` about an internal NamedTuple. The dispatch table lives in
+  `Types.FILTER_TYPES` (unexported).
+- `SymbolInfo` is now declared with `@noarg`. `SymbolInfo()` still works.
+- `Order.expiryReason` is populated by the Union default rather than a manual
+  `haskey` check; behaviour is unchanged.
+
+### Added
+- `@binance_struct` — `StructUtils.@tags` with two field-tag shorthands:
+  `&UNIX_MS` for a unix-millisecond timestamp and `&DECIMAL_STR` for a decimal
+  carried as a JSON string. Both compose with a `&(name="...",)` rename.
+- 285 new deserialization tests (113 → 398). Every migrated type is asserted
+  field by field, in both the lazy and materialized paths: a mis-mapped field
+  yields a shifted value rather than an error, which the previous suite would not
+  have caught.
+
 ## [0.12.3] - 2026-09-01
 
 ### Fixed
