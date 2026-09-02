@@ -293,6 +293,43 @@ end
         @test_throws MethodError JSON.parse("""{"t":1704067200000}""", UnannotatedStamp)
     end
 
+    @testset "Kline maps its 12 positional slots" begin
+        # A kline is an unnamed 12-element array mixing raw numbers (the two
+        # timestamps, the trade count) with decimal strings. Nothing in the payload
+        # identifies a slot, so an off-by-one in the mapping would silently shift
+        # every price. Distinct values per slot make that visible.
+        T = Binance.Types
+        raw = """[[1704067200000,"42000.5","43000.1","41000.0","42500.0","123.456",1704070800000,"5000000.0",1234,"60.0","2500000.0","0"]]"""
+
+        bars = T.to_struct(Vector{T.Kline}, JSON3.read(raw))
+        @test bars == T.to_struct(Vector{T.Kline}, JSON.parse(raw))
+        @test bars == JSON.parse(raw, Vector{T.Kline})
+        @test length(bars) == 1
+
+        bar = bars[1]
+        @test bar.open_time == DateTime(2024, 1, 1)
+        @test bar.open == 42000.5
+        @test bar.high == 43000.1
+        @test bar.low == 41000.0
+        @test bar.close == 42500.0
+        @test bar.base_volume == 123.456
+        @test bar.close_time == DateTime(2024, 1, 1, 1)
+        @test bar.quote_volume == 5.0e6
+        @test bar.number_of_trades == 1234
+        @test bar.taker_base_volume == 60.0
+        @test bar.taker_quote_volume == 2.5e6
+        @test bar.ignore == "0"
+
+        # A single bar outside an enclosing array must work too.
+        single = JSON.parse("""[1704067200000,"1","2","3","4","5",1704070800000,"6",7,"8","9",""]""",
+                            T.Kline)
+        @test single.open == 1.0
+        @test single.number_of_trades == 7
+        @test single.ignore == ""
+
+        @test JSON.parse(JSON.json(bar), T.Kline) == bar
+    end
+
     @testset "OrderBook deserializes nested array-shaped levels" begin
         # This is the shape that broke under StructTypes: `PriceLevel` arrives as a
         # two-element array of decimal strings, and `constructfrom` had no method

@@ -609,13 +609,12 @@ struct Kline
     taker_quote_volume::Float64
     ignore::String                              # Unused field, ignore
 end
-StructTypes.StructType(::Type{Kline}) = StructTypes.CustomStruct()
-StructTypes.lower(k::Kline) = [
-    Int64(round(datetime2unix(k.open_time) * 1000)), string(k.open), string(k.high), string(k.low), string(k.close), string(k.base_volume),
-    Int64(round(datetime2unix(k.close_time) * 1000)), string(k.quote_volume), k.number_of_trades,
-    string(k.taker_base_volume), string(k.taker_quote_volume), k.ignore
-]
-StructTypes.construct(::Type{Kline}, arr::AbstractVector) = Kline(
+# A kline is a positional 12-element array mixing raw numbers (timestamps, trade
+# count) with decimal strings, so it converts through lift/lower like PriceLevel
+# rather than by field name. The positions are fixed by the API and unnamed on the
+# wire, which is why the mapping stays explicit here.
+StructUtils.structlike(::StructUtils.StructStyle, ::Type{Kline}) = false
+StructUtils.lift(::Type{Kline}, arr) = Kline(
     unix2datetime(arr[1] / 1000),
     parse(Float64, arr[2]),
     parse(Float64, arr[3]),
@@ -629,6 +628,12 @@ StructTypes.construct(::Type{Kline}, arr::AbstractVector) = Kline(
     parse(Float64, arr[11]),
     arr[12]
 )
+JSON.lower(k::Kline) = [
+    Int64(round(datetime2unix(k.open_time) * 1000)), string(k.open), string(k.high),
+    string(k.low), string(k.close), string(k.base_volume),
+    Int64(round(datetime2unix(k.close_time) * 1000)), string(k.quote_volume),
+    k.number_of_trades, string(k.taker_base_volume), string(k.taker_quote_volume), k.ignore
+]
 
 function Base.show(io::IO, ::MIME"text/plain", k::Kline)
     println(io, "Kline:")
