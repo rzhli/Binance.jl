@@ -15,7 +15,6 @@ macro define_single_filter(name, field_name, field_type, show_label)
             filterType::String
             $field_name::$field_type
         end
-        StructTypes.StructType(::Type{$name}) = StructTypes.Struct()
         Base.show(io::IO, f::$name) = print(io, $show_label, ": ", getfield(f, $(QuoteNode(field_name))))
     end)
 end
@@ -31,7 +30,6 @@ macro define_triple_filter(name, f1, f2, f3, show_template)
             $f2::String
             $f3::String
         end
-        StructTypes.StructType(::Type{$name}) = StructTypes.Struct()
         Base.show(io::IO, f::$name) = print(io, $show_template,
             " min: ", getfield(f, $(QuoteNode(f1))),
             ", max: ", getfield(f, $(QuoteNode(f2))),
@@ -259,36 +257,16 @@ export ExecutionRule, SymbolExecutionRules, ExecutionRulesResponse, ReferencePri
 @enum RateLimitIntervals SECOND MINUTE DAY
 @enum STPModes NONE EXPIRE_MAKER EXPIRE_TAKER EXPIRE_BOTH DECREMENT TRANSFER
 
-# StructTypes.StructType(::Type{<:Enum}) = StructTypes.StringType()
+# Enums need no declaration: StructUtils lifts a JSON string to an enum instance
+# and lowers it back by name.
 
 
 # --- Structs for Exchange Information ---
 
+# Filters are polymorphic: the `filterType` string picks the concrete type. The
+# dispatch table and `@choosetype` live after the concrete definitions below,
+# since a `const` table cannot forward-reference them.
 abstract type AbstractFilter end
-StructTypes.StructType(::Type{AbstractFilter}) = StructTypes.AbstractType()
-StructTypes.subtypekey(::Type{AbstractFilter}) = :filterType
-StructTypes.subtypes(::Type{AbstractFilter}) = (
-    PRICE_FILTER = PriceFilter,
-    PERCENT_PRICE = PercentPriceFilter,
-    PERCENT_PRICE_BY_SIDE = PercentPriceBySideFilter,
-    LOT_SIZE = LotSizeFilter,
-    MIN_NOTIONAL = MinNotionalFilter,
-    NOTIONAL = NotionalFilter,
-    ICEBERG_PARTS = IcebergPartsFilter,
-    MARKET_LOT_SIZE = MarketLotSizeFilter,
-    MAX_NUM_ORDERS = MaxNumOrdersFilter,
-    MAX_NUM_ALGO_ORDERS = MaxNumAlgoOrdersFilter,
-    MAX_NUM_ICEBERG_ORDERS = MaxNumIcebergOrdersFilter,
-    MAX_POSITION = MaxPositionFilter,
-    TRAILING_DELTA = TrailingDeltaFilter,
-    MAX_NUM_ORDER_AMENDS = MaxNumOrderAmendsFilter,
-    MAX_NUM_ORDER_LISTS = MaxNumOrderListsFilter,
-    EXCHANGE_MAX_NUM_ORDERS = ExchangeMaxNumOrdersFilter,
-    EXCHANGE_MAX_NUM_ALGO_ORDERS = ExchangeMaxNumAlgoOrdersFilter,
-    EXCHANGE_MAX_NUM_ICEBERG_ORDERS = ExchangeMaxNumIcebergOrdersFilter,
-    EXCHANGE_MAX_NUM_ORDER_LISTS = ExchangeMaxNumOrderListsFilter,
-    MAX_ASSETS = MaxAssetsFilter
-)
 
 # --- 三字段 Filter（使用宏生成）---
 @define_triple_filter(PriceFilter, minPrice, maxPrice, tickSize, "Price:")
@@ -309,7 +287,6 @@ struct PercentPriceFilter <: AbstractFilter
     multiplierDown::String
     avgPriceMins::Int
 end
-StructTypes.StructType(::Type{PercentPriceFilter}) = StructTypes.Struct()
 
 function Base.show(io::IO, f::PercentPriceFilter)
     print(io, "PercentPrice: up: × $(f.multiplierUp), down: × $(f.multiplierDown), avg: $(f.avgPriceMins) min")
@@ -331,7 +308,6 @@ struct PercentPriceBySideFilter <: AbstractFilter
     askMultiplierDown::String
     avgPriceMins::Int
 end
-StructTypes.StructType(::Type{PercentPriceBySideFilter}) = StructTypes.Struct()
 
 function Base.show(io::IO, f::PercentPriceBySideFilter)
     print(io, "PercentPriceBySide: bid: × $(f.bidMultiplierDown) - $(f.bidMultiplierUp), ask: × $(f.askMultiplierDown) - $(f.askMultiplierUp)")
@@ -343,7 +319,6 @@ struct MinNotionalFilter <: AbstractFilter
     applyToMarket::Bool
     avgPriceMins::Int
 end
-StructTypes.StructType(::Type{MinNotionalFilter}) = StructTypes.Struct()
 
 function Base.show(io::IO, f::MinNotionalFilter)
     print(io, "minNotional min: $(f.minNotional), market: $(f.applyToMarket)")
@@ -357,7 +332,6 @@ struct NotionalFilter <: AbstractFilter
     applyMaxToMarket::Bool
     avgPriceMins::Int
 end
-StructTypes.StructType(::Type{NotionalFilter}) = StructTypes.Struct()
 
 function Base.show(io::IO, f::NotionalFilter)
     print(io, "Notional: min: $(f.minNotional), max: $(f.maxNotional)")
@@ -381,7 +355,6 @@ struct TrailingDeltaFilter <: AbstractFilter
     minTrailingBelowDelta::Int
     maxTrailingBelowDelta::Int
 end
-StructTypes.StructType(::Type{TrailingDeltaFilter}) = StructTypes.Struct()
 Base.show(io::IO, f::TrailingDeltaFilter) = print(io,
     "TrailingDelta: above: $(f.minTrailingAboveDelta)-$(f.maxTrailingAboveDelta), below: $(f.minTrailingBelowDelta)-$(f.maxTrailingBelowDelta)")
 
@@ -390,6 +363,69 @@ Base.show(io::IO, f::TrailingDeltaFilter) = print(io,
 @define_single_filter(ExchangeMaxNumAlgoOrdersFilter, maxNumAlgoOrders, Int, "ExchangeMaxNumAlgoOrders")
 @define_single_filter(ExchangeMaxNumIcebergOrdersFilter, maxNumIcebergOrders, Int, "ExchangeMaxNumIcebergOrders")
 @define_single_filter(ExchangeMaxNumOrderListsFilter, maxNumOrderLists, Int, "ExchangeMaxNumOrderLists")
+
+# --- Filter 多态分发 ---
+#
+# Replaces `StructTypes.AbstractType()` + `subtypekey` + `subtypes`. The table is
+# the same mapping; only the dispatch mechanism changed.
+const FILTER_TYPES = (
+    PRICE_FILTER = PriceFilter,
+    PERCENT_PRICE = PercentPriceFilter,
+    PERCENT_PRICE_BY_SIDE = PercentPriceBySideFilter,
+    LOT_SIZE = LotSizeFilter,
+    MIN_NOTIONAL = MinNotionalFilter,
+    NOTIONAL = NotionalFilter,
+    ICEBERG_PARTS = IcebergPartsFilter,
+    MARKET_LOT_SIZE = MarketLotSizeFilter,
+    MAX_NUM_ORDERS = MaxNumOrdersFilter,
+    MAX_NUM_ALGO_ORDERS = MaxNumAlgoOrdersFilter,
+    MAX_NUM_ICEBERG_ORDERS = MaxNumIcebergOrdersFilter,
+    MAX_POSITION = MaxPositionFilter,
+    TRAILING_DELTA = TrailingDeltaFilter,
+    MAX_NUM_ORDER_AMENDS = MaxNumOrderAmendsFilter,
+    MAX_NUM_ORDER_LISTS = MaxNumOrderListsFilter,
+    EXCHANGE_MAX_NUM_ORDERS = ExchangeMaxNumOrdersFilter,
+    EXCHANGE_MAX_NUM_ALGO_ORDERS = ExchangeMaxNumAlgoOrdersFilter,
+    EXCHANGE_MAX_NUM_ICEBERG_ORDERS = ExchangeMaxNumIcebergOrdersFilter,
+    EXCHANGE_MAX_NUM_ORDER_LISTS = ExchangeMaxNumOrderListsFilter,
+    MAX_ASSETS = MaxAssetsFilter
+)
+
+"""
+    filter_type_name(source) -> String
+
+Read the `filterType` discriminator out of a decoded JSON object.
+
+Four source shapes reach this during the migration and all must work: a lazy
+`JSON.LazyValue` (from `JSON.parse(raw, T)`), an already-materialized
+`JSON.Object` or `JSON3.Object` (from `to_struct`), and a plain `Dict`. Lazy
+values hand back a `LazyValue` for the field, hence the `[]` materialization.
+"""
+function filter_type_name(source)
+    raw = get(source, :filterType, nothing)
+    # A `Dict{String}` misses the symbol lookup; every other shape answers it.
+    if raw === nothing && source isa AbstractDict
+        raw = get(source, "filterType", nothing)
+    end
+    raw === nothing && return nothing
+    return raw isa AbstractString ? String(raw) : String(raw[])
+end
+
+# Both failure modes throw, as before (previously a `KeyError` for a missing key
+# and a `FieldError` on the subtypes NamedTuple for an unknown one). The messages
+# now name the offending value.
+function _choose_filter(source)
+    name = filter_type_name(source)
+    name === nothing &&
+        throw(ArgumentError("filter object carries no filterType key: $(source)"))
+    return get(
+        () -> throw(ArgumentError(string(
+            "unknown filterType ", repr(name),
+            "; Binance added a filter this version does not know about"))),
+        FILTER_TYPES, Symbol(name))
+end
+
+JSON.@choosetype AbstractFilter _choose_filter
 
 # --- Symbol and Exchange Info Structs ---
 const SymbolFilter = Union{
@@ -406,9 +442,11 @@ struct RateLimit
     intervalNum::Int
     limit::Int
 end
-StructTypes.StructType(::Type{RateLimit}) = StructTypes.Struct()
 
-mutable struct SymbolInfo
+# `@noarg` replaces `StructTypes.Mutable()`: it emits the no-arg constructor and
+# marks the type as "construct empty, then setfield! each key", which is what
+# `Mutable()` requested. Field defaults replace `StructTypes.defaults`.
+@noarg mutable struct SymbolInfo
     symbol::String
     status::SymbolStatus
     baseAsset::String
@@ -420,29 +458,21 @@ mutable struct SymbolInfo
     orderTypes::Vector{OrderTypes}
     icebergAllowed::Bool
     ocoAllowed::Bool
-    otoAllowed::Bool
-    opoAllowed::Bool
+    # Not sent by every endpoint, so they keep the defaults that
+    # `StructTypes.defaults` used to supply.
+    otoAllowed::Bool = false
+    opoAllowed::Bool = false
     quoteOrderQtyMarketAllowed::Bool
     isSpotTradingAllowed::Bool
     isMarginTradingAllowed::Bool
-    # Note: Using Vector{AbstractFilter} is required for JSON3/StructTypes polymorphic deserialization.
-    # The abstract type is necessary here as filters come from API responses with varying concrete types.
-    # Performance impact is minimal since filter access is infrequent compared to market data processing.
+    # The element type stays abstract because a symbol carries a heterogeneous
+    # filter list; `@choosetype` above resolves each entry. Filter access is
+    # infrequent next to market data, so the dynamic dispatch does not matter.
     filters::Vector{AbstractFilter}
     permissions::Vector{AccountPermissions}
     defaultSelfTradePreventionMode::STPModes
     allowedSelfTradePreventionModes::Vector{STPModes}
-
-    # Inner constructor for default values
-    function SymbolInfo()
-        new()
-    end
 end
-StructTypes.StructType(::Type{SymbolInfo}) = StructTypes.Mutable()
-StructTypes.defaults(::Type{SymbolInfo}) = Dict{Symbol,Any}(
-    :otoAllowed => false,
-    :opoAllowed => false
-)
 
 function Base.show(io::IO, ::MIME"text/plain", s::SymbolInfo)
     println(io, "SymbolInfo for ", s.symbol, ":")
@@ -462,28 +492,16 @@ function Base.show(io::IO, ::MIME"text/plain", s::SymbolInfo)
     end
 end
 
-struct ExchangeInfo
+# The hand-written `construct` this replaces existed only to lift `serverTime`
+# from unix milliseconds and to recurse into the three vectors by hand. The field
+# tag covers the first and `StructUtils.make` covers the rest.
+@binance_struct struct ExchangeInfo
     timezone::String
-    serverTime::DateTime
+    serverTime::DateTime &UNIX_MS
     rateLimits::Vector{RateLimit}
     exchangeFilters::Vector{AbstractFilter}
     symbols::Vector{SymbolInfo}
 end
-StructTypes.StructType(::Type{ExchangeInfo}) = StructTypes.CustomStruct()
-StructTypes.lower(e::ExchangeInfo) = (
-    timezone=e.timezone,
-    serverTime=Int64(round(datetime2unix(e.serverTime) * 1000)),
-    rateLimits=e.rateLimits,
-    exchangeFilters=e.exchangeFilters,
-    symbols=e.symbols
-)
-StructTypes.construct(::Type{ExchangeInfo}, obj) = ExchangeInfo(
-    obj["timezone"],
-    unix2datetime(obj["serverTime"] / 1000),
-    to_struct(Vector{RateLimit}, obj["rateLimits"]),
-    to_struct(Vector{AbstractFilter}, obj["exchangeFilters"]),
-    to_struct(Vector{SymbolInfo}, obj["symbols"])
-)
 
 function Base.show(io::IO, ::MIME"text/plain", info::ExchangeInfo)
     println(io, "ExchangeInfo:")
@@ -537,7 +555,6 @@ struct WebSocketConnection
     serverTime::Int64
     userDataStream::Bool
 end
-StructTypes.StructType(::Type{WebSocketConnection}) = StructTypes.Struct()
 
 function Base.show(io::IO, ::MIME"text/plain", wsc::WebSocketConnection)
     println(io, "WebSocket Connection Status:")
@@ -921,18 +938,15 @@ struct ExecutionRule
     askLimitMultUp::String
     askLimitMultDown::String
 end
-StructTypes.StructType(::Type{ExecutionRule}) = StructTypes.Struct()
 
 struct SymbolExecutionRules
     symbol::String
     rules::Vector{ExecutionRule}
 end
-StructTypes.StructType(::Type{SymbolExecutionRules}) = StructTypes.Struct()
 
 struct ExecutionRulesResponse
     symbolRules::Vector{SymbolExecutionRules}
 end
-StructTypes.StructType(::Type{ExecutionRulesResponse}) = StructTypes.Struct()
 
 @binance_struct struct ReferencePrice
     symbol::String
@@ -956,7 +970,6 @@ struct ArithmeticMeanCalculation <: AbstractReferencePriceCalculation
     bucketCount::Int
     bucketWidthMs::Int
 end
-StructTypes.StructType(::Type{ArithmeticMeanCalculation}) = StructTypes.Struct()
 
 """
     ExternalCalculation
@@ -971,6 +984,5 @@ struct ExternalCalculation <: AbstractReferencePriceCalculation
     calculationType::String   # "EXTERNAL"
     externalCalculationId::Int
 end
-StructTypes.StructType(::Type{ExternalCalculation}) = StructTypes.Struct()
 
 end # end of module

@@ -370,6 +370,108 @@ end
         @test isempty(empty_book.bids) && isempty(empty_book.asks)
     end
 
+    @testset "Filters dispatch on filterType" begin
+        # A symbol's filter list is heterogeneous and the concrete type is only
+        # known from the `filterType` string, so this replaces StructTypes'
+        # subtypekey/subtypes dispatch. All three entry paths must agree: lazy
+        # (`JSON.parse(raw, T)`) and the two materialized ones that `to_struct`
+        # sees during the migration.
+        T = Binance.Types
+        raw = """[{"filterType":"LOT_SIZE","minQty":"0.001","maxQty":"9000","stepSize":"0.001"},
+                  {"filterType":"ICEBERG_PARTS","limit":10},
+                  {"filterType":"TRAILING_DELTA","minTrailingAboveDelta":10,"maxTrailingAboveDelta":2000,"minTrailingBelowDelta":11,"maxTrailingBelowDelta":2001},
+                  {"filterType":"NOTIONAL","minNotional":"5.0","applyMinToMarket":true,"maxNotional":"9000000","applyMaxToMarket":false,"avgPriceMins":5}]"""
+
+        filters = JSON.parse(raw, Vector{T.AbstractFilter})
+        @test filters == T.to_struct(Vector{T.AbstractFilter}, JSON3.read(raw))
+        @test filters == T.to_struct(Vector{T.AbstractFilter}, JSON.parse(raw))
+        @test map(typeof, filters) == [T.LotSizeFilter, T.IcebergPartsFilter,
+                                       T.TrailingDeltaFilter, T.NotionalFilter]
+
+        # Field-level assertions: the macro-generated filters share a shape, so a
+        # mixed-up mapping would still produce the right type.
+        lot = filters[1]
+        @test (lot.minQty, lot.maxQty, lot.stepSize) == ("0.001", "9000", "0.001")
+        @test filters[2].limit === 10
+        trailing = filters[3]
+        @test (trailing.minTrailingAboveDelta, trailing.maxTrailingAboveDelta) == (10, 2000)
+        @test (trailing.minTrailingBelowDelta, trailing.maxTrailingBelowDelta) == (11, 2001)
+        notional = filters[4]
+        @test notional.minNotional == "5.0"
+        @test notional.applyMinToMarket
+        @test !notional.applyMaxToMarket
+        @test notional.avgPriceMins == 5
+
+        @test JSON.parse(JSON.json(filters), Vector{T.AbstractFilter}) == filters
+
+        # A single filter outside a list, as `exchangeFilters` entries arrive.
+        @test JSON.parse("""{"filterType":"EXCHANGE_MAX_NUM_ORDERS","maxNumOrders":1000}""",
+                         T.AbstractFilter) === T.ExchangeMaxNumOrdersFilter("EXCHANGE_MAX_NUM_ORDERS", 1000)
+
+        # Both failure modes must throw rather than silently drop the filter:
+        # dropping a LOT_SIZE would let an order violate stepSize.
+        @test_throws ArgumentError JSON.parse("""[{"filterType":"NOT_A_FILTER","x":1}]""",
+                                              Vector{T.AbstractFilter})
+        @test_throws ArgumentError JSON.parse("""[{"x":1}]""", Vector{T.AbstractFilter})
+    end
+
+    @testset "ExchangeInfo nests filters, symbols and rate limits" begin
+        # This was the last CustomStruct: its hand-written construct lifted
+        # serverTime from millis and recursed into the three vectors by hand.
+        T = Binance.Types
+        raw = """{"timezone":"UTC","serverTime":1704067200000,
+                  "rateLimits":[{"rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE","intervalNum":1,"limit":6000}],
+                  "exchangeFilters":[{"filterType":"EXCHANGE_MAX_NUM_ORDERS","maxNumOrders":1000}],
+                  "symbols":[{"symbol":"BTCUSDT","status":"TRADING","baseAsset":"BTC","baseAssetPrecision":8,
+                  "quoteAsset":"USDT","quoteAssetPrecision":8,"baseCommissionPrecision":8,"quoteCommissionPrecision":8,
+                  "orderTypes":["LIMIT","MARKET"],"icebergAllowed":true,"ocoAllowed":true,
+                  "quoteOrderQtyMarketAllowed":true,"isSpotTradingAllowed":true,"isMarginTradingAllowed":true,
+                  "filters":[{"filterType":"LOT_SIZE","minQty":"0.001","maxQty":"9000","stepSize":"0.001"}],
+                  "permissions":["SPOT"],"defaultSelfTradePreventionMode":"NONE",
+                  "allowedSelfTradePreventionModes":["NONE","EXPIRE_MAKER"]}]}"""
+
+        for info in (JSON.parse(raw, T.ExchangeInfo),
+                     T.to_struct(T.ExchangeInfo, JSON3.read(raw)),
+                     T.to_struct(T.ExchangeInfo, JSON.parse(raw)))
+            @test info.timezone == "UTC"
+            @test info.serverTime == DateTime(2024, 1, 1)
+
+            @test length(info.rateLimits) == 1
+            limit = info.rateLimits[1]
+            @test limit.rateLimitType == T.REQUEST_WEIGHT
+            @test limit.interval == T.MINUTE
+            @test (limit.intervalNum, limit.limit) == (1, 6000)
+
+            @test info.exchangeFilters == [T.ExchangeMaxNumOrdersFilter("EXCHANGE_MAX_NUM_ORDERS", 1000)]
+
+            @test length(info.symbols) == 1
+            sym = info.symbols[1]
+            @test sym.symbol == "BTCUSDT"
+            @test sym.status == T.TRADING
+            @test (sym.baseAsset, sym.quoteAsset) == ("BTC", "USDT")
+            @test sym.orderTypes == [T.LIMIT, T.MARKET]
+            @test sym.permissions == [T.SPOT]
+            @test sym.defaultSelfTradePreventionMode == T.NONE
+            @test sym.allowedSelfTradePreventionModes == [T.NONE, T.EXPIRE_MAKER]
+            @test sym.filters == [T.LotSizeFilter("LOT_SIZE", "0.001", "9000", "0.001")]
+
+            # Absent from this payload: the field defaults stand in, as
+            # StructTypes.defaults used to do. Endpoints that omit them must not
+            # leave the field undefined.
+            @test sym.otoAllowed === false
+            @test sym.opoAllowed === false
+        end
+
+        # An explicit value still wins over the default.
+        with_oto = replace(raw, "\"icebergAllowed\":true" => "\"icebergAllowed\":true,\"otoAllowed\":true")
+        @test JSON.parse(with_oto, T.ExchangeInfo).symbols[1].otoAllowed === true
+
+        # SymbolInfo() must stay callable: RESTClient seeds its symbol cache with it.
+        blank = T.SymbolInfo()
+        @test blank.otoAllowed === false
+        @test blank.opoAllowed === false
+    end
+
     @testset "OrderBookManager helper types" begin
         pq = Binance.OrderBookManagers.PriceQuantity(100.0, 1.0)
         @test pq.price == 100.0
