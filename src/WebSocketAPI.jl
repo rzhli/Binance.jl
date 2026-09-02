@@ -1,6 +1,6 @@
 module WebSocketAPI
 
-    using HTTP, JSON3, Dates, SHA, URIs, StructTypes, UUIDs
+    using HTTP, JSON, Dates, SHA, URIs, UUIDs
     import HTTP.WebSockets
 
     using ..Config, ..Signature, ..Types, ..Filters, ..RESTAPI, ..RateLimiter, ..Account, ..Events, ..Errors
@@ -96,7 +96,9 @@ module WebSocketAPI
         base_url::String
         ws_connection::Union{WebSockets.WebSocket,Nothing}  # Typed WebSocket connection
         rate_limiter::BinanceRateLimit
-        responses::Dict{String,Channel{JSON3.Object}}
+        # `JSON.parse` always yields this concrete instantiation for a JSON object;
+        # naming it keeps the channel element type concrete.
+        responses::Dict{String,Channel{JSON.Object{String,Any}}}
         responses_lock::ReentrantLock
         ws_callbacks::Dict{String,EventCallback} # For user data stream events
         callbacks_lock::ReentrantLock
@@ -121,7 +123,7 @@ module WebSocketAPI
             rate_limiter = BinanceRateLimit(config)
             client = new(
                 config, signer, base_url, nothing, rate_limiter,
-                Dict{String,Channel{JSON3.Object}}(), ReentrantLock(),
+                Dict{String,Channel{JSON.Object{String,Any}}}(), ReentrantLock(),
                 Dict{String,EventCallback}(), ReentrantLock(), 0, false, true, nothing,
                 ReentrantLock(), nothing, 60,
             )
@@ -364,7 +366,7 @@ module WebSocketAPI
                                 end
                                 
                                 # Parse JSON message
-                                data = JSON3.read(String(msg))
+                                data = JSON.parse(msg)
 
                                 # Check if this is a response to a request
                                 request_id = haskey(data, :id) ? string(data.id) : ""
@@ -387,7 +389,7 @@ module WebSocketAPI
                                 else
                                     event_payload = nothing
                                     # Check for wrapped event format first
-                                    if haskey(data, :event) && data.event isa JSON3.Object && haskey(data.event, :e)
+                                    if haskey(data, :event) && data.event isa AbstractDict && haskey(data.event, :e)
                                         event_payload = data.event
                                     # Then check for unwrapped event format (like in user data streams)
                                     elseif haskey(data, :e)
@@ -707,7 +709,7 @@ module WebSocketAPI
         full_method = isempty(api_version) ? method : "$api_version/$method"
 
         # Create a channel to wait for the response
-        response_channel = Channel{JSON3.Object}(1)
+        response_channel = Channel{JSON.Object{String,Any}}(1)
         lock(client.responses_lock) do
             client.responses[request_id] = response_channel
         end
@@ -737,7 +739,7 @@ module WebSocketAPI
                 error("WebSocket connection is not available")
             end
             
-            WebSockets.send(client.ws_connection, JSON3.write(request))
+            WebSockets.send(client.ws_connection, JSON.json(request))
 
             response = take_response!(response_channel, network_timeout(client), method, request_id)
             
@@ -970,7 +972,6 @@ module WebSocketAPI
         
         response = send_request(client, "exchangeInfo", params)
 
-        # Convert JSON3.Object to ExchangeInfo type
         return to_struct(ExchangeInfo, response)
     end
 

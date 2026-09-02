@@ -1,6 +1,6 @@
 module RESTAPI
 
-    using HTTP, JSON3, Dates, SHA, URIs, StructTypes
+    using HTTP, JSON, Dates, SHA, URIs
     using ..Config
     using ..Signature
     using ..RateLimiter
@@ -145,6 +145,17 @@ module RESTAPI
         return Pair{String,String}[]
     end
 
+    """
+        symbol_dict(obj) -> Dict{Symbol,Any}
+
+    Copy a decoded JSON object into a `Dict{Symbol,Any}`.
+
+    Endpoints that lift a timestamp before returning need a mutable copy, and
+    their published return type is `Dict{Symbol,Any}`. `JSON.Object` iterates as
+    `String` pairs, so the keys are converted here.
+    """
+    symbol_dict(obj) = Dict{Symbol,Any}(Symbol(k) => v for (k, v) in pairs(obj))
+
     function build_query_string(params::Dict{String,Any})
         if isempty(params)
             return ""
@@ -157,7 +168,7 @@ module RESTAPI
             encoded_key = URIs.escapeuri(string(k))
             value = params[k]
             encoded_value = if isa(value, AbstractVector)
-                URIs.escapeuri(JSON3.write(value))
+                URIs.escapeuri(JSON.json(value))
             else
                 URIs.escapeuri(string(value))
             end
@@ -205,7 +216,7 @@ module RESTAPI
         msg = body
 
         try
-            json_body = JSON3.read(body)
+            json_body = JSON.parse(body)
             if haskey(json_body, :code) && haskey(json_body, :msg)
                 code = json_body.code
                 msg = json_body.msg
@@ -351,7 +362,13 @@ module RESTAPI
             if response.status in (200, 201, 202)
                 # Parse straight from the byte buffer: `String(response.body)`
                 # would allocate an extra copy of every payload.
-                return JSON3.read(response.body)
+                #
+                # Materialized, not lazy: 30 call sites hand this straight back to
+                # the caller, and a `LazyValue` supports neither `haskey`/`keys`
+                # nor `isa AbstractDict`. `JSON.Object` supports all of them.
+                # `JSON.Object` also answers `response.field` and
+                # `response[:field]`, so no call site has to change.
+                return JSON.parse(response.body)
             else
                 handle_error(client, response)
             end
@@ -379,9 +396,9 @@ module RESTAPI
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
         elseif !isempty(symbols)
-            params["symbols"] = JSON3.write(symbols)
+            params["symbols"] = JSON.json(symbols)
         elseif !isempty(permissions)
-            params["permissions"] = JSON3.write(permissions)
+            params["permissions"] = JSON.json(permissions)
         end
         if !isempty(symbolStatus)
             if !isempty(symbol) || !isempty(symbols)
@@ -510,8 +527,9 @@ module RESTAPI
         validate_order(params, symbol_info.filters)
 
         response = make_request(client, "POST", "/api/v3/order"; params=params, signed=true)
-        # Convert JSON3.Object to Dict to allow modification
-        response_dict = Dict{Symbol,Any}(pairs(response))
+        # These endpoints have always returned a `Dict{Symbol,Any}` with the
+        # timestamp already lifted; `symbol_dict` keeps that contract.
+        response_dict = symbol_dict(response)
         if haskey(response_dict, :transactTime)
             response_dict[:transactTime] = unix2datetime(response_dict[:transactTime] / 1000)
         end
@@ -554,8 +572,9 @@ module RESTAPI
         end
 
         response = make_request(client, "DELETE", "/api/v3/order"; params=params, signed=true)
-        # Convert JSON3.Object to Dict to allow modification
-        response_dict = Dict{Symbol,Any}(pairs(response))
+        # These endpoints have always returned a `Dict{Symbol,Any}` with the
+        # timestamp already lifted; `symbol_dict` keeps that contract.
+        response_dict = symbol_dict(response)
         if haskey(response_dict, :transactTime)
             response_dict[:transactTime] = unix2datetime(response_dict[:transactTime] / 1000)
         end
@@ -733,8 +752,9 @@ module RESTAPI
             throw(ArgumentError("Either orderListId or origClientOrderId must be provided"))
         end
         response = make_request(client, "GET", "/api/v3/orderList"; params=params, signed=true)
-        # Convert JSON3.Object to Dict to allow modification
-        response_dict = Dict{Symbol,Any}(pairs(response))
+        # These endpoints have always returned a `Dict{Symbol,Any}` with the
+        # timestamp already lifted; `symbol_dict` keeps that contract.
+        response_dict = symbol_dict(response)
         response_dict[:transactionTime] = unix2datetime(response_dict[:transactionTime] / 1000)
         return response_dict
     end
@@ -1159,7 +1179,7 @@ module RESTAPI
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
         elseif !isempty(symbols)
-            params["symbols"] = JSON3.write(symbols)
+            params["symbols"] = JSON.json(symbols)
         end
 
         if !isempty(symbolStatus)
@@ -1174,7 +1194,7 @@ module RESTAPI
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
         elseif !isempty(symbols)
-            params["symbols"] = JSON3.write(symbols)
+            params["symbols"] = JSON.json(symbols)
         end
 
         if !isempty(symbolStatus)
@@ -1184,16 +1204,14 @@ module RESTAPI
         response = make_request(client, "GET", "/api/v3/ticker/24hr"; params=params)
 
         if isa(response, Vector)
-            # Convert each element in the vector to Dict and modify
             return map(response) do ticker
-                ticker_dict = Dict{Symbol,Any}(pairs(ticker))
+                ticker_dict = symbol_dict(ticker)
                 ticker_dict[:openTime] = unix2datetime(ticker_dict[:openTime] / 1000)
                 ticker_dict[:closeTime] = unix2datetime(ticker_dict[:closeTime] / 1000)
                 ticker_dict
             end
         else
-            # Convert single response to Dict
-            response_dict = Dict{Symbol,Any}(pairs(response))
+            response_dict = symbol_dict(response)
             response_dict[:openTime] = unix2datetime(response_dict[:openTime] / 1000)
             response_dict[:closeTime] = unix2datetime(response_dict[:closeTime] / 1000)
             return response_dict
@@ -1205,7 +1223,7 @@ module RESTAPI
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
         elseif !isempty(symbols)
-            params["symbols"] = JSON3.write(symbols)
+            params["symbols"] = JSON.json(symbols)
         end
 
         if !isempty(symbolStatus)
@@ -1251,8 +1269,9 @@ module RESTAPI
         symbol = validate_symbol(symbol)
         params = Dict{String,Any}("symbol" => symbol)
         response = make_request(client, "GET", "/api/v3/avgPrice"; params=params)
-        # Convert JSON3.Object to Dict to allow modification
-        response_dict = Dict{Symbol,Any}(pairs(response))
+        # These endpoints have always returned a `Dict{Symbol,Any}` with the
+        # timestamp already lifted; `symbol_dict` keeps that contract.
+        response_dict = symbol_dict(response)
         response_dict[:closeTime] = unix2datetime(response_dict[:closeTime] / 1000)
         return response_dict
     end
@@ -1262,7 +1281,7 @@ module RESTAPI
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
         elseif !isempty(symbols)
-            params["symbols"] = JSON3.write(validate_symbol.(symbols))
+            params["symbols"] = JSON.json(validate_symbol.(symbols))
         else
             throw(ArgumentError("Either symbol or symbols must be provided"))
         end
@@ -1280,16 +1299,14 @@ module RESTAPI
         response = make_request(client, "GET", "/api/v3/ticker/tradingDay"; params=params)
 
         if isa(response, Vector)
-            # Convert each element in the vector to Dict and modify
             return map(response) do ticker
-                ticker_dict = Dict{Symbol,Any}(pairs(ticker))
+                ticker_dict = symbol_dict(ticker)
                 ticker_dict[:openTime] = unix2datetime(ticker_dict[:openTime] / 1000)
                 ticker_dict[:closeTime] = unix2datetime(ticker_dict[:closeTime] / 1000)
                 ticker_dict
             end
         else
-            # Convert single response to Dict
-            response_dict = Dict{Symbol,Any}(pairs(response))
+            response_dict = symbol_dict(response)
             response_dict[:openTime] = unix2datetime(response_dict[:openTime] / 1000)
             response_dict[:closeTime] = unix2datetime(response_dict[:closeTime] / 1000)
             return response_dict
@@ -1301,7 +1318,7 @@ module RESTAPI
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
         elseif !isempty(symbols)
-            params["symbols"] = JSON3.write(validate_symbol.(symbols))
+            params["symbols"] = JSON.json(validate_symbol.(symbols))
         else
             throw(ArgumentError("Either symbol or symbols must be provided"))
         end
@@ -1316,16 +1333,14 @@ module RESTAPI
         response = make_request(client, "GET", "/api/v3/ticker"; params=params)
 
         if isa(response, Vector)
-            # Convert each element in the vector to Dict and modify
             return map(response) do ticker
-                ticker_dict = Dict{Symbol,Any}(pairs(ticker))
+                ticker_dict = symbol_dict(ticker)
                 ticker_dict[:openTime] = unix2datetime(ticker_dict[:openTime] / 1000)
                 ticker_dict[:closeTime] = unix2datetime(ticker_dict[:closeTime] / 1000)
                 ticker_dict
             end
         else
-            # Convert single response to Dict
-            response_dict = Dict{Symbol,Any}(pairs(response))
+            response_dict = symbol_dict(response)
             response_dict[:openTime] = unix2datetime(response_dict[:openTime] / 1000)
             response_dict[:closeTime] = unix2datetime(response_dict[:closeTime] / 1000)
             return response_dict
@@ -1364,7 +1379,7 @@ module RESTAPI
         if !isempty(symbol)
             params["symbol"] = validate_symbol(symbol)
         elseif !isempty(symbols)
-            params["symbols"] = JSON3.write(validate_symbol.(symbols))
+            params["symbols"] = JSON.json(validate_symbol.(symbols))
         elseif !isempty(symbolStatus)
             params["symbolStatus"] = symbolStatus
         end

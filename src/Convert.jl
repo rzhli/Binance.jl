@@ -43,7 +43,7 @@ See: https://developers.binance.com/docs/convert
 """
 module Convert
 
-using JSON3, Dates
+using JSON, Dates
 using ..RESTAPI
 using ..Types: DecimalInput, to_decimal_string, to_struct, @binance_struct
 
@@ -412,7 +412,7 @@ info = convert_asset_info(client; assets=["BTC", "ETH", "USDT"])
 function convert_asset_info(client::RESTClient; assets::Vector{String}=String[])
     params = Dict{String,Any}()
     if !isempty(assets)
-        params["assets"] = JSON3.write(assets)
+        params["assets"] = JSON.json(assets)
     end
     response = make_request(client, "GET", "/sapi/v1/convert/assetInfo"; params=params, signed=true)
     return to_struct(Vector{ConvertAssetInfo}, response)

@@ -1,6 +1,6 @@
 module MarketDataStreams
 
-    using HTTP, JSON3, Dates, URIs, StructTypes
+    using HTTP, JSON, Dates, URIs
     using ..Config
     using ..Filters
     using ..Types
@@ -136,8 +136,8 @@ module MarketDataStreams
                 # Parse once so we can detect serverShutdown control events. These
                 # arrive on WebSocket Streams in addition to the WebSocket API. Close
                 # the current socket so the outer loop opens a fresh connection.
-                raw = JSON3.read(msg)
-                if isa(raw, JSON3.Object) && get(raw, :e, nothing) == "serverShutdown"
+                raw = JSON.parse(msg; dicttype = Dict{Symbol,Any})
+                if isa(raw, AbstractDict) && get(raw, :e, nothing) == "serverShutdown"
                     event_time = haskey(raw, :E) ? unix2datetime(raw[:E] / 1000) : nothing
                     @warn "⚠️  serverShutdown received on stream '$stream_name'. Closing connection for reconnect." event_time
                     try

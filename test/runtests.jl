@@ -640,6 +640,60 @@ end
         @test order.expiredTimestamp == DateTime(2024, 1, 2)
     end
 
+    @testset "Untyped responses keep the JSON3 access patterns" begin
+        # `make_request` and the WebSocket reader hand decoded-but-untyped payloads
+        # to callers and to internal branches. 30 REST call sites return one
+        # directly, so every accessor those sites relied on under JSON3 must still
+        # work: property access, symbol and string indexing, haskey, and
+        # `isa AbstractDict` to tell an object from an array.
+        payload = JSON.parse("""{"id":"a","status":200,"result":{"symbol":"BTCUSDT"},
+                                 "rateLimits":[{"rateLimitType":"REQUEST_WEIGHT"}]}""")
+
+        @test payload.status == 200
+        @test payload[:status] == 200
+        @test payload["status"] == 200
+        @test haskey(payload, :result) && haskey(payload, "result")
+        @test !haskey(payload, :missing)
+        @test get(payload, :missing, "fallback") == "fallback"
+        @test payload isa AbstractDict
+        @test payload.result.symbol == "BTCUSDT"
+        @test payload.result isa AbstractDict
+        @test payload.rateLimits[1].rateLimitType == "REQUEST_WEIGHT"
+        @test Set(Symbol.(keys(payload))) == Set([:id, :status, :result, :rateLimits])
+
+        # A top-level array must not look like an object: the ticker endpoints
+        # branch on `isa Vector` to decide whether to map over the response.
+        @test JSON.parse("""[{"a":1}]""") isa Vector
+        @test !(JSON.parse("""[{"a":1}]""") isa AbstractDict)
+
+        # The reader loop's request/event discrimination.
+        @test !haskey(JSON.parse("""{"e":"executionReport"}"""), :id)
+        @test string(JSON.parse("""{"id":42}""").id) == "42"
+
+        # The response channel's element type must accept what the parser produces.
+        channel = Channel{JSON.Object{String,Any}}(1)
+        put!(channel, payload)
+        @test take!(channel).status == 200
+
+        # Endpoints that lift a timestamp publish `Dict{Symbol,Any}`. The helper
+        # must convert the string keys and leave the source untouched.
+        raw = JSON.parse("""{"symbol":"BTCUSDT","closeTime":1704067200000}""")
+        converted = Binance.RESTAPI.symbol_dict(raw)
+        @test converted isa Dict{Symbol,Any}
+        @test converted[:symbol] == "BTCUSDT"
+        converted[:closeTime] = unix2datetime(converted[:closeTime] / 1000)
+        @test converted[:closeTime] == DateTime(2024, 1, 1)
+        @test raw[:closeTime] == 1704067200000
+
+        # Outbound request bodies: the WebSocket API and the `symbols=[...]` query
+        # parameter both serialize through JSON.json now.
+        @test JSON.json(["BTCUSDT", "ETHUSDT"]) == """["BTCUSDT","ETHUSDT"]"""
+        request = JSON.parse(JSON.json(Dict("id" => "1", "method" => "depth",
+                                            "params" => Dict("symbol" => "BTCUSDT"))))
+        @test request.method == "depth"
+        @test request.params.symbol == "BTCUSDT"
+    end
+
     @testset "OrderBookManager helper types" begin
         pq = Binance.OrderBookManagers.PriceQuantity(100.0, 1.0)
         @test pq.price == 100.0

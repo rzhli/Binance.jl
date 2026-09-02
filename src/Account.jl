@@ -1,6 +1,6 @@
 module Account
 
-    using JSON3, Dates, Printf
+    using Dates, Printf
     using ..RESTAPI
     using ..Types: DecimalInput, to_decimal_string, to_struct, @binance_struct
     

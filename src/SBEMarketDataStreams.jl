@@ -23,7 +23,7 @@ https://binance-docs.github.io/apidocs/spot/en/#sbe-market-data-streams
 """
 module SBEMarketDataStreams
 
-using HTTP, JSON3, Dates, URIs
+using HTTP, JSON, Dates, URIs
 using ..Config
 using ..Types
 using ..RateLimiter: backoff_delay
@@ -137,7 +137,7 @@ function _handle_sbe_ws_session(client::SBEStreamClient, ws)
         @info "Resubscribing to $(length(streams)) streams..."
 
         # Send subscription request for all streams
-        subscribe_msg = JSON3.write(Dict(
+        subscribe_msg = JSON.json(Dict(
             "method" => "SUBSCRIBE",
             "params" => streams,
             "id" => next_request_id!(client)
@@ -315,13 +315,13 @@ Handle JSON control messages (subscription responses and serverShutdown events).
 """
 function handle_control_message(client::SBEStreamClient, msg::String)
     try
-        data = JSON3.read(msg)
+        data = JSON.parse(msg)
 
         # Subscription response format:
         # {"result":null,"id":1}  (success)
         # {"id":1,"error":{"code":-1121,"msg":"Invalid symbol."}}  (error)
 
-        if isa(data, JSON3.Object) && get(data, :e, nothing) == "serverShutdown"
+        if isa(data, AbstractDict) && get(data, :e, nothing) == "serverShutdown"
             event_time = haskey(data, :E) ? unix2datetime(data[:E] / 1000) : nothing
             @warn "serverShutdown received on SBE stream. Closing connection for reconnect." event_time
             if !isnothing(client.ws_connection)
@@ -439,7 +439,7 @@ function sbe_subscribe(client::SBEStreamClient, stream_name::String, callback)
     end
 
     # Send subscription request (JSON format)
-    subscribe_msg = JSON3.write(Dict(
+    subscribe_msg = JSON.json(Dict(
         "method" => "SUBSCRIBE",
         "params" => [stream_name],
         "id" => next_request_id!(client)
@@ -473,7 +473,7 @@ function sbe_unsubscribe(client::SBEStreamClient, stream_name::String)
     end
 
     # Send unsubscribe request
-    unsubscribe_msg = JSON3.write(Dict(
+    unsubscribe_msg = JSON.json(Dict(
         "method" => "UNSUBSCRIBE",
         "params" => [stream_name],
         "id" => next_request_id!(client)
