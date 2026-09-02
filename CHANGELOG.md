@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `haskey` check; behaviour is unchanged.
 
 ### Added
+- The four strategy example files (`test.jl`, `single_run_test.jl`,
+  `test_orderbook_strategy.jl`, `test_convert.jl`) are now tracked. They document
+  the high-level entry points; every order-placing call is commented out. They
+  still `include` the gitignored `strategy/` directory, so a fresh clone cannot
+  run them — `examples/` covers the library itself.
 - `@binance_struct` — `StructUtils.@tags` with two field-tag shorthands:
   `&UNIX_MS` for a unix-millisecond timestamp and `&DECIMAL_STR` for a decimal
   carried as a JSON string. Both compose with a `&(name="...",)` rename.

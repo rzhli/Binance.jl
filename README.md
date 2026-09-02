@@ -315,6 +315,19 @@ sbe_close_all(sbe_client)
 | `examples/sbe_stream_example.jl` | SBE binary streams usage |
 | `examples/examples.jl` | General REST API, WebSocket streams examples |
 
+The four files below drive a full trading strategy. They `include` the `strategy/`
+directory, which is gitignored (personal trading strategies, not shipped with the
+package), so a fresh clone will hit `SystemError: opening file .../strategy/...`.
+They are here to document the high-level entry points; every order-placing call is
+commented out by default.
+
+| File | Description |
+|------|-------------|
+| `test.jl` | All four client types, plus grid strategies driven by ticker and by depth |
+| `single_run_test.jl` | `run_single_orderbook_strategy` / `run_multi_orderbook_strategy`, with technical analysis and support/resistance injection |
+| `test_orderbook_strategy.jl` | Assembling an `OrderBookManager` by hand: own monitoring loop, own cleanup |
+| `test_convert.jl` | Convert (flash-swap) strategies — no 5 USDT minimum notional |
+
 ## Architecture
 
 ```
