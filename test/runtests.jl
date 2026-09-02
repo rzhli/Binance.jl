@@ -472,6 +472,79 @@ end
         @test blank.opoAllowed === false
     end
 
+    @testset "User data stream events parse from both sources" begin
+        # Every user-data event uses single-letter keys, so a shifted mapping still
+        # type-checks. The strategy layer reads these to track fills and balances.
+        E = Binance.Events
+        T = Binance.Types
+
+        raw = """{"e":"outboundAccountPosition","E":1704067200000,"u":1704067200001,
+                  "B":[{"a":"BTC","f":"1.5","l":"0.2"},{"a":"USDT","f":"1000","l":"0"}]}"""
+        for pos in (JSON.parse(raw, E.OutboundAccountPosition),
+                    T.to_struct(E.OutboundAccountPosition, JSON3.read(raw)),
+                    T.to_struct(E.OutboundAccountPosition, JSON.parse(raw)))
+            @test pos.e == "outboundAccountPosition"
+            @test pos.E == 1704067200000
+            @test pos.u == 1704067200001
+            @test pos.B == [E.Balance("BTC", "1.5", "0.2"), E.Balance("USDT", "1000", "0")]
+        end
+
+        raw = """{"e":"balanceUpdate","E":1704067200000,"a":"BTC","d":"-0.5","T":1704067200002}"""
+        update = JSON.parse(raw, E.BalanceUpdate)
+        @test update == T.to_struct(E.BalanceUpdate, JSON3.read(raw))
+        @test (update.a, update.d, update.T) == ("BTC", "-0.5", 1704067200002)
+
+        raw = """{"e":"listStatus","E":1704067200000,"s":"BTCUSDT","g":9,"c":"OCO","l":"ALL_DONE",
+                  "L":"ALL_DONE","r":"NONE","C":"cid","T":1704067200003,
+                  "O":[{"s":"BTCUSDT","i":11,"c":"c1"},{"s":"BTCUSDT","i":12,"c":"c2"}]}"""
+        status = JSON.parse(raw, E.ListStatus)
+        @test (status.s, status.g, status.c, status.l, status.L, status.r, status.C) ==
+              ("BTCUSDT", 9, "OCO", "ALL_DONE", "ALL_DONE", "NONE", "cid")
+        @test status.O == [E.OrderInListStatus("BTCUSDT", 11, "c1"),
+                           E.OrderInListStatus("BTCUSDT", 12, "c2")]
+        @test status.O == T.to_struct(E.ListStatus, JSON3.read(raw)).O
+
+        # `@depth20` snapshots reuse PriceLevel, so this was the second type that
+        # needed a hand-written construct under StructTypes.
+        raw = """{"lastUpdateId":123,"bids":[["95000.1","1.5"],["94999.0","2.0"]],"asks":[["95001.0","0.8"]]}"""
+        for book in (JSON.parse(raw, E.PartialBookDepth),
+                     T.to_struct(E.PartialBookDepth, JSON3.read(raw)))
+            @test book.lastUpdateId == 123
+            @test book.bids == [T.PriceLevel(95000.10, 1.5), T.PriceLevel(94999.00, 2.0)]
+            @test book.asks == [T.PriceLevel(95001.00, 0.8)]
+        end
+
+        # ExecutionReport has 33 required fields and 23 conditional ones. A fill
+        # report that omits the conditional block must leave them `nothing`
+        # rather than error, and a report that carries them must not drop values.
+        minimal = """{"e":"executionReport","E":1704067200000,"s":"BTCUSDT","c":"cid","S":"BUY",
+                      "o":"LIMIT","f":"GTC","q":"1.0","p":"95000.0","P":"0","F":"0","g":-1,"C":"",
+                      "x":"NEW","X":"NEW","r":"NONE","i":42,"l":"0","z":"0","L":"0","n":"0","N":null,
+                      "T":1704067200001,"t":-1,"I":8,"w":true,"m":false,"M":false,"O":1704067200000,
+                      "Z":"0","Y":"0","Q":"0","V":"NONE"}"""
+        report = JSON.parse(minimal, E.ExecutionReport)
+        @test report == T.to_struct(E.ExecutionReport, JSON3.read(minimal))
+        @test (report.s, report.S, report.o, report.X, report.i) ==
+              ("BTCUSDT", "BUY", "LIMIT", "NEW", 42)
+        @test report.w && !report.m
+        @test report.N === nothing        # explicit JSON null
+        @test report.W === nothing        # key absent entirely
+        @test report.eR === nothing
+        @test report.uS === nothing
+
+        # Ordered so the fragment ends on a bare `true`: a triple-quoted string
+        # cannot end with a quote character.
+        conditional = """"V":"NONE","W":1704067200004,"d":13,"eR":"PRICE_RANGE","Cs":"ETHUSDT","uS":true"""
+        full = replace(minimal, "\"V\":\"NONE\"" => conditional)
+        report = JSON.parse(full, E.ExecutionReport)
+        @test report == T.to_struct(E.ExecutionReport, JSON3.read(full))
+        @test report.W == 1704067200004
+        @test report.d == 13
+        @test report.eR == "PRICE_RANGE"
+        @test report.uS === true
+        @test report.Cs == "ETHUSDT"
+    end
+
     @testset "OrderBookManager helper types" begin
         pq = Binance.OrderBookManagers.PriceQuantity(100.0, 1.0)
         @test pq.price == 100.0

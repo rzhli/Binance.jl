@@ -1,6 +1,5 @@
 module Events
 
-using StructTypes
 using ..Types
 
 export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus,
@@ -11,7 +10,6 @@ struct Balance
     f::String           # Free
     l::String           # Locked
 end
-StructTypes.StructType(::Type{Balance}) = StructTypes.Struct()
 
 struct OutboundAccountPosition
     e::String             # Event type
@@ -19,7 +17,6 @@ struct OutboundAccountPosition
     u::Int64              # Time of last account update
     B::Vector{Balance}    # Balances
 end
-StructTypes.StructType(::Type{OutboundAccountPosition}) = StructTypes.Struct()
 
 struct BalanceUpdate
     e::String           # Event Type
@@ -28,20 +25,17 @@ struct BalanceUpdate
     d::String           # Balance Delta
     T::Int64            # Clear Time
 end
-StructTypes.StructType(::Type{BalanceUpdate}) = StructTypes.Struct()
 
 struct EventStreamTerminated
     e::String           # Event Type
     E::Int64            # Event Time (ms)
 end
-StructTypes.StructType(::Type{EventStreamTerminated}) = StructTypes.Struct()
 
 struct OrderInListStatus
     s::String           # Symbol
     i::Int64            # OrderId
     c::String           # ClientOrderId
 end
-StructTypes.StructType(::Type{OrderInListStatus}) = StructTypes.Struct()
 
 struct ListStatus
     e::String           # Event Type
@@ -56,7 +50,6 @@ struct ListStatus
     T::Int64            # Transaction Time
     O::Vector{OrderInListStatus} # An array of objects
 end
-StructTypes.StructType(::Type{ListStatus}) = StructTypes.Struct()
 
 struct ExecutionReport
     e::String             # Event type
@@ -118,24 +111,20 @@ struct ExecutionReport
     gp::Union{String, Nothing} # Pegged Price
     eR::Union{String, Nothing} # Expiry Reason
 end
-StructTypes.StructType(::Type{ExecutionReport}) = StructTypes.Struct()
 
 struct ServerShutdown
     e::String           # Event Type ("serverShutdown")
     E::Int64            # Event Time (ms)
 end
-StructTypes.StructType(::Type{ServerShutdown}) = StructTypes.Struct()
 
+# Same shape as `Types.OrderBook`, and likewise needs no declaration: the nested
+# `PriceLevel` elements convert through their own lift/lower. The hand-written
+# construct this replaces existed only because a CustomStruct element type had no
+# `constructfrom` method.
 struct PartialBookDepth
     lastUpdateId::Int64
     bids::Vector{PriceLevel}
     asks::Vector{PriceLevel}
 end
-StructTypes.StructType(::Type{PartialBookDepth}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{PartialBookDepth}, obj) = PartialBookDepth(
-    obj["lastUpdateId"],
-    [StructTypes.construct(PriceLevel, bid) for bid in obj["bids"]],
-    [StructTypes.construct(PriceLevel, ask) for ask in obj["asks"]]
-)
 
 end # module Events
