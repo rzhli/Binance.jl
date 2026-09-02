@@ -545,6 +545,101 @@ end
         @test report.Cs == "ETHUSDT"
     end
 
+    @testset "Account balances parse decimal strings into Float64" begin
+        # Balance is the one type where a wire decimal becomes a Float64: the
+        # strategy layer compares balances against order sizes. Everything else
+        # keeps the exact string the exchange sent.
+        A = Binance.Account
+        T = Binance.Types
+        raw = """{"makerCommission":15,"takerCommission":15,"buyerCommission":0,"sellerCommission":0,
+                  "commissionRates":{"maker":"0.00150000","taker":"0.00150000","buyer":"0.00000000","seller":"0.00000000"},
+                  "canTrade":true,"canWithdraw":true,"canDeposit":true,"brokered":false,
+                  "requireSelfTradePrevention":false,"preventSor":false,"updateTime":1704067200000,
+                  "accountType":"SPOT",
+                  "balances":[{"asset":"BTC","free":"1.50000000","locked":"0.20000000"},
+                              {"asset":"USDT","free":"1000.00000000","locked":"0.00000000"}],
+                  "permissions":["SPOT"],"uid":123456}"""
+
+        for info in (JSON.parse(raw, A.AccountInfo),
+                     T.to_struct(A.AccountInfo, JSON3.read(raw)),
+                     T.to_struct(A.AccountInfo, JSON.parse(raw)))
+            @test info.balances == [A.Balance("BTC", 1.5, 0.2), A.Balance("USDT", 1000.0, 0.0)]
+            @test info.balances[1].free isa Float64
+            # Commission rates stay strings: callers echo them, never add them.
+            @test info.commissionRates == A.CommissionRates("0.00150000", "0.00150000",
+                                                            "0.00000000", "0.00000000")
+            @test (info.makerCommission, info.takerCommission) == (15, 15)
+            @test info.canTrade && info.canWithdraw && info.canDeposit
+            @test !info.brokered && !info.requireSelfTradePrevention && !info.preventSor
+            # An Int64, not a DateTime: callers pass it straight back to the API.
+            @test info.updateTime === 1704067200000
+            @test info.accountType == "SPOT"
+            @test info.permissions == ["SPOT"]
+            @test info.uid == 123456
+        end
+
+        # `lower` must put the decimal string back, not a bare number.
+        encoded = JSON.json(A.Balance("BTC", 1.5, 0.2))
+        @test encoded == """{"asset":"BTC","free":"1.5","locked":"0.2"}"""
+        @test JSON.parse(encoded, A.Balance) == A.Balance("BTC", 1.5, 0.2)
+    end
+
+    @testset "Convert responses lift millisecond timestamps" begin
+        # Every Convert response carries at least one unix-millisecond timestamp
+        # and these all dropped a hand-written construct.
+        C = Binance.Convert
+        T = Binance.Types
+
+        raw = """{"quoteId":"q1","ratio":"95000.5","inverseRatio":"0.0000105",
+                  "validTimestamp":1704067200000,"toAmount":"95000.5","fromAmount":"1.0"}"""
+        quote_ = JSON.parse(raw, C.ConvertQuote)
+        @test quote_ == T.to_struct(C.ConvertQuote, JSON3.read(raw))
+        @test quote_ == T.to_struct(C.ConvertQuote, JSON.parse(raw))
+        @test quote_.quoteId == "q1"
+        @test quote_.ratio == "95000.5"
+        @test quote_.inverseRatio == "0.0000105"
+        @test quote_.validTimestamp == DateTime(2024, 1, 1)
+        @test (quote_.toAmount, quote_.fromAmount) == ("95000.5", "1.0")
+        # Ratios and amounts stay strings: the strategy layer feeds fromAmount
+        # back to acceptQuote and a Float64 round-trip could shift the last digit.
+        @test quote_.ratio isa String
+        @test occursin("\"validTimestamp\":1704067200000", JSON.json(quote_))
+
+        raw = """{"orderId":"o1","createTime":1704067200000,"orderStatus":"PROCESS"}"""
+        accepted = JSON.parse(raw, C.ConvertAcceptQuote)
+        @test accepted == T.to_struct(C.ConvertAcceptQuote, JSON3.read(raw))
+        @test (accepted.orderId, accepted.orderStatus) == ("o1", "PROCESS")
+        @test accepted.createTime == DateTime(2024, 1, 1)
+
+        # A nested list plus two timestamps of its own.
+        raw = """{"list":[{"quoteId":"q1","orderId":42,"orderStatus":"SUCCESS","fromAsset":"BTC",
+                  "fromAmount":"1.0","toAsset":"USDT","toAmount":"95000.5","ratio":"95000.5",
+                  "inverseRatio":"0.0000105","createTime":1704067200000}],
+                  "startTime":1704067200000,"endTime":1704153600000,"limit":100,"moreData":false}"""
+        for flow in (JSON.parse(raw, C.ConvertTradeFlowResponse),
+                     T.to_struct(C.ConvertTradeFlowResponse, JSON3.read(raw)))
+            @test flow.startTime == DateTime(2024, 1, 1)
+            @test flow.endTime == DateTime(2024, 1, 2)
+            @test flow.limit == 100
+            @test !flow.moreData
+            @test length(flow.list) == 1
+            trade = flow.list[1]
+            @test trade.orderId == 42
+            @test trade.orderStatus == "SUCCESS"
+            @test (trade.fromAsset, trade.toAsset) == ("BTC", "USDT")
+            @test trade.createTime == DateTime(2024, 1, 1)
+        end
+
+        raw = """{"quoteId":"q1","orderId":42,"orderStatus":"OPEN","fromAsset":"BTC",
+                  "fromAmount":"1.0","toAsset":"USDT","toAmount":"100000","ratio":"100000",
+                  "inverseRatio":"0.00001","createTime":1704067200000,
+                  "expiredTimestamp":1704153600000}"""
+        order = JSON.parse(raw, C.ConvertLimitOrder)
+        @test order == T.to_struct(C.ConvertLimitOrder, JSON3.read(raw))
+        @test order.createTime == DateTime(2024, 1, 1)
+        @test order.expiredTimestamp == DateTime(2024, 1, 2)
+    end
+
     @testset "OrderBookManager helper types" begin
         pq = Binance.OrderBookManagers.PriceQuantity(100.0, 1.0)
         @test pq.price == 100.0

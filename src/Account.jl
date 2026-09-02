@@ -1,8 +1,8 @@
 module Account
 
-    using JSON3, StructTypes, Dates, Printf
+    using JSON3, Dates, Printf
     using ..RESTAPI
-    using ..Types: DecimalInput, to_decimal_string, to_struct
+    using ..Types: DecimalInput, to_decimal_string, to_struct, @binance_struct
     
     export get_account_info, get_account_status, get_api_trading_status,
         get_api_key_permission, get_withdraw_history, get_deposit_history,
@@ -20,17 +20,20 @@ module Account
         buyer::String
         seller::String
     end
-    StructTypes.StructType(::Type{CommissionRates}) = StructTypes.Struct()
 
-    struct Balance
+    # Amounts arrive as decimal strings but are arithmetic here (the strategy layer
+    # compares them against order sizes), so they are parsed on the way in and
+    # written back as strings.
+    @binance_struct struct Balance
         asset::String
-        free::Float64
-        locked::Float64
+        free::Float64 &DECIMAL_STR
+        locked::Float64 &DECIMAL_STR
     end
-    StructTypes.StructType(::Type{Balance}) = StructTypes.CustomStruct()
-    StructTypes.lower(b::Balance) = (asset=b.asset, free=string(b.free), locked=string(b.locked))
-    StructTypes.construct(::Type{Balance}, obj) = Balance(obj["asset"], parse(Float64, obj["free"]), parse(Float64, obj["locked"]))
 
+    # The hand-written lower/construct pair this replaces only recursed into
+    # `commissionRates` and `balances` by hand; Balance's own field tags now cover
+    # both directions. `updateTime` stays an `Int64` because callers pass it
+    # straight back to the API.
     struct AccountInfo
         makerCommission::Int
         takerCommission::Int
@@ -49,43 +52,6 @@ module Account
         permissions::Vector{String}
         uid::Int64
     end
-    StructTypes.StructType(::Type{AccountInfo}) = StructTypes.CustomStruct()
-    StructTypes.lower(info::AccountInfo) = (
-        makerCommission=info.makerCommission,
-        takerCommission=info.takerCommission,
-        buyerCommission=info.buyerCommission,
-        sellerCommission=info.sellerCommission,
-        commissionRates=info.commissionRates,
-        canTrade=info.canTrade,
-        canWithdraw=info.canWithdraw,
-        canDeposit=info.canDeposit,
-        brokered=info.brokered,
-        requireSelfTradePrevention=info.requireSelfTradePrevention,
-        preventSor=info.preventSor,
-        updateTime=info.updateTime,
-        accountType=info.accountType,
-        balances=[StructTypes.lower(b) for b in info.balances],
-        permissions=info.permissions,
-        uid=info.uid
-    )
-    StructTypes.construct(::Type{AccountInfo}, obj) = AccountInfo(
-        obj["makerCommission"],
-        obj["takerCommission"],
-        obj["buyerCommission"],
-        obj["sellerCommission"],
-        to_struct(CommissionRates, obj["commissionRates"]),
-        obj["canTrade"],
-        obj["canWithdraw"],
-        obj["canDeposit"],
-        obj["brokered"],
-        obj["requireSelfTradePrevention"],
-        obj["preventSor"],
-        obj["updateTime"],
-        obj["accountType"],
-        to_struct(Vector{Balance}, obj["balances"]),
-        Vector{String}(obj["permissions"]),
-        obj["uid"]
-    )
 
     struct RateLimit
         rateLimitType::String
@@ -94,7 +60,6 @@ module Account
         limit::Int
         count::Int
     end
-    StructTypes.StructType(::Type{RateLimit}) = StructTypes.Struct()
 
     struct AccountStatusResponse
         info::AccountInfo
@@ -117,7 +82,6 @@ module Account
         isMaker::Bool
         isBestMatch::Bool
     end
-    StructTypes.StructType(::Type{Trade}) = StructTypes.Struct()
 
     struct PreventedMatch
         symbol::String
@@ -130,7 +94,6 @@ module Account
         makerPreventedQuantity::String
         transactTime::Int64
     end
-    StructTypes.StructType(::Type{PreventedMatch}) = StructTypes.Struct()
 
     struct Allocation
         symbol::String
@@ -148,7 +111,6 @@ module Account
         isMaker::Bool
         isAllocator::Bool
     end
-    StructTypes.StructType(::Type{Allocation}) = StructTypes.Struct()
 
     struct Discount
         enabledForAccount::Bool
@@ -156,7 +118,6 @@ module Account
         discountAsset::String
         discount::String
     end
-    StructTypes.StructType(::Type{Discount}) = StructTypes.Struct()
 
     struct CommissionRatesDetails
         symbol::String
@@ -165,7 +126,6 @@ module Account
         taxCommission::CommissionRates
         discount::Discount
     end
-    StructTypes.StructType(::Type{CommissionRatesDetails}) = StructTypes.Struct()
 
     struct OrderAmendment
         symbol::String
@@ -177,7 +137,6 @@ module Account
         newQty::String
         time::Int64
     end
-    StructTypes.StructType(::Type{OrderAmendment}) = StructTypes.Struct()
 
     # Show method for AccountInfo
     function Base.show(io::IO, ::MIME"text/plain", info::AccountInfo)

@@ -129,17 +129,18 @@ end
 
 # ===================== JSON 字段 tag =====================
 #
-# Binance sends every timestamp as unix milliseconds, but StructUtils' stock
-# `lift` for `DateTime` only accepts ISO strings. Such fields therefore carry an
-# explicit lift/lower tag.
+# Two wire conventions need per-field conversion, and neither matches the stock
+# `lift`: timestamps arrive as unix milliseconds (`lift(DateTime, ...)` only
+# accepts ISO strings) and decimals arrive as strings (to avoid Float64 rounding
+# on the exchange side).
 #
 # `@tags` splices field tags at lowering time and requires a *literal* named
 # tuple: a `const` binding parses as a bare `Symbol` and trips
 # `FieldExpr`'s `Union{None,Expr}` conversion. `@binance_struct` exists to avoid
-# repeating the same closure pair on every timestamp field — it rewrites
-# `&UNIX_MS` into the literal tag before handing the definition to `@tags`.
+# repeating the same closure pair on every such field — it rewrites the shorthand
+# name into the literal tag before handing the definition to `@tags`.
 #
-# The tag is deliberately *not* namespaced under `json=(...)`: an un-namespaced
+# The tags are deliberately *not* namespaced under `json=(...)`: an un-namespaced
 # tag is visible to `StructUtils.make` as well as `JSON.parse`, which is what
 # lets `to_struct` keep working on already-materialized responses during the
 # migration.
@@ -148,10 +149,16 @@ end
 # fields keep the stock ISO-string behaviour, unlike a global
 # `StructUtils.lift(::Type{DateTime}, ::Number)` method, which would hijack
 # every package's `DateTime` parsing.
-const UNIX_MS_TAG = :((lift = x -> unix2datetime(x / 1000),
-                       lower = d -> Int64(round(datetime2unix(d) * 1000))))
+const FIELD_TAG_SHORTHANDS = Dict{Symbol,Expr}(
+    :UNIX_MS => :((lift = x -> unix2datetime(x / 1000),
+                   lower = d -> Int64(round(datetime2unix(d) * 1000)))),
+    # A decimal string on the wire, a Float64 in the struct. Only for fields
+    # where the value is arithmetic (a balance, a price level); fields kept as
+    # `String` on purpose — to hand back to the API byte-for-byte — stay untagged.
+    :DECIMAL_STR => :((lift = x -> parse(Float64, x), lower = string)),
+)
 
-# `(name="E",)` and `UNIX_MS` on the same field must end up as one literal named
+# `(name="E",)` and a shorthand on the same field must end up as one literal named
 # tuple: `@tags` reads a single tags expression per field, so chained `&` has to
 # be flattened rather than nested.
 _merge_tag_tuples(a::Expr, b::Expr) = Expr(:tuple, a.args..., b.args...)
@@ -161,14 +168,16 @@ function _splice_field_tags(ex::Expr)
     # `field::T &UNIX_MS` parses as Expr(:call, :&, :(field::T), :UNIX_MS);
     # `field::T &(name="E",) &UNIX_MS` nests another `&` call on the left.
     if ex.head === :call && length(ex.args) == 3 &&
-       ex.args[1] === :& && ex.args[3] === :UNIX_MS
+       ex.args[1] === :& && ex.args[3] isa Symbol &&
+       haskey(FIELD_TAG_SHORTHANDS, ex.args[3])
+        tag = copy(FIELD_TAG_SHORTHANDS[ex.args[3]])
         inner = ex.args[2]
         if inner isa Expr && inner.head === :call && length(inner.args) == 3 &&
            inner.args[1] === :&
             return Expr(:call, :&, _splice_field_tags(inner.args[2]),
-                        _merge_tag_tuples(inner.args[3], copy(UNIX_MS_TAG)))
+                        _merge_tag_tuples(inner.args[3], tag))
         end
-        return Expr(:call, :&, _splice_field_tags(inner), copy(UNIX_MS_TAG))
+        return Expr(:call, :&, _splice_field_tags(inner), tag)
     end
     return Expr(ex.head, map(_splice_field_tags, ex.args)...)
 end
@@ -176,8 +185,9 @@ end
 """
     @binance_struct struct T ... end
 
-`StructUtils.@tags` with `&UNIX_MS` expanded into the unix-milliseconds
-timestamp tag. Use it for any response struct with `DateTime` fields.
+`StructUtils.@tags` with the shorthands in `FIELD_TAG_SHORTHANDS` expanded:
+`&UNIX_MS` for a unix-milliseconds timestamp and `&DECIMAL_STR` for a decimal
+carried as a JSON string. Both may be combined with a `&(name="...",)` rename.
 """
 macro binance_struct(expr)
     return esc(Expr(:macrocall, GlobalRef(StructUtils, Symbol("@tags")),

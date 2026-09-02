@@ -43,9 +43,9 @@ See: https://developers.binance.com/docs/convert
 """
 module Convert
 
-using JSON3, StructTypes, Dates
+using JSON3, Dates
 using ..RESTAPI
-using ..Types: DecimalInput, to_decimal_string, to_struct
+using ..Types: DecimalInput, to_decimal_string, to_struct, @binance_struct
 
 export convert_exchange_info, convert_asset_info, convert_get_quote, convert_accept_quote,
     convert_order_status, convert_trade_flow, convert_limit_place_order,
@@ -125,7 +125,6 @@ struct ConvertPair
     toAssetMinAmount::String
     toAssetMaxAmount::String
 end
-StructTypes.StructType(::Type{ConvertPair}) = StructTypes.Struct()
 
 function Base.show(io::IO, p::ConvertPair)
     print(io, "ConvertPair: ", p.fromAsset, " → ", p.toAsset,
@@ -143,7 +142,6 @@ struct ConvertAssetInfo
     asset::String
     fraction::Int
 end
-StructTypes.StructType(::Type{ConvertAssetInfo}) = StructTypes.Struct()
 
 function Base.show(io::IO, a::ConvertAssetInfo)
     print(io, "ConvertAssetInfo: ", a.asset, " (", a.fraction, " decimals)")
@@ -160,23 +158,14 @@ Quote response from getQuote endpoint.
 - `toAmount::String`: Amount to receive after conversion
 - `fromAmount::String`: Amount to be debited for conversion
 """
-struct ConvertQuote
+@binance_struct struct ConvertQuote
     quoteId::String
     ratio::String
     inverseRatio::String
-    validTimestamp::DateTime
+    validTimestamp::DateTime &UNIX_MS
     toAmount::String
     fromAmount::String
 end
-StructTypes.StructType(::Type{ConvertQuote}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{ConvertQuote}, obj) = ConvertQuote(
-    obj["quoteId"],
-    obj["ratio"],
-    obj["inverseRatio"],
-    unix2datetime(obj["validTimestamp"] / 1000),
-    obj["toAmount"],
-    obj["fromAmount"]
-)
 
 function Base.show(io::IO, q::ConvertQuote)
     println(io, "ConvertQuote:")
@@ -194,17 +183,11 @@ Response from acceptQuote endpoint.
 - `createTime::DateTime`: Order creation time
 - `orderStatus::String`: Order status (PROCESS, ACCEPT_SUCCESS, SUCCESS, FAIL)
 """
-struct ConvertAcceptQuote
+@binance_struct struct ConvertAcceptQuote
     orderId::String
-    createTime::DateTime
+    createTime::DateTime &UNIX_MS
     orderStatus::String
 end
-StructTypes.StructType(::Type{ConvertAcceptQuote}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{ConvertAcceptQuote}, obj) = ConvertAcceptQuote(
-    obj["orderId"],
-    unix2datetime(obj["createTime"] / 1000),
-    obj["orderStatus"]
-)
 
 function Base.show(io::IO, a::ConvertAcceptQuote)
     print(io, "ConvertAcceptQuote: Order ", a.orderId, " - ", a.orderStatus, " at ", a.createTime)
@@ -224,7 +207,7 @@ Order status response from orderStatus endpoint.
 - `inverseRatio::String`: Inverse conversion ratio
 - `createTime::DateTime`: Order creation time
 """
-struct ConvertOrderStatus
+@binance_struct struct ConvertOrderStatus
     orderId::Int64
     orderStatus::String
     fromAsset::String
@@ -233,20 +216,8 @@ struct ConvertOrderStatus
     toAmount::String
     ratio::String
     inverseRatio::String
-    createTime::DateTime
+    createTime::DateTime &UNIX_MS
 end
-StructTypes.StructType(::Type{ConvertOrderStatus}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{ConvertOrderStatus}, obj) = ConvertOrderStatus(
-    obj["orderId"],
-    obj["orderStatus"],
-    obj["fromAsset"],
-    obj["fromAmount"],
-    obj["toAsset"],
-    obj["toAmount"],
-    obj["ratio"],
-    obj["inverseRatio"],
-    unix2datetime(obj["createTime"] / 1000)
-)
 
 function Base.show(io::IO, s::ConvertOrderStatus)
     println(io, "ConvertOrderStatus:")
@@ -271,7 +242,7 @@ Trade flow record from tradeFlow endpoint.
 - `inverseRatio::String`: Inverse conversion ratio
 - `createTime::DateTime`: Order creation time
 """
-struct ConvertTradeFlow
+@binance_struct struct ConvertTradeFlow
     quoteId::String
     orderId::Int64
     orderStatus::String
@@ -281,21 +252,8 @@ struct ConvertTradeFlow
     toAmount::String
     ratio::String
     inverseRatio::String
-    createTime::DateTime
+    createTime::DateTime &UNIX_MS
 end
-StructTypes.StructType(::Type{ConvertTradeFlow}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{ConvertTradeFlow}, obj) = ConvertTradeFlow(
-    obj["quoteId"],
-    obj["orderId"],
-    obj["orderStatus"],
-    obj["fromAsset"],
-    obj["fromAmount"],
-    obj["toAsset"],
-    obj["toAmount"],
-    obj["ratio"],
-    obj["inverseRatio"],
-    unix2datetime(obj["createTime"] / 1000)
-)
 
 function Base.show(io::IO, t::ConvertTradeFlow)
     print(io, "ConvertTradeFlow: ", t.orderId, " ", t.fromAsset, " ", t.fromAmount, " → ", t.toAsset, " ", t.toAmount, " (", t.orderStatus, ")")
@@ -311,21 +269,13 @@ Trade flow response containing list of trades and pagination info.
 - `limit::Int`: Number of records returned
 - `moreData::Bool`: Whether more data is available
 """
-struct ConvertTradeFlowResponse
+@binance_struct struct ConvertTradeFlowResponse
     list::Vector{ConvertTradeFlow}
-    startTime::DateTime
-    endTime::DateTime
+    startTime::DateTime &UNIX_MS
+    endTime::DateTime &UNIX_MS
     limit::Int
     moreData::Bool
 end
-StructTypes.StructType(::Type{ConvertTradeFlowResponse}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{ConvertTradeFlowResponse}, obj) = ConvertTradeFlowResponse(
-    to_struct(Vector{ConvertTradeFlow}, obj["list"]),
-    unix2datetime(obj["startTime"] / 1000),
-    unix2datetime(obj["endTime"] / 1000),
-    obj["limit"],
-    obj["moreData"]
-)
 
 function Base.show(io::IO, r::ConvertTradeFlowResponse)
     println(io, "ConvertTradeFlowResponse:")
@@ -352,7 +302,7 @@ Limit order for Convert API (from queryOpenOrders endpoint).
 - `createTime::DateTime`: Order creation time
 - `expiredTimestamp::DateTime`: Order expiration time
 """
-struct ConvertLimitOrder
+@binance_struct struct ConvertLimitOrder
     quoteId::String
     orderId::Int64
     orderStatus::String
@@ -362,23 +312,9 @@ struct ConvertLimitOrder
     toAmount::String
     ratio::String
     inverseRatio::String
-    createTime::DateTime
-    expiredTimestamp::DateTime
+    createTime::DateTime &UNIX_MS
+    expiredTimestamp::DateTime &UNIX_MS
 end
-StructTypes.StructType(::Type{ConvertLimitOrder}) = StructTypes.CustomStruct()
-StructTypes.construct(::Type{ConvertLimitOrder}, obj) = ConvertLimitOrder(
-    obj["quoteId"],
-    obj["orderId"],
-    obj["orderStatus"],
-    obj["fromAsset"],
-    obj["fromAmount"],
-    obj["toAsset"],
-    obj["toAmount"],
-    obj["ratio"],
-    obj["inverseRatio"],
-    unix2datetime(obj["createTime"] / 1000),
-    unix2datetime(obj["expiredTimestamp"] / 1000)
-)
 
 function Base.show(io::IO, o::ConvertLimitOrder)
     println(io, "ConvertLimitOrder:")
@@ -401,7 +337,6 @@ struct ConvertLimitPlaceOrderResponse
     orderId::Int64
     status::String
 end
-StructTypes.StructType(::Type{ConvertLimitPlaceOrderResponse}) = StructTypes.Struct()
 
 function Base.show(io::IO, r::ConvertLimitPlaceOrderResponse)
     print(io, "ConvertLimitPlaceOrderResponse: Order ", r.orderId, " - ", r.status)
