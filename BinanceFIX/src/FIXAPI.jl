@@ -43,6 +43,8 @@ export is_list_cancel_reject
 export is_list_executing, is_list_all_done, is_list_rejected
 export is_list_response, is_list_exec_started, is_list_updated
 export is_oco_list, is_oto_list, get_list_error_info, get_list_order_count
+# 取代被移除的 `ListStatusMsg.symbol` 字段（Binance 2026-09-02 从 schema 删除顶层 Symbol 55）
+export get_list_symbol
 
 # =============================================================================
 # Session Types
@@ -245,7 +247,9 @@ struct ListStatusOrder
 end
 
 struct ListStatusMsg
-    symbol::String                 # Symbol (55)
+    # 注：无顶层 Symbol (55)。Binance 早已停发该字段（2026-09-02 从 QuickFIX schema
+    # 与文档中正式移除）；交易对在每个 `orders` 条目里。若某个网关仍发，
+    # 它依旧会落在 `raw_fields[TAG_SYMBOL]`。
     list_id::String                # ListID (66)
     cl_list_id::String             # ClListID (25014)
     orig_cl_list_id::String        # OrigClListID (25015)
@@ -665,6 +669,22 @@ end
 Get the number of orders in the list.
 """
 get_list_order_count(msg::ListStatusMsg) = length(msg.orders)
+
+"""
+    get_list_symbol(msg::ListStatusMsg) -> String
+
+The symbol the order list trades, taken from its first order entry; `""` when the
+message carries no `NoOrders` (73) group.
+
+Replaces the removed `ListStatusMsg.symbol` field. Binance stopped sending the
+top-level Symbol (55) and removed it from the QuickFIX schema on 2026-09-02;
+the symbol now only appears inside each order entry. All legs of an OCO/OTO/OTOCO
+list trade the same symbol, so the first entry is representative.
+
+A rejected list can legitimately arrive with an empty group (nothing was placed),
+which is why this returns `""` instead of throwing.
+"""
+get_list_symbol(msg::ListStatusMsg) = isempty(msg.orders) ? "" : msg.orders[1].symbol
 
 # =============================================================================
 # OrderAmendReject Helper Functions
@@ -3244,6 +3264,11 @@ end
 
 Parse a ListStatus (MsgType=N) message from raw FIX message string.
 This properly handles nested repeating groups by parsing the raw message.
+
+There is no top-level Symbol (55): the exchange stopped sending it well before it
+was removed from the QuickFIX schema and the field table on 2026-09-02. Every
+tag 55 in the message therefore belongs to a `NoOrders` (73) entry, where it also
+serves as the entry delimiter.
 """
 function parse_list_status(msg::String)
     # Split message into fields
@@ -3251,7 +3276,6 @@ function parse_list_status(msg::String)
 
     # Basic fields
     fields = Dict{Int,String}()
-    symbol = ""
     list_id = ""
     cl_list_id = ""
     orig_cl_list_id = ""
@@ -3294,9 +3318,7 @@ function parse_list_status(msg::String)
         fields[tag] = value
 
         # Parse top-level fields
-        if tag == TAG_SYMBOL && !in_orders_group
-            symbol = value
-        elseif tag == TAG_LIST_ID
+        if tag == TAG_LIST_ID
             list_id = value
         elseif tag == TAG_CL_LIST_ID
             cl_list_id = value
@@ -3388,7 +3410,6 @@ function parse_list_status(msg::String)
     end
 
     return ListStatusMsg(
-        symbol,
         list_id,
         cl_list_id,
         orig_cl_list_id,

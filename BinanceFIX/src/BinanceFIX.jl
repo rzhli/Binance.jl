@@ -202,6 +202,8 @@ export is_list_cancel_reject
 export is_list_executing, is_list_all_done, is_list_rejected
 export is_list_response, is_list_exec_started, is_list_updated
 export is_oco_list, is_oto_list, get_list_error_info, get_list_order_count
+# 取代被移除的 `ListStatusMsg.symbol` 字段（Binance 2026-09-02 从 schema 删除顶层 Symbol 55）
+export get_list_symbol
 
 # =============================================================================
 # Re-export FIXSBEDecoder types and functions

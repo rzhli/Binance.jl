@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-04
+
+Sync with Binance API changelog 2026-09-02 (FIX API schema update).
+
+### Removed — BinanceFIX
+- **`symbol` field on `ListStatusMsg`** — Binance removed the top-level
+  `Symbol (55)` from `ListStatus <N>` in the QuickFIX order-entry schema and the
+  API documentation; per the earlier announcement, the server had already
+  stopped sending it. The documented sample message lost the field too
+  (BodyLength 293 → 282).
+
+  `get_list_symbol(msg)` replaces the field. It returns the symbol of the first
+  `NoOrders` (73) entry, or `""` when the group is empty (a rejected list may
+  have placed nothing). Every leg of an OCO/OTO/OTOCO list trades the same
+  symbol, so the first entry is representative. A gateway that still sends the
+  legacy field can read it from `raw_fields[TAG_SYMBOL]`.
+
+  `SBEListStatus` (template 102) was unaffected — the binary layout never had a
+  top-level symbol.
+
+### Fixed — BinanceFIX
+- **`parse_list_status` no longer needs the top-level Symbol to be absent** —
+  the parser used tag 55 as the `NoOrders` entry delimiter while also reading it
+  as the top-level symbol, distinguished only by group state. Removing the
+  top-level read makes the delimiter unambiguous, so both the current and the
+  legacy message shape parse to the same order list.
+
+### Tests — BinanceFIX
+- `test_list_status.jl` uses the 2026-09-02 sample message, asserts
+  `ListStatusMsg` has no `symbol` property, and adds coverage for the legacy
+  shape (top-level Symbol present) and for `get_list_symbol` on an empty order
+  group. 142 → 152 tests.
+
+### Notes
+- **BinanceFIX 0.6.0** — minor bump rather than patch: removing a public struct
+  field is a breaking change for callers that read `ListStatusMsg.symbol`.
+- No changes to the `Binance` package itself; its 398 tests are unaffected.
+
 ## [0.13.0] - 2026-09-02
 
 ### Changed

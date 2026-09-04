@@ -12,6 +12,17 @@ BinanceFIX.jl provides complete FIX protocol support for Binance Spot trading:
 
 ## Recent Updates
 
+### v0.6.0 - Changelog Sync 2026-09-02
+
+- **Top-level `Symbol (55)` removed from `ListStatus <N>`** — Binance removed the
+  field from the QuickFIX order-entry schema and the API docs; as the earlier
+  announcement stated, the server had already stopped sending it. The
+  `ListStatusMsg.symbol` field is gone. Use `get_list_symbol(msg)`, which reads
+  the symbol from the first `NoOrders` (73) entry — all legs of an
+  OCO/OTO/OTOCO list trade the same symbol. The parser no longer treats a
+  top-level tag 55 as a group delimiter, so a gateway that still sends it
+  parses correctly instead of producing a phantom first order.
+
 ### v0.5.0 - Session concurrency and SBE hardening
 
 - **Safe session lifecycle** — Text FIX and FIX SBE sockets, sequence state,

@@ -24,6 +24,20 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.14.0 - FIX ListStatus schema sync (2026-09-02)
+
+- **`ListStatusMsg.symbol` removed** — Binance dropped the top-level
+  `Symbol (55)` from `ListStatus <N>` in the QuickFIX order-entry schema and the
+  API docs; the server had already stopped sending it. Use
+  `get_list_symbol(msg)`, which reads the symbol from the first `NoOrders` (73)
+  entry — every leg of an OCO/OTO/OTOCO list trades the same symbol. A gateway
+  that still sends the legacy field can read it from `raw_fields[TAG_SYMBOL]`.
+- **More robust group parsing** — tag 55 previously served double duty as both
+  the top-level symbol and the `NoOrders` entry delimiter, told apart only by
+  parser state. Dropping the top-level read removes the ambiguity, so the
+  current and legacy message shapes now parse identically.
+- BinanceFIX 0.6.0; the `Binance` package itself is unchanged.
+
 ### v0.13.0 - JSON.jl 1.x
 
 - **Replaced JSON3.jl and StructTypes.jl with JSON.jl 1.x** — JSON3 is marked
