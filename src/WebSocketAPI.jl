@@ -4,8 +4,7 @@ module WebSocketAPI
     import HTTP.WebSockets
 
     using ..Config, ..Signature, ..Types, ..Filters, ..RESTAPI, ..RateLimiter, ..Account, ..Events, ..Errors
-    using ..RateLimiter: backoff_delay
-    using ..RateLimits: EndpointCost, ws_method_cost
+    using ..RateLimiter: backoff_delay, EndpointCost, ws_method_cost
 
     # Binance pings the WebSocket API connection roughly every 20 seconds, and the
     # client additionally sends its own ping frame every `heartbeat_interval`

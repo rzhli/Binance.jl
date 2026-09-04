@@ -4,7 +4,7 @@ module RESTAPI
     using ..Config
     using ..Signature
     using ..RateLimiter
-    using ..RateLimits: EndpointCost, endpoint_cost
+    using ..RateLimiter: EndpointCost, endpoint_cost
     using ..Signature: HMAC_SHA256, ED25519, RSA
     using ..Types
     using ..Filters

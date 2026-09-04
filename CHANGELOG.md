@@ -16,13 +16,13 @@ for `convert/getQuote`, 250 for a full-depth snapshot, 3000 for
 had used 0.5% of it, which is how a strategy walks into a 429 and then an IP ban.
 
 ### Added
-- **`RateLimits` module** — per-endpoint `EndpointCost` (request weight, unfilled
-  order count, and whether success is free) transcribed from `rest-api.md`,
-  `web-socket-api.md` and the 2026-04-02 changelog. Covers REST, WebSocket API and
-  SAPI, including the endpoints whose weight depends on parameters: `depth`
-  (5/25/50/250 by limit), the ticker family (by symbol count, capped at 200),
-  `openOrders` (6 with a symbol, 80 without), `myTrades` (5 with `orderId`, 20
-  without), `myPreventedMatches`, `executionRules`, and `order/test`
+- **Per-endpoint cost tables in `RateLimiter`** — `EndpointCost` (request weight,
+  unfilled order count, and whether success is free) transcribed from
+  `rest-api.md`, `web-socket-api.md` and the 2026-04-02 changelog. Covers REST,
+  WebSocket API and SAPI, including the endpoints whose weight depends on
+  parameters: `depth` (5/25/50/250 by limit), the ticker family (by symbol count,
+  capped at 200), `openOrders` (6 with a symbol, 80 without), `myTrades` (5 with
+  `orderId`, 20 without), `myPreventedMatches`, `executionRules`, and `order/test`
   (20 with `computeCommissionRates`). Unknown endpoints charge 20 rather than 1,
   because under-charging is what causes bans.
 - **`shared_rate_limiter(config)`** — one limiter per `(testnet, api_key)`.

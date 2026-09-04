@@ -29,7 +29,7 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 - **`REQUEST_WEIGHT` now counts weight, not requests** — the limiter charged one
   unit per call, so 30 `convert/getQuote` requests (weight 200 each) registered as
   30/6000 while the exchange had already charged the full 6000. Every endpoint's
-  documented weight now lives in `RateLimits.jl`, including the ones that vary
+  documented weight now lives in `RateLimiter.jl`, including the ones that vary
   with parameters (`depth` limit, symbol counts, `computeCommissionRates`).
 - **Order endpoints classified by method, not substring** —
   `occursin("/api/v3/order", endpoint)` treated `GET /api/v3/order` as an order
@@ -386,8 +386,7 @@ Binance.jl/
 │   │  # REST API
 │   ├── RESTAPI.jl              # REST endpoints implementation
 │   ├── Account.jl              # Account-related utilities
-│   ├── RateLimiter.jl          # Sliding-window limiter (weight/order-count accounting)
-│   ├── RateLimits.jl           # Per-endpoint request weights and order costs
+│   ├── RateLimiter.jl          # Rate limiting: per-endpoint weights + sliding window
 │   │
 │   │  # WebSocket Streams (JSON)
 │   ├── MarketDataStreams.jl    # WebSocket market data streams

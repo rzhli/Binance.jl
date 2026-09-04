@@ -5,7 +5,6 @@ include("Errors.jl")
 include("Types.jl")
 include("Filters.jl")
 include("Signature.jl")
-include("RateLimits.jl")
 include("RateLimiter.jl")
 include("RESTAPI.jl")
 include("MarketDataStreams.jl")
@@ -25,7 +24,6 @@ using .RESTAPI
 using .MarketDataStreams
 using .SBEMarketDataStreams
 using .WebSocketAPI
-using .RateLimits
 using .RateLimiter
 using .Account
 using .Convert
