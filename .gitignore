@@ -15,6 +15,10 @@ Thumbs.db
 *.swp
 *.swo
 
+# AI coding agent session pointers (local resume IDs, not project content)
+codex.txt
+pi.txt
+
 # Julia temporary files
 *.ji
 *.jll
