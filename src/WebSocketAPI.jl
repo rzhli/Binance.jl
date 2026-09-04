@@ -5,6 +5,7 @@ module WebSocketAPI
 
     using ..Config, ..Signature, ..Types, ..Filters, ..RESTAPI, ..RateLimiter, ..Account, ..Events, ..Errors
     using ..RateLimiter: backoff_delay
+    using ..RateLimits: EndpointCost, ws_method_cost
 
     # Binance pings the WebSocket API connection roughly every 20 seconds, and the
     # client additionally sends its own ping frame every `heartbeat_interval`
@@ -120,7 +121,7 @@ module WebSocketAPI
                 base_url *= "?returnRateLimits=false"
             end
 
-            rate_limiter = BinanceRateLimit(config)
+            rate_limiter = shared_rate_limiter(config)
             client = new(
                 config, signer, base_url, nothing, rate_limiter,
                 Dict{String,Channel{JSON.Object{String,Any}}}(), ReentrantLock(),
@@ -678,21 +679,17 @@ module WebSocketAPI
         )
         ensure_connected!(client)
 
-        # Proactively check rate limits
-        # Order endpoints: successful requests have weight 0 (2026-03-27 update)
-        # Track both ORDERS and RAW_REQUESTS for order methods
-        zero_weight_methods = ("order.place", "sor.order.place", "order.cancel", "openOrders.cancelAll",
-            "order.cancelReplace", "orderList.place", "orderList.place.oco", "orderList.place.oto",
-            "orderList.place.otoco", "orderList.place.opo", "orderList.place.opoco",
-            "orderList.cancel", "order.amend.keepPriority")
-        
-        if method in zero_weight_methods
-            check_and_wait(client.rate_limiter, "ORDERS")
-            check_and_wait(client.rate_limiter, "RAW_REQUESTS")
-        else
-            check_and_wait(client.rate_limiter, "REQUEST_WEIGHT")
-            check_and_wait(client.rate_limiter, "RAW_REQUESTS")
-        end
+        # Charge the documented weight for this method, the unfilled-order count
+        # where it applies, and one RAW_REQUESTS unit.
+        #
+        # The old hardcoded `zero_weight_methods` list charged every non-order
+        # method a flat 1 against REQUEST_WEIGHT, so `exchangeInfo` (20),
+        # `account.status` (20) and `myFilters` (40) all counted as one. It also
+        # skipped REQUEST_WEIGHT entirely for the order methods, which is only
+        # correct when the request succeeds — a failed one is still charged.
+        cost = ws_method_cost(method, params)
+        reservation = check_and_wait(client.rate_limiter, cost)
+        settled = false
 
         # Generate request ID based on specified type
         request_id = if request_id_type == :uuid
@@ -749,13 +746,20 @@ module WebSocketAPI
             end
 
             if response.status == 200
-                # Success - result field is mandatory according to spec
+                # Success — release the weight for the endpoints the exchange stopped
+                # charging on success (2026-04-02). ORDERS and RAW_REQUESTS stand.
+                finalize_request!(reservation, true)
+                settled = true
+                # result field is mandatory according to spec
                 if return_full_response
                     return response
                 end
                 return response.result
             else
-                # Error response - handle accordingly
+                # Failed request: the documented weight is still charged, so the
+                # reservation is left as it stands.
+                finalize_request!(reservation, false)
+                settled = true
                 handle_ws_error(client, response)
             end
 
@@ -763,6 +767,9 @@ module WebSocketAPI
             @error "Failed to send request or receive response: $e"
             rethrow(e)
         finally
+            # A send failure or response timeout may still have reached the
+            # matching engine, so keep the pessimistic charge.
+            settled || finalize_request!(reservation, false)
             # Clean up the response channel
             lock(client.responses_lock) do
                 delete!(client.responses, request_id)

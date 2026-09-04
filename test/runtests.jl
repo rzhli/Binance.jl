@@ -923,18 +923,206 @@ end
         )
         @test length(matching) == 1
         @test only(matching).limit == 7000
+        # The server's `count` is adopted as usage, and as one aggregate charge
+        # rather than 12 identically-dated entries.
+        @test Binance.used_capacity(limiter, "REQUEST_WEIGHT") == (12, 7000)
+        @test length(only(matching).charges) == 1
     end
 
-    @testset "Rate limiter returns after reserving one request" begin
+    @testset "Rate limiter charges the documented weight" begin
+        # Regression: REQUEST_WEIGHT used to count *requests*, so 30 getQuote calls
+        # (weight 200 each) registered as 30/6000 while the exchange had already
+        # charged the full 6000.
+        limiter = Binance.BinanceRateLimit(test_binance_config())
+        cost = Binance.endpoint_cost("POST", "/sapi/v1/convert/getQuote")
+        @test cost.weight == 200
+        for _ in 1:30
+            Binance.RateLimiter.check_and_wait(limiter, cost)
+        end
+        @test Binance.used_capacity(limiter, "REQUEST_WEIGHT") == (6000, 6000)
+        # RAW_REQUESTS still counts one unit per request regardless of weight.
+        @test Binance.used_capacity(limiter, "RAW_REQUESTS")[1] == 30
+    end
+
+    @testset "Query endpoints do not consume the order budget" begin
+        # Regression: `occursin("/api/v3/order", endpoint)` classified
+        # `GET /api/v3/order` as an order placement, so 60 order-status queries
+        # exhausted the 50/10s ORDERS budget and blocked for ten seconds, while
+        # their real weight (4 each) went unrecorded.
+        limiter = Binance.BinanceRateLimit(test_binance_config())
+        params = Dict{String,Any}("symbol" => "BTCUSDT")
+        query = Binance.endpoint_cost("GET", "/api/v3/order", params)
+        @test (query.weight, query.orders) == (4, 0)
+        for _ in 1:60
+            Binance.RateLimiter.check_and_wait(limiter, query)
+        end
+        @test Binance.used_capacity(limiter, "ORDERS", Int64(10_000))[1] == 0
+        @test Binance.used_capacity(limiter, "REQUEST_WEIGHT")[1] == 240
+
+        # POST on the same path is the real thing: costs order count, free on success.
+        place = Binance.endpoint_cost("POST", "/api/v3/order", params)
+        @test (place.weight, place.orders, place.zero_on_success) == (1, 1, true)
+        # Test orders are never placed, so they cost weight but no order count.
+        test_cost = Binance.endpoint_cost("POST", "/api/v3/order/test", params)
+        @test (test_cost.orders, test_cost.zero_on_success) == (0, false)
+    end
+
+    @testset "Successful order placement releases its weight" begin
+        # 2026-04-02: weight becomes 0 when an order request succeeds, but a failed
+        # request is still charged. The reservation is pessimistic and refunded here.
+        for succeeded in (true, false)
+            limiter = Binance.BinanceRateLimit(test_binance_config())
+            cost = Binance.endpoint_cost("POST", "/api/v3/order")
+            reservation = Binance.RateLimiter.check_and_wait(limiter, cost)
+            @test Binance.used_capacity(limiter, "REQUEST_WEIGHT")[1] == 1
+            Binance.RateLimiter.finalize_request!(reservation, succeeded)
+            @test Binance.used_capacity(limiter, "REQUEST_WEIGHT")[1] == (succeeded ? 0 : 1)
+            # The order count is consumed either way — the order was submitted.
+            @test Binance.used_capacity(limiter, "ORDERS", Int64(10_000))[1] == 1
+            @test Binance.used_capacity(limiter, "RAW_REQUESTS")[1] == 1
+        end
+    end
+
+    @testset "Parameter-dependent weights follow the documented tables" begin
+        w(method, endpoint, params=Dict{String,Any}()) =
+            Binance.endpoint_cost(method, endpoint, params).weight
+
+        # depth: 1-100 => 5, 101-500 => 25, 501-1000 => 50, 1001-5000 => 250
+        @test w("GET", "/api/v3/depth", Dict{String,Any}("limit" => 100)) == 5
+        @test w("GET", "/api/v3/depth", Dict{String,Any}("limit" => 500)) == 25
+        @test w("GET", "/api/v3/depth", Dict{String,Any}("limit" => 1000)) == 50
+        @test w("GET", "/api/v3/depth", Dict{String,Any}("limit" => 5000)) == 250
+        # Params reach the limiter already stringified in some call paths.
+        @test w("GET", "/api/v3/depth", Dict{String,Any}("limit" => "5000")) == 250
+
+        # ticker/24hr: 1 symbol => 2, omitted => 80, 21-100 symbols => 40
+        @test w("GET", "/api/v3/ticker/24hr", Dict{String,Any}("symbol" => "BTCUSDT")) == 2
+        @test w("GET", "/api/v3/ticker/24hr") == 80
+        @test w("GET", "/api/v3/ticker/24hr",
+                Dict{String,Any}("symbols" => ["A" for _ in 1:30])) == 40
+
+        # openOrders: 6 for one symbol, 80 without
+        @test w("GET", "/api/v3/openOrders", Dict{String,Any}("symbol" => "BTCUSDT")) == 6
+        @test w("GET", "/api/v3/openOrders") == 80
+
+        # myTrades: 5 with orderId, 20 without
+        @test w("GET", "/api/v3/myTrades", Dict{String,Any}("orderId" => 1)) == 5
+        @test w("GET", "/api/v3/myTrades", Dict{String,Any}("symbol" => "BTCUSDT")) == 20
+
+        # ticker: 4 per symbol capped at 200
+        @test w("GET", "/api/v3/ticker", Dict{String,Any}("symbol" => "BTCUSDT")) == 4
+        @test w("GET", "/api/v3/ticker",
+                Dict{String,Any}("symbols" => ["A" for _ in 1:80])) == 200
+
+        # order/test: 20 only when commission rates are computed
+        @test w("POST", "/api/v3/order/test") == 1
+        @test w("POST", "/api/v3/order/test",
+                Dict{String,Any}("computeCommissionRates" => true)) == 20
+
+        # A heavy SAPI endpoint must not be charged as 1.
+        @test w("GET", "/sapi/v1/convert/tradeFlow") == 3000
+
+        # WebSocket methods share the tables.
+        @test Binance.ws_method_cost("exchangeInfo").weight == 20
+        @test Binance.ws_method_cost("myFilters").weight == 40
+        @test Binance.ws_method_cost("depth", Dict{String,Any}("limit" => 5000)).weight == 250
+        oc = Binance.ws_method_cost("orderList.place.otoco")
+        @test (oc.orders, oc.zero_on_success) == (3, true)
+        @test Binance.ws_method_cost("order.status").orders == 0
+    end
+
+    @testset "Usage is reconciled from response headers" begin
+        # Regression: the REST path never read X-MBX-USED-WEIGHT, so a REST-only
+        # client's tally stayed in the single digits while the server reported 697.
+        limiter = Binance.BinanceRateLimit(test_binance_config())
+        @test Binance.used_capacity(limiter, "REQUEST_WEIGHT")[1] == 0
+
+        Binance.RateLimiter.reconcile_from_headers!(limiter, [
+            "X-Mbx-Used-Weight-1m" => "697",
+            "X-Mbx-Used-Weight" => "697",       # no interval: skipped
+            "Content-Type" => "application/json",
+        ])
+        @test Binance.used_capacity(limiter, "REQUEST_WEIGHT")[1] == 697
+
+        Binance.RateLimiter.reconcile_from_headers!(limiter,
+            ["X-Mbx-Order-Count-10s" => "42"])
+        @test Binance.used_capacity(limiter, "ORDERS", Int64(10_000))[1] == 42
+
+        # Never revise downward: the server figure predates any request issued
+        # since, so trusting a smaller number would double-spend those.
+        Binance.RateLimiter.reconcile_from_headers!(limiter,
+            ["X-Mbx-Used-Weight-1m" => "5"])
+        @test Binance.used_capacity(limiter, "REQUEST_WEIGHT")[1] == 697
+
+        # Unparseable values and unknown intervals are ignored, not fatal.
+        Binance.RateLimiter.reconcile_from_headers!(limiter, [
+            "X-Mbx-Used-Weight-1m" => "not-a-number",
+            "X-Mbx-Used-Weight-7X" => "999",
+        ])
+        @test Binance.used_capacity(limiter, "REQUEST_WEIGHT")[1] == 697
+    end
+
+    @testset "Server limits override the configured ceilings" begin
+        # The configured defaults were below the account's real allowance (50/10s
+        # and 160k/day against 100 and 200k) and nothing corrected them.
+        limiter = Binance.BinanceRateLimit(test_binance_config())
+        @test Binance.used_capacity(limiter, "ORDERS", Int64(10_000))[2] == 50
+
+        Binance.RateLimiter.update_limits!(limiter, JSON.parse("""
+        [{"rateLimitType":"ORDERS","interval":"SECOND","intervalNum":10,"limit":100,"count":0},
+         {"rateLimitType":"ORDERS","interval":"DAY","intervalNum":1,"limit":200000,"count":0},
+         {"rateLimitType":"REQUEST_WEIGHT","interval":"HOUR","intervalNum":1,"limit":50000,"count":7}]
+        """))
+        @test Binance.used_capacity(limiter, "ORDERS", Int64(10_000))[2] == 100
+        @test Binance.used_capacity(limiter, "ORDERS", Int64(86_400_000))[2] == 200000
+        # A limiter the client was not tracking gets adopted rather than dropped.
+        @test Binance.used_capacity(limiter, "REQUEST_WEIGHT", Int64(3_600_000)) == (7, 50000)
+    end
+
+    @testset "Clients with the same credentials share one limiter" begin
+        # REQUEST_WEIGHT/RAW_REQUESTS are per IP and ORDERS per account, so a
+        # process holding a REST and a WebSocket client must charge one budget.
+        config = test_binance_config()
+        @test Binance.shared_rate_limiter(config) === Binance.shared_rate_limiter(config)
+        # A direct construction stays isolated, which is what these tests rely on.
+        @test Binance.BinanceRateLimit(config) !== Binance.shared_rate_limiter(config)
+    end
+
+    @testset "Charges expire off the front of the window" begin
+        # `filter!` rescanned the whole vector on every request (6.8 ms once
+        # RAW_REQUESTS held 300k entries); expiry is a prefix removal.
+        limiter = Binance.BinanceRateLimit(test_binance_config())
+        limit = only(filter(l -> l.limit_type == "ORDERS" && l.interval_ms == 10_000,
+                            limiter.limits))
+
+        Binance.RateLimiter.reserve!(limit, 3)
+        @test (limit.used, length(limit.charges)) == (3, 1)
+
+        # Advancing past the window drops the charge and zeroes the running sum.
+        Binance.RateLimiter.expire_charges!(limit, Dates.now(Dates.UTC) + Dates.Second(11))
+        @test (limit.used, length(limit.charges)) == (0, 0)
+
+        # A cost larger than the entire limit is clamped instead of hanging forever.
+        @test_logs (:warn, r"exceeds the whole limit") Binance.RateLimiter.reserve!(limit, limit.limit + 5)
+        @test limit.used == limit.limit
+    end
+
+    @testset "CONNECTIONS is still charged one unit per attempt" begin
+        # The String form of `check_and_wait` remains for non-weight limiters: a
+        # connection attempt is one unit, not a weighted request.
         limiter = Binance.BinanceRateLimit(test_binance_config())
         connection_limit = only(filter(
             limit -> limit.limit_type == "CONNECTIONS",
             limiter.limits,
         ))
 
-        @test isempty(connection_limit.requests)
-        @test isnothing(Binance.check_and_wait(limiter, "CONNECTIONS"))
-        @test length(connection_limit.requests) == 1
+        @test isempty(connection_limit.charges)
+        reservation = Binance.check_and_wait(limiter, "CONNECTIONS")
+        @test length(connection_limit.charges) == 1
+        @test Binance.used_capacity(limiter, "CONNECTIONS") == (1, 300)
+        # Connections are never refunded, even on a successful handshake.
+        Binance.RateLimiter.finalize_request!(reservation, true)
+        @test Binance.used_capacity(limiter, "CONNECTIONS")[1] == 1
     end
 
     @testset "Reconnect backoff grows and stays jittered within bounds" begin

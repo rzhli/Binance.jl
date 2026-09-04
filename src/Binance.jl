@@ -5,6 +5,7 @@ include("Errors.jl")
 include("Types.jl")
 include("Filters.jl")
 include("Signature.jl")
+include("RateLimits.jl")
 include("RateLimiter.jl")
 include("RESTAPI.jl")
 include("MarketDataStreams.jl")
@@ -24,6 +25,7 @@ using .RESTAPI
 using .MarketDataStreams
 using .SBEMarketDataStreams
 using .WebSocketAPI
+using .RateLimits
 using .RateLimiter
 using .Account
 using .Convert
@@ -82,6 +84,8 @@ orders_all(client::WebSocketClient, args...; kwargs...) = WebSocketAPI.all_order
 # Export client types and configuration
 export RESTClient, MarketDataStreamClient, SBEStreamClient, WebSocketClient, BinanceConfig, BinanceRateLimit
 export close_idle_connections!
+# Rate-limit accounting: per-endpoint weights and the shared per-IP/per-account limiter
+export EndpointCost, endpoint_cost, ws_method_cost, shared_rate_limiter, used_capacity
 
 # Export exception types
 export BinanceException, BinanceError, MalformedRequestError, UnauthorizedError,

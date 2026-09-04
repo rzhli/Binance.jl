@@ -4,6 +4,7 @@ module RESTAPI
     using ..Config
     using ..Signature
     using ..RateLimiter
+    using ..RateLimits: EndpointCost, endpoint_cost
     using ..Signature: HMAC_SHA256, ED25519, RSA
     using ..Types
     using ..Filters
@@ -43,7 +44,10 @@ module RESTAPI
 
         function RESTClient(config_path::String="config.toml")
             config = from_toml(config_path)
-            rate_limiter = BinanceRateLimit(config)
+            # Shared per (testnet, api_key): REQUEST_WEIGHT/RAW_REQUESTS are counted
+            # per IP and ORDERS per account, so a REST client and a WebSocket client
+            # in the same process draw on one budget, not two.
+            rate_limiter = shared_rate_limiter(config)
 
             signer = Signature.create_signer(config)
 
@@ -282,16 +286,18 @@ module RESTAPI
         client::RESTClient, method::String, endpoint::String;
         params::Dict{String,Any}=Dict{String,Any}(), signed::Bool=false
         )
-        # Determine request types for rate limiting
-        # Order endpoints: successful requests have weight 0 (2026-03-27 update)
-        # but failed requests still have documented weight, so we track both
-        is_order_endpoint = occursin("/api/v3/order", endpoint) || occursin("/api/v3/orderList", endpoint) || occursin("/api/v3/sor/order", endpoint)
-        request_types = is_order_endpoint ? ("ORDERS", "RAW_REQUESTS") : ("REQUEST_WEIGHT", "RAW_REQUESTS")
-        
-        # Check all applicable rate limits
-        for request_type in request_types
-            check_and_wait(client.rate_limiter, request_type)
-        end
+        # Charge the documented weight, not one unit per request.
+        #
+        # `endpoint_cost` resolves the per-endpoint weight, the unfilled-order
+        # count, and whether a successful request is free (the 2026-04-02 change to
+        # order placement/cancellation). Deriving the cost from a substring test on
+        # the path — as this used to — both under-charged weight for heavy reads
+        # (`convert/getQuote` is 200, `exchangeInfo` 20, `depth` up to 250) and
+        # wrongly spent the scarce ORDERS budget on plain queries such as
+        # `GET /api/v3/order`.
+        cost = endpoint_cost(method, endpoint, params)
+        reservation = check_and_wait(client.rate_limiter, cost)
+        settled = false
 
         url = get_base_url(client) * endpoint
         body = ""
@@ -360,6 +366,15 @@ module RESTAPI
             end
 
             if response.status in (200, 201, 202)
+                # Adopt the server's own usage counters before anything else can
+                # throw: `X-MBX-USED-WEIGHT-1m` (and `X-MBX-ORDER-COUNT-*` on
+                # successful orders) is the only way a REST-only client learns what
+                # the shared IP has actually spent — including traffic from other
+                # processes behind the same address.
+                reconcile_from_headers!(client.rate_limiter, response.headers)
+                finalize_request!(reservation, true)
+                settled = true
+
                 # Parse straight from the byte buffer: `String(response.body)`
                 # would allocate an extra copy of every payload.
                 #
@@ -370,6 +385,12 @@ module RESTAPI
                 # `response[:field]`, so no call site has to change.
                 return JSON.parse(response.body)
             else
+                # A failed request is still charged the documented weight, so the
+                # reservation stands. Headers are still worth reading: a 429 body
+                # comes with the usage that triggered it.
+                reconcile_from_headers!(client.rate_limiter, response.headers)
+                finalize_request!(reservation, false)
+                settled = true
                 handle_error(client, response)
             end
         catch e
@@ -377,10 +398,16 @@ module RESTAPI
             # from a redirect/SSE edge case, but keep the mapping so error
             # payloads are still translated instead of leaking HTTP types.
             if e isa HTTP.StatusError
+                settled || (finalize_request!(reservation, false); settled = true)
                 handle_error(client, e.response)
             else
                 rethrow(e)
             end
+        finally
+            # A transport-level failure (timeout, connection reset) never reached
+            # the exchange, but there is no way to prove it did not, so keep the
+            # pessimistic charge rather than refunding it.
+            settled || finalize_request!(reservation, false)
         end
     end
 

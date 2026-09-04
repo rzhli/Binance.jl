@@ -55,16 +55,26 @@ proxy = "socks5://127.0.0.1:7891"
   market_data_sbe_full_port = 9022     # fix-md.binance.com:9002
 
 [rate_limiting]
+# Starting ceilings only. The client corrects them from the server's own
+# `rateLimits` array and from the `X-MBX-USED-WEIGHT-*` / `X-MBX-ORDER-COUNT-*`
+# response headers, so a value below the account's real allowance costs a little
+# throughput until the first response and nothing after that.
+#
+# REQUEST_WEIGHT is counted in *weight units*, not requests: a single
+# `convert/getQuote` costs 200 and `GET /api/v3/depth?limit=5000` costs 250.
 # Maximum request weight per minute
 max_request_weight_per_minute = 6000
-# Maximum orders per 10 seconds
+# Maximum orders per 10 seconds ("unfilled order count"; accounts commonly allow 100)
 max_orders_per_10s = 50
-# Maximum orders per day
+# Maximum orders per day (accounts commonly allow 200000)
 max_orders_per_day = 160000
 # Maximum connections per 5 minutes
 max_connections_per_5m = 300
 # Maximum raw requests per 5 minutes (updated 2026-04-02)
 max_raw_requests_per_5m = 300000
+# Ask the WebSocket API to return `rateLimits` on every response. Leaving this on
+# is how a WebSocket-only client learns its true usage; set false to save bandwidth.
+ws_return_rate_limits = true
 
 [logging]
 # Enable debug logging (true/false)

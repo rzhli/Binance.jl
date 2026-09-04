@@ -24,6 +24,34 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.15.0 - Weight-accurate rate limiting
+
+- **`REQUEST_WEIGHT` now counts weight, not requests** — the limiter charged one
+  unit per call, so 30 `convert/getQuote` requests (weight 200 each) registered as
+  30/6000 while the exchange had already charged the full 6000. Every endpoint's
+  documented weight now lives in `RateLimits.jl`, including the ones that vary
+  with parameters (`depth` limit, symbol counts, `computeCommissionRates`).
+- **Order endpoints classified by method, not substring** —
+  `occursin("/api/v3/order", endpoint)` treated `GET /api/v3/order` as an order
+  placement, so 60 order-status queries exhausted the 50-per-10s order budget
+  (blocking for ten seconds) while their real weight went unrecorded. Cost is now
+  keyed on `(method, path)`.
+- **Weight settled against the response** — the 2026-04-02 change makes order
+  placement and cancellation free *on success* but still charged on failure. The
+  limiter reserves the documented weight and releases it once the outcome is known.
+- **Usage reconciled from the server** — REST responses' `X-MBX-USED-WEIGHT-*` and
+  `X-MBX-ORDER-COUNT-*` headers are now read. Previously a REST-only client never
+  learned its real consumption: the server reported 697 used weight while the
+  client's own tally was in single digits.
+- **One limiter per credential** — `REQUEST_WEIGHT`/`RAW_REQUESTS` are per IP and
+  `ORDERS` per account, but each client built its own limiter, so a process running
+  REST and WebSocket together believed it had two full budgets.
+- **Cheaper window maintenance** — expiry is a prefix removal (`popfirst!`) rather
+  than a full `filter!` rescan on every request, which cost 6.8 ms once
+  `RAW_REQUESTS` held 300k entries. Server usage syncs as one aggregate charge
+  instead of thousands of identically-dated entries.
+- 56 new rate-limit tests (398 → 454).
+
 ### v0.14.0 - FIX ListStatus schema sync (2026-09-02)
 
 - **`ListStatusMsg.symbol` removed** — Binance dropped the top-level
@@ -358,7 +386,8 @@ Binance.jl/
 │   │  # REST API
 │   ├── RESTAPI.jl              # REST endpoints implementation
 │   ├── Account.jl              # Account-related utilities
-│   ├── RateLimiter.jl          # API rate limiting logic
+│   ├── RateLimiter.jl          # Sliding-window limiter (weight/order-count accounting)
+│   ├── RateLimits.jl           # Per-endpoint request weights and order costs
 │   │
 │   │  # WebSocket Streams (JSON)
 │   ├── MarketDataStreams.jl    # WebSocket market data streams

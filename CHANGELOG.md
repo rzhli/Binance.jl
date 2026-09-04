@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-04
+
+Rate-limit accounting rewrite. The limiter tracked requests where the exchange
+tracks weight, which made every `REQUEST_WEIGHT` figure wrong — by a factor of 200
+for `convert/getQuote`, 250 for a full-depth snapshot, 3000 for
+`convert/tradeFlow`. A client could exhaust its real allowance while believing it
+had used 0.5% of it, which is how a strategy walks into a 429 and then an IP ban.
+
+### Added
+- **`RateLimits` module** — per-endpoint `EndpointCost` (request weight, unfilled
+  order count, and whether success is free) transcribed from `rest-api.md`,
+  `web-socket-api.md` and the 2026-04-02 changelog. Covers REST, WebSocket API and
+  SAPI, including the endpoints whose weight depends on parameters: `depth`
+  (5/25/50/250 by limit), the ticker family (by symbol count, capped at 200),
+  `openOrders` (6 with a symbol, 80 without), `myTrades` (5 with `orderId`, 20
+  without), `myPreventedMatches`, `executionRules`, and `order/test`
+  (20 with `computeCommissionRates`). Unknown endpoints charge 20 rather than 1,
+  because under-charging is what causes bans.
+- **`shared_rate_limiter(config)`** — one limiter per `(testnet, api_key)`.
+- **`used_capacity(limiter, type, interval_ms=nothing)`** — current consumption,
+  for diagnostics and tests.
+- **`reconcile_from_headers!`** — adopts `X-MBX-USED-WEIGHT-*` and
+  `X-MBX-ORDER-COUNT-*` from REST responses.
+- **`finalize_request!(reservation, succeeded)`** — settles a reservation once the
+  response is known.
+
+### Fixed
+- **Weight accounting** — `REQUEST_WEIGHT` counts weight units. `APILimit` stores
+  `(timestamp, cost)` charges plus an incrementally maintained `used` sum, so a
+  200-weight request occupies 200 of the 6000/minute budget.
+- **Order endpoint classification** — cost is keyed on `(method, path)` instead of
+  a substring test. `GET /api/v3/order` (weight 4, no order count) is no longer
+  billed to the 50-per-10s order budget, where 60 status queries used to block for
+  ten seconds; `POST /api/v3/order` still is. `order/test` and `sor/order/test` are
+  charged weight but no order count, since no order is placed.
+- **Success-dependent weight** — the endpoints changed on 2026-04-02 reserve their
+  documented weight up front and release it on success; a failed request keeps the
+  charge, as documented. Order count and raw requests are never refunded.
+- **REST never reconciled with the server** — `update_limits!` was only reachable
+  from the WebSocket path. REST responses' usage headers are now read on both the
+  success and error paths.
+- **Shared limiters** — `RESTClient` and `WebSocketClient` now draw on one budget
+  per credential instead of one each.
+- **`update_limits!` usage sync** — a server `count` of 5000 pushed 5000 timestamps
+  all bearing the same instant (allocation proportional to the count, and the whole
+  window expiring in one cliff). It is now a single aggregate charge. The function
+  also adopts limiters it was not tracking and mutates ceilings in place, rather
+  than replacing the vector element and leaving concurrent readers holding a
+  detached object.
+- **Window maintenance cost** — `expire_charges!` pops the expired prefix
+  (amortized O(1) per entry) instead of `filter!` rescanning the window on every
+  request, measured at 6.8 ms with 300k `RAW_REQUESTS` entries. Reservation now
+  costs ~2 µs.
+- **Oversized costs** — a cost exceeding the whole limit is clamped with a warning
+  instead of waiting forever for room that cannot exist.
+- **Multi-charge waits** — when a request needs more room than the oldest single
+  charge would free, the limiter waits for enough charges to expire rather than
+  just the first.
+
+### Changed
+- `check_and_wait` returns a `RequestReservation`; it previously returned `nothing`.
+  The `String` form (used for `CONNECTIONS`) still charges one unit.
+- Configured rate-limit values are documented as starting points: the server's
+  `rateLimits` array and the usage headers override them. The shipped defaults were
+  below the real allowance (50/10s and 160k/day against 100 and 200k) with nothing
+  to correct them.
+
+### Tests
+- 56 new rate-limit tests (398 → 454), covering weight accounting, method-keyed
+  costs, success/failure settlement, every parameter-dependent weight table, header
+  reconciliation (including that it never revises downward), server limit
+  overrides, limiter sharing, and window expiry.
+
 ## [0.14.0] - 2026-09-04
 
 Sync with Binance API changelog 2026-09-02 (FIX API schema update).
