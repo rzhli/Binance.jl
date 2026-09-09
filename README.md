@@ -24,6 +24,22 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.16.0 - Connection resilience
+
+- **SBE connects like it means it** — `connect_sbe!` now waits through the
+  configured retries instead of bailing on the first handshake timeout;
+  concurrent callers share one connection task, and `sbe_close_all` interrupts
+  retry backoff and rejects handshakes that land after closing. The default port
+  moves to TLS 443 (9443 opt-in via `port=9443`) for networks that disrupt it.
+- **REST reads survive flaky links** — GET requests retry transient TLS timeouts
+  and truncated HTTP/2 responses up to three times, re-signing and re-reserving
+  rate-limit capacity per attempt. Writes and permanent errors are sent once.
+- **Deferred time sync** — `RESTClient(config; sync_time=false)` plus
+  `synchronize_time!` lets a process reuse an already-connected WebSocket API
+  client's server time instead of a separate REST round trip. Constructors now
+  also accept a `BinanceConfig` directly.
+- **HTTP.jl 2.6.7 or newer is required** for the transport-error classification.
+
 ### v0.15.0 - Weight-accurate rate limiting
 
 - **`REQUEST_WEIGHT` now counts weight, not requests** — the limiter charged one
@@ -322,6 +338,23 @@ order = place_order(rest_client, "BTCUSDT", "BUY", "LIMIT";
 close_idle_connections!(rest_client)  # drop idle pooled connections, stay usable
 close(rest_client)        # subsequent calls raise ArgumentError
 isopen(rest_client)       # false after close
+```
+
+REST `GET` requests make up to three attempts on transient transport failures
+(including TLS timeouts and truncated HTTP/2 responses) or retryable server
+errors. Each attempt signs a fresh timestamp and counts toward the rate limit.
+Trading writes and authentication, validation, or rate-limit errors are not
+automatically retried. Use `get_account_info(rest_client; max_attempts=1)` or
+`Binance.RESTAPI.make_request(...; max_attempts=1)` to disable read retries for a call.
+
+To synchronize through an already-connected WebSocket API client, defer REST
+time synchronization at construction:
+
+```julia
+rest_client = RESTClient("config.toml"; sync_time=false)
+synchronize_time!(rest_client;
+    server_time_provider=() -> Binance.WebSocketAPI.time(ws_client).serverTime)
+# synchronize_time!(rest_client) uses the REST time endpoint instead.
 ```
 
 **WebSocket Market Streams:**

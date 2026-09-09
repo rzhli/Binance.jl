@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-04
+
+Connection resilience for SBE market data and REST reads.
+
+### Fixed
+- SBE startup now waits for the configured connection attempts instead of
+  failing as soon as the first handshake timeout expires. Concurrent callers
+  share one connection task, exhausted retries stop the worker, and shutdown
+  interrupts retry backoff and rejects handshakes that complete after closing.
+- SBE connections default to TLS port 443 for compatibility with networks that
+  disrupt port 9443. `SBEStreamClient(config_path; port=9443)` selects the
+  alternative port explicitly.
+- SBE callbacks registered after the reader starts can invoke newly defined
+  methods, including REPL callbacks. The initial connection no longer sends a
+  new subscription again as an automatic resubscription.
+- REST reads recover from transient TLS timeouts and HTTP/2 truncation with at
+  most three attempts. Retries rebuild signed queries and reserve rate-limit
+  capacity for every attempt; trading writes and permanent API errors are sent
+  once. `max_attempts` on `make_request` and `get_account_info` controls the read
+  attempt limit.
+
+### Added
+- `RESTClient(config; sync_time=false)` and `synchronize_time!` allow applications
+  to defer initial time synchronization and obtain server time from an existing
+  WebSocket API connection. Constructors accept a `BinanceConfig` as well as a
+  configuration path.
+
+### Changed
+- **HTTP.jl 2.6.7 is now the minimum** — the retry policy classifies transport
+  errors through `HTTP.isrecoverable`, which is only public from 2.6.7.
+- SBE tests need `Logging` in the test environment (`[extras]`).
+
+### Tests
+- SBE connection lifecycle is covered offline (38 tests) against in-memory
+  WebSockets with scripted handshake failures, and REST read recovery against a
+  scripted `HTTP.request`. 454 → 518 package tests.
+
 ## [0.15.0] - 2026-09-04
 
 Rate-limit accounting rewrite. The limiter tracked requests where the exchange

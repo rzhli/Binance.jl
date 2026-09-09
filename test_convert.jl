@@ -22,9 +22,9 @@
 # ============================================================================
 
 using Binance, Dates
-
 include("./strategy/Convert.jl")
 using .ConvertStrategy
+
 # Convert.jl 已经 include 了下面这些子模块，直接从它里面取即可。#
 # 只 include 一次，子模块全从它下面取。重复 include 会产生两个同名但不同的
 # 模块对象，后果有两种：
@@ -32,13 +32,13 @@ using .ConvertStrategy
 #   - 两个模块导出同名函数，Julia 拒绝隐式解析，调用时报
 #     `UndefVarError: ... not defined in Main`（提示 two or more modules export
 #     different bindings with this name）。碰到就重启 REPL，或用模块名限定调用。
+
 using .ConvertStrategy.StrategyCommon: create_risk_manager
 using .ConvertStrategy.StrategyAnalysisWorkflow: prepare_strategy_with_analysis,
     print_analysis_summary, daily_support_resistance
 using .ConvertStrategy.TechnicalAnalysis: analyze_multiple_timeframes,
     generate_comprehensive_signal, print_comprehensive_signal,
     load_historical_data, IncrementalIndicators, initialize_from_history!
-
 const CONFIG_FILE = "config.toml"
 
 # ============================================================================
@@ -58,7 +58,7 @@ run_convert_strategy(;
     symbol = "BTCUSDT",
     buy_prices = [55000.0, 50000.0, 45000.0],
     buy_quantities = [1.0, 1.0, 1.0],       # USDT 金额（is_quote_qty=true）
-    sell_prices = [82000.0, 87000.0, 97000.0],
+    sell_prices = [87000.0, 97000.0, 107000.0],
     sell_quote_amounts= [1.0, 1.0, 1.0],
     config_file = CONFIG_FILE,
 )

@@ -199,12 +199,14 @@ module Account
     end
 
     # Existing Functions
-    function get_account_info(client::RESTClient; omitZeroBalances::Union{Bool,Nothing}=nothing)
+    function get_account_info(client::RESTClient; omitZeroBalances::Union{Bool,Nothing}=nothing,
+        max_attempts::Int=3)
         params = Dict{String,Any}()
         if !isnothing(omitZeroBalances)
             params["omitZeroBalances"] = omitZeroBalances
         end
-        response = make_request(client, "GET", "/api/v3/account"; params=params, signed=true)
+        response = make_request(client, "GET", "/api/v3/account";
+            params=params, signed=true, max_attempts=max_attempts)
         return to_struct(AccountInfo, response)
     end
 

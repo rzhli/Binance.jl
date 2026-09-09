@@ -15,7 +15,7 @@ which offer more efficient data transmission compared to JSON streams.
 https://binance-docs.github.io/apidocs/spot/en/#sbe-market-data-streams
 
 # Connection Details
-- Base URL: wss://stream-sbe.binance.com:9443/ws
+- Base URL: wss://stream-sbe.binance.com:443/ws (port 9443 is also supported)
 - Requires Ed25519 API Key in X-MBX-APIKEY header
 - No signature required for public market data
 - Connection valid for 24 hours
@@ -50,7 +50,9 @@ struct SBEStreamCallback{F}
     callback::F
 end
 
-@inline (callback::SBEStreamCallback{F})(data) where {F} = callback.callback(data)
+# A REPL may register a newly defined callback after the reader task starts.
+# Cross the world-age boundary only when entering user code.
+@inline (callback::SBEStreamCallback{F})(data) where {F} = Base.invokelatest(callback.callback, data)
 
 """
 SBE Market Data Stream Client
@@ -77,8 +79,11 @@ mutable struct SBEStreamClient
     request_lock::ReentrantLock
     subscriptions_lock::ReentrantLock
     send_lock::ReentrantLock
+    connection_changed::Threads.Condition
+    connection_error::Union{Exception,Nothing}
 
-    function SBEStreamClient(config_path::String="config.toml")
+    function SBEStreamClient(config_path::String="config.toml"; port::Int=443)
+        port in (443, 9443) || throw(ArgumentError("SBE port must be 443 or 9443"))
         config = from_toml(config_path)
 
         # Verify Ed25519 API key
@@ -86,14 +91,15 @@ mutable struct SBEStreamClient
             @warn "SBE streams require Ed25519 API keys. Current method: $(config.signature_method)"
         end
 
-        # SBE stream base URL
+        # Prefer the standard TLS port; some networks/proxies disrupt 9443.
         ws_base_url = config.testnet ?
-                      "wss://stream-sbe.testnet.binance.vision:9443" :
-                      "wss://stream-sbe.binance.com:9443"
+                      "wss://stream-sbe.testnet.binance.vision:$port" :
+                      "wss://stream-sbe.binance.com:$port"
 
         new(
             config, ws_base_url, nothing, nothing, Dict{String,SBEStreamCallback}(),
             true, 1, ReentrantLock(), ReentrantLock(), ReentrantLock(),
+            Threads.Condition(), nothing,
         )
     end
 end
@@ -128,11 +134,21 @@ end
 
 # Helper function to handle WebSocket session (extracted to avoid code duplication)
 function _handle_sbe_ws_session(client::SBEStreamClient, ws)
-    client.ws_connection = ws
+    # Capture previous subscriptions before waking new subscribers, otherwise
+    # their first SUBSCRIBE can also be sent as an automatic resubscription.
+    streams = subscription_names(client)
+    accepted = lock(client.connection_changed) do
+        # Closing during the handshake must not publish a late connection.
+        client.should_reconnect || return false
+        client.ws_connection = ws
+        client.connection_error = nothing
+        notify(client.connection_changed; all=true)
+        return true
+    end
+    accepted || return nothing
     @info "✅ Connected to SBE Market Data Stream"
 
     # Resubscribe to existing streams
-    streams = subscription_names(client)
     if !isempty(streams)
         @info "Resubscribing to $(length(streams)) streams..."
 
@@ -173,45 +189,69 @@ end
     connect_sbe!(client::SBEStreamClient)
 
 Establish WebSocket connection to SBE stream endpoint with API key authentication.
+
+Wait until a usable connection exists or all configured attempts fail. The
+connection timeout applies to each handshake, including retries. Concurrent
+callers wait on the same connection task. On exhaustion, throw the last error.
 """
 function connect_sbe!(client::SBEStreamClient)
-    # Check if already connected AND connection is still open
-    if !isnothing(client.ws_connection)
-        if !HTTP.WebSockets.isclosed(client.ws_connection)
-            @info "SBE WebSocket already connected"
-            return
-        else
-            # Connection exists but is closed - clear stale reference
-            @debug "Clearing stale SBE WebSocket connection reference"
+    return connect_sbe_with!(HTTP.WebSockets.open, client)
+end
+
+function sbe_connected(client::SBEStreamClient)
+    ws = client.ws_connection
+    return ws !== nothing && !HTTP.WebSockets.isclosed(ws)
+end
+
+# The opener is passed explicitly so the connection lifecycle can be tested
+# with in-memory WebSockets and scripted handshake failures.
+function connect_sbe_with!(open_websocket, client::SBEStreamClient)
+    client.config.max_reconnect_attempts >= 0 ||
+        throw(ArgumentError("max_reconnect_attempts must be >= 0"))
+    return lock(client.connection_changed) do
+        client.should_reconnect && sbe_connected(client) && return nothing
+        if client.ws_task === nothing || istaskdone(client.ws_task)
             client.ws_connection = nothing
+            client.connection_error = nothing
+            client.should_reconnect = true
+            client.ws_task = errormonitor(@async Base.invokelatest(run_sbe_connection!, open_websocket, client))
         end
-    end
 
-    # Check if reconnection task is already running
-    if !isnothing(client.ws_task) && !istaskdone(client.ws_task)
-        @info "SBE WebSocket reconnection already in progress, waiting..."
-        for i in 1:30
-            if !isnothing(client.ws_connection) && !HTTP.WebSockets.isclosed(client.ws_connection)
-                @info "SBE reconnection completed after $(i * 0.5) seconds"
-                return
+        @info "Waiting for SBE WebSocket connection (including configured retries)..."
+        while true
+            if !client.should_reconnect || istaskdone(client.ws_task)
+                client.connection_error === nothing && error("SBE WebSocket connection stopped")
+                throw(client.connection_error)
             end
-            sleep(0.5)
+            sbe_connected(client) && return nothing
+            wait(client.connection_changed)
         end
-        @warn "SBE reconnection did not complete in time"
-        return
     end
+end
 
-    # Reset reconnection flag in case it was disabled by sbe_close_all
-    client.should_reconnect = true
+# A condition notification from sbe_close_all interrupts a backoff immediately.
+function wait_sbe_retry(client::SBEStreamClient, delay::Real)
+    deadline = time_ns() + round(UInt64, max(delay, 0) * 1e9)
+    timer = Timer(max(delay, 0)) do _
+        lock(client.connection_changed) do
+            notify(client.connection_changed; all=true)
+        end
+    end
+    try
+        return lock(client.connection_changed) do
+            while client.should_reconnect && time_ns() < deadline
+                wait(client.connection_changed)
+            end
+            return client.should_reconnect
+        end
+    finally
+        close(timer)
+    end
+end
 
-    # Build connection URL
+function run_sbe_connection!(open_websocket, client::SBEStreamClient)
     uri = client.ws_base_url * "/ws"
-
-    # Prepare headers with API key
-    headers = [
-        "X-MBX-APIKEY" => client.config.api_key
-    ]
-
+    headers = ["X-MBX-APIKEY" => client.config.api_key]
     # Proxy settings: an empty proxy means "follow the standard proxy environment
     # variables" (HTTP.jl's default), not "force direct".
     timeout = network_timeout(client)
@@ -227,73 +267,58 @@ function connect_sbe!(client::SBEStreamClient)
 
     @info "Connecting to SBE stream: $uri"
 
-    client.ws_task = errormonitor(@async begin
-        failures = 0
+    failures = 0
+    try
         while client.should_reconnect
+            failure = nothing
+            failure_backtrace = nothing
             try
                 # Binance SBE streams require the "stream" subprotocol during handshake
-                HTTP.WebSockets.open(uri; open_kwargs...) do ws
+                open_websocket(uri; open_kwargs...) do ws
                     failures = 0
                     _handle_sbe_ws_session(client, ws)
                 end
-
-                if client.should_reconnect
-                    failures += 1
-                    delay = backoff_delay(client.config.reconnect_delay, failures)
-                    @info "SBE WebSocket closed. Reconnecting in $(round(delay, digits=2)) seconds..."
-                    sleep(delay)
-                end
-
             catch e
                 if e isa InterruptException || !client.should_reconnect
-                    @info "SBE WebSocket task stopped"
                     break
                 end
-
-                failures += 1
-                delay = backoff_delay(client.config.reconnect_delay, failures)
-                @error """SBE WebSocket error: $e
-                Connection details:
-                  URI: $uri
-                  Proxy: $(isempty(client.config.proxy) ? "(environment)" : client.config.proxy)
-                  API key configured: $(!isempty(client.config.api_key))
-                Retrying in $(round(delay, digits=2)) seconds (attempt $failures)..."""
-                # Print the full exception for debugging
-                @error "Full error:" exception = (e, catch_backtrace())
-                sleep(delay)
+                failure = e
+                failure_backtrace = catch_backtrace()
+            finally
+                lock(client.connection_changed) do
+                    client.ws_connection = nothing
+                    notify(client.connection_changed; all=true)
+                end
             end
-        end
 
-        client.ws_connection = nothing
+            client.should_reconnect || break
+            failures += 1
+            lock(client.connection_changed) do
+                client.connection_error = failure === nothing ? EOFError() : failure
+            end
+            if failures > client.config.max_reconnect_attempts
+                @error "SBE WebSocket connection attempts exhausted" attempts=failures uri exception=client.connection_error
+                break
+            end
+
+            delay = backoff_delay(client.config.reconnect_delay, failures)
+            if failure === nothing
+                @info "SBE WebSocket closed; reconnecting" retry=failures max_retries=client.config.max_reconnect_attempts delay=round(delay, digits=2)
+            else
+                @warn "SBE WebSocket connection failed; retrying" retry=failures max_retries=client.config.max_reconnect_attempts delay=round(delay, digits=2) uri exception=failure
+                @debug "SBE WebSocket failure details" exception=(failure, failure_backtrace)
+            end
+            wait_sbe_retry(client, delay) || break
+        end
+    finally
+        lock(client.connection_changed) do
+            client.should_reconnect = false
+            client.ws_connection = nothing
+            notify(client.connection_changed; all=true)
+        end
         @info "SBE WebSocket task terminated"
-    end)
-
-    # Wait for connection to establish
-    @info "Waiting for WebSocket connection to establish..."
-    poll_interval = 0.5
-    checks = max(1, ceil(Int, timeout / poll_interval))
-    for i in 1:checks
-        if !isnothing(client.ws_connection)
-            @info "Connection established successfully after $(i * 0.5) seconds"
-            return
-        end
-        sleep(poll_interval)
-        if i % 4 == 0
-            @debug "Still waiting for connection... ($(i * poll_interval)s elapsed)"
-        end
     end
-
-    @error """Failed to establish SBE WebSocket connection after $timeout seconds.
-    Possible reasons:
-      1. Network connectivity issues
-      2. Proxy configuration problem (current: $(isempty(client.config.proxy) ? "(environment)" : client.config.proxy))
-      3. Invalid API key or wrong signature method (current: $(client.config.signature_method))
-      4. Binance SBE service may be unavailable
-
-    Please check:
-      - Your internet connection and proxy settings
-      - That you have a valid Ed25519 API key
-      - The Binance SBE service status"""
+    return nothing
 end
 
 """
@@ -392,7 +417,7 @@ function handle_sbe_message(client::SBEStreamClient, data::Vector{UInt8})
         end
 
     catch e
-        @error "Failed to decode SBE message: $e"
+        @error "Failed to handle SBE message" exception=(e, catch_backtrace())
         @debug "  Data length: $(length(data)) bytes"
         @debug "  First 16 bytes: $(data[1:min(16, length(data))])"
     end
@@ -621,27 +646,32 @@ Close all SBE stream subscriptions and disconnect.
 function sbe_close_all(client::SBEStreamClient)
     @info "Closing all SBE streams..."
 
-    # Unsubscribe from all streams
-    for stream_name in subscription_names(client)
-        sbe_unsubscribe(client, stream_name)
+    # Stop first: an unsubscribe/send error must not leave reconnection running.
+    ws, task = lock(client.connection_changed) do
+        client.should_reconnect = false
+        client.connection_error = nothing
+        notify(client.connection_changed; all=true)
+        (client.ws_connection, client.ws_task)
+    end
+    lock(client.subscriptions_lock) do
+        empty!(client.subscriptions)
     end
 
-    # Stop reconnection
-    client.should_reconnect = false
-
     # Close WebSocket
-    if !isnothing(client.ws_connection)
+    if ws !== nothing
         try
-            close(client.ws_connection)
+            close(ws)
         catch e
             @debug "Error closing WebSocket: $e"
         end
-        client.ws_connection = nothing
     end
 
-    # Wait for task to complete
-    if !isnothing(client.ws_task) && !istaskdone(client.ws_task)
-        wait(client.ws_task)
+    # A callback may close its own client; waiting on that same task deadlocks.
+    if task !== nothing && task !== current_task()
+        wait(task)
+    end
+    lock(client.connection_changed) do
+        client.ws_connection = nothing
     end
 
     @info "All SBE streams closed"

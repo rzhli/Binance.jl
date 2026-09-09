@@ -4,6 +4,7 @@ using Base64
 using Dates
 using HTTP
 using StructUtils
+using URIs
 import JSON
 
 # Plain struct with an unannotated DateTime, used to prove the unix-millis
@@ -1186,20 +1187,226 @@ end
         end
     end
 
-    @testset "REST retry policy never retries rate-limit responses" begin
-        retry_if = Binance.RESTAPI.binance_retry_if
-        request = HTTP.Request("GET", "/api/v3/time")
+    @testset "REST read recovery" begin
+        # The real request pipeline runs against a scripted transport, with
+        # test-only credentials and no network or startup time request.
+        function offline_rest_client()
+            client = Binance.RESTClient(test_binance_config(); sync_time=false)
+            client.rate_limiter = Binance.BinanceRateLimit(client.config)
+            return client
+        end
+        request_with_retries = Binance.RESTAPI.request_with_retries
 
-        # 429/418/403 must be surfaced immediately: HTTP.jl retrying them would
-        # escalate a rate-limit violation into an IP ban.
-        for status in (429, 418, 403)
-            @test retry_if(1, nothing, request, HTTP.Response(status)) === false
+        @testset "HTTP/2 EOF retries rebuild signed queries and charge each attempt" begin
+            client = offline_rest_client()
+            calls = NamedTuple[]
+            params = Dict{String,Any}("omitZeroBalances" => true)
+            scripted_request = function (method, url; kwargs...)
+                push!(calls, (; method, url, options=(; kwargs...)))
+                if length(calls) == 1
+                    # A clock correction while waiting must be picked up by
+                    # the next signature, rather than replaying the old URL.
+                    client.time_offset += 1000
+                    throw(HTTP.ParseError("unexpected EOF while reading HTTP/2 frame payload"))
+                end
+                # HTTP.request returns a buffered byte vector; constructing
+                # HTTP.Response directly would wrap a string in BytesBody.
+                return (status=200, headers=HTTP.Headers(),
+                    body=collect(codeunits("""{"balances":[]}""")))
+            end
+            try
+                result = request_with_retries(scripted_request, client, "GET", "/api/v3/account";
+                    params=params, signed=true, retry_delay=0)
+                @test isempty(result.balances)
+                @test length(calls) == 2
+                @test all(call -> call.options.retry === false, calls)
+                @test all(call -> call.options.redirect === false, calls)
+                @test all(call -> call.options.status_exception === false, calls)
+                queries = [URIs.queryparams(URI(call.url)) for call in calls]
+                @test queries[1]["timestamp"] != queries[2]["timestamp"]
+                @test queries[1]["signature"] != queries[2]["signature"]
+                for (call, query) in zip(calls, queries)
+                    unsigned = String(first(rsplit(URI(call.url).query, "&signature="; limit=2)))
+                    @test query["signature"] == Binance.Signature.sign_message(client.signer, unsigned)
+                    @test query["recvWindow"] == string(client.config.recv_window)
+                end
+                @test params == Dict{String,Any}("omitZeroBalances" => true)
+                weight = Binance.RateLimiter.endpoint_cost("GET", "/api/v3/account", params).weight
+                @test Binance.used_capacity(client.rate_limiter, "REQUEST_WEIGHT")[1] == 2 * weight
+                @test Binance.used_capacity(client.rate_limiter, "RAW_REQUESTS")[1] == 2
+                @test isopen(client)
+            finally
+                close(client)
+            end
         end
 
-        # Everything else defers to HTTP.jl's built-in classification.
-        @test retry_if(1, nothing, request, HTTP.Response(503)) === nothing
-        @test retry_if(1, nothing, request, HTTP.Response(200)) === nothing
-        @test retry_if(1, HTTP.RequestRetryError(EOFError()), request, nothing) === nothing
+        @testset "TLS read deadlines recover within a fixed attempt limit" begin
+            # Reproduce the nested exception from the startup log, alongside
+            # HTTP.jl's public request-timeout form.
+            tls_timeout = HTTP.TLSTransportError(HTTP.TLS.TLSError(
+                "read", 0, "i/o timeout", HTTP.IOPoll.DeadlineExceededError()))
+            for failure in (tls_timeout, HTTP.TimeoutError("request", 1),
+                            HTTP.RequestRetryError(EOFError()))
+                client = offline_rest_client()
+                calls = Ref(0)
+                scripted_request = function (method, url; kwargs...)
+                    calls[] += 1
+                    calls[] < 3 && throw(failure)
+                    return (status=200, headers=HTTP.Headers(),
+                        body=collect(codeunits("""{"serverTime":1704067200000}""")))
+                end
+                try
+                    result = request_with_retries(scripted_request, client, "GET", "/api/v3/time";
+                        retry_delay=0)
+                    @test result.serverTime == 1704067200000
+                    @test calls[] == 3
+                    @test Binance.used_capacity(client.rate_limiter, "RAW_REQUESTS")[1] == 3
+                finally
+                    close(client)
+                end
+            end
+
+            client = offline_rest_client()
+            calls = Ref(0)
+            failing_request = function (method, url; kwargs...)
+                calls[] += 1
+                throw(tls_timeout)
+            end
+            try
+                @test_throws HTTP.TLSTransportError request_with_retries(
+                    failing_request, client, "GET", "/api/v3/time"; retry_delay=0)
+                @test calls[] == 3
+                calls[] = 0
+                @test_throws HTTP.TLSTransportError request_with_retries(
+                    failing_request, client, "GET", "/api/v3/time"; max_attempts=1, retry_delay=0)
+                @test calls[] == 1
+                calls[] = 0
+                @test_throws ArgumentError request_with_retries(
+                    failing_request, client, "GET", "/api/v3/time"; max_attempts=0)
+                @test calls[] == 0
+            finally
+                close(client)
+            end
+        end
+
+        @testset "Trading writes never replay after transport failure" begin
+            for (method, endpoint) in (("POST", "/sapi/v1/convert/acceptQuote"),
+                                       ("PUT", "/api/v3/order/amend/keepPriority"),
+                                       ("DELETE", "/api/v3/order"))
+                client = offline_rest_client()
+                calls = Ref(0)
+                failing_request = function (method, url; kwargs...)
+                    calls[] += 1
+                    @test kwargs[:retry] === false
+                    throw(HTTP.ParseError("unexpected EOF while reading HTTP/2 frame payload"))
+                end
+                try
+                    @test_throws HTTP.ParseError request_with_retries(
+                        failing_request, client, method, endpoint; signed=true, retry_delay=0)
+                    @test calls[] == 1
+                finally
+                    close(client)
+                end
+            end
+        end
+
+        @testset "Server failures retry reads but leave writes unresolved" begin
+            for (method, endpoint) in (("GET", "/api/v3/time"),
+                                       ("POST", "/sapi/v1/convert/acceptQuote"))
+                client = offline_rest_client()
+                calls = Ref(0)
+                scripted_request = function (method, url; kwargs...)
+                    calls[] += 1
+                    if calls[] == 1
+                        return HTTP.Response(503; body="""{"code":-1007,"msg":"timeout"}""")
+                    end
+                    return (status=200, headers=HTTP.Headers(), body=UInt8[0x7b, 0x7d])
+                end
+                try
+                    @test_logs (:warn, r"Binance Server Error") begin
+                        if method == "GET"
+                            result = request_with_retries(scripted_request, client, method, endpoint;
+                                retry_delay=0)
+                            @test isempty(result)
+                            @test calls[] == 2
+                        else
+                            @test_throws Binance.BinanceServerError request_with_retries(
+                                scripted_request, client, method, endpoint; signed=true, retry_delay=0)
+                            @test calls[] == 1
+                        end
+                    end
+                finally
+                    close(client)
+                end
+            end
+        end
+
+        @testset "Permanent errors and interruption return immediately" begin
+            for (status, error_type) in ((400, Binance.MalformedRequestError),
+                                         (401, Binance.UnauthorizedError),
+                                         (403, Binance.WAFViolationError),
+                                         (418, Binance.IPAutoBannedError),
+                                         (429, Binance.RateLimitError))
+                client = offline_rest_client()
+                calls = Ref(0)
+                scripted_request = function (method, url; kwargs...)
+                    calls[] += 1
+                    return HTTP.Response(status; headers=["Retry-After" => "7"],
+                        body="""{"code":-1003,"msg":"rejected"}""")
+                end
+                try
+                    @test_throws error_type request_with_retries(
+                        scripted_request, client, "GET", "/api/v3/account";
+                        signed=true, retry_delay=0)
+                    @test calls[] == 1
+                    if status in (418, 429)
+                        @test client.rate_limiter.backoff_until > now(Dates.UTC)
+                    end
+                finally
+                    close(client)
+                end
+            end
+
+            for failure in (InterruptException(), ArgumentError("invalid request"))
+                client = offline_rest_client()
+                calls = Ref(0)
+                failing_request = function (method, url; kwargs...)
+                    calls[] += 1
+                    throw(failure)
+                end
+                try
+                    @test_throws typeof(failure) request_with_retries(
+                        failing_request, client, "GET", "/api/v3/time"; retry_delay=0)
+                    @test calls[] == 1
+                finally
+                    close(client)
+                end
+            end
+        end
+
+        @testset "REST time sync accepts WebSocket timestamps and preserves offsets on failure" begin
+            client = offline_rest_client()
+            try
+                @test client.time_offset == 0
+                server_ms = Int64(1704067200000)
+                for response in (server_ms, unix2datetime(server_ms / 1000))
+                    before = round(Int64, datetime2unix(now(Dates.UTC)) * 1000)
+                    offset = Binance.synchronize_time!(client; server_time_provider=() -> response)
+                    after = round(Int64, datetime2unix(now(Dates.UTC)) * 1000)
+                    @test server_ms - after <= offset <= server_ms - before
+                    @test client.time_offset == offset
+                end
+                client.time_offset = -319
+                @test_throws ErrorException Binance.synchronize_time!(client;
+                    server_time_provider=() -> error("time query failed"))
+                @test client.time_offset == -319
+                @test_throws InterruptException Binance.synchronize_time!(client;
+                    server_time_provider=() -> throw(InterruptException()))
+                @test client.time_offset == -319
+            finally
+                close(client)
+            end
+        end
     end
 
     @testset "Configuration reads testnet credentials from TOML" begin
@@ -1298,3 +1505,5 @@ end
         @test_throws ArgumentError Binance.SBEMarketDataStreams.SBEDecoder.decode_sbe_message(data)
     end
 end
+
+include("sbe_connection.jl")

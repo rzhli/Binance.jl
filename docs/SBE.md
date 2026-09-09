@@ -184,7 +184,7 @@ end)
 
 ### Connection Management
 
-#### `SBEStreamClient(config_path="config.toml")`
+#### `SBEStreamClient(config_path="config.toml"; port=443)`
 
 Create SBE stream client.
 
@@ -196,18 +196,25 @@ Create SBE stream client.
 **Example:**
 ```julia
 sbe_client = SBEStreamClient("config.toml")
+# Use the alternative port if required by your network:
+# sbe_client = SBEStreamClient("config.toml"; port=9443)
 ```
 
 #### `connect_sbe!(client)`
 
-Establish WebSocket connection with API key authentication.
+Establish WebSocket connection with API key authentication. This call waits
+until the connection is usable, including retries. `connection.timeout` applies
+to each handshake; `connection.max_reconnect_attempts` limits consecutive
+retries after the initial attempt (default 5). On exhaustion the background task
+stops and the last connection error is thrown to the caller.
+
+Concurrent calls share the same connection task. Call `sbe_close_all(client)`
+to stop reconnection and close subscriptions; it interrupts any retry backoff.
 
 **Example:**
 ```julia
 connect_sbe!(sbe_client)
-
-# Wait for connection
-sleep(2)
+# The connection is ready when this returns.
 ```
 
 ### Subscriptions

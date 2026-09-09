@@ -10,7 +10,7 @@ module RESTAPI
     using ..Filters
     using ..Errors
 
-    export RESTClient, make_request, get_server_time, get_exchange_info, ping,
+    export RESTClient, make_request, get_server_time, synchronize_time!, get_exchange_info, ping,
         close_idle_connections!,
         place_order, cancel_order, cancel_all_orders, get_order,
         get_open_orders, get_all_orders, get_orderbook,
@@ -31,6 +31,10 @@ module RESTAPI
     that every request reuses pooled TCP/TLS connections instead of dialing a
     fresh transport per call. Proxy policy lives on the `HTTP.Transport`; call
     `close(client)` to release idle connections.
+
+    Accepts a configuration path or a `BinanceConfig`. Set `sync_time=false`
+    to defer the initial server-time request, then call [`synchronize_time!`](@ref)
+    before making signed requests.
     """
     mutable struct RESTClient
         config::BinanceConfig
@@ -42,8 +46,7 @@ module RESTAPI
         cache_lock::ReentrantLock
         http_client::HTTP.Client  # 可复用的连接池客户端（HTTP.jl 2.x）
 
-        function RESTClient(config_path::String="config.toml")
-            config = from_toml(config_path)
+        function RESTClient(config::BinanceConfig; sync_time::Bool=true)
             # Shared per (testnet, api_key): REQUEST_WEIGHT/RAW_REQUESTS are counted
             # per IP and ORDERS per account, so a REST client and a WebSocket client
             # in the same process draw on one budget, not two.
@@ -75,18 +78,44 @@ module RESTAPI
                 Dict{String,SymbolInfo}(), ReentrantLock(), http_client,
             )
 
-            try
-                server_time_response = get_server_time(client)
-                server_time = Int64(round(datetime2unix(server_time_response) * 1000))
-                local_time = Int(round(datetime2unix(now(Dates.UTC)) * 1000))
-                client.time_offset = server_time - local_time
-            catch e
-                @warn "Could not synchronize time with Binance server for REST client. Using local time. Error: $e"
-                client.time_offset = 0
+            if sync_time
+                try
+                    synchronize_time!(client)
+                catch e
+                    if e isa InterruptException
+                        close(client)
+                        rethrow()
+                    end
+                    @warn "Could not synchronize time with Binance server for REST client. Using local time." exception=e
+                end
             end
 
             return client
         end
+    end
+
+    RESTClient(config_path::String="config.toml"; sync_time::Bool=true) =
+        RESTClient(from_toml(config_path); sync_time=sync_time)
+
+    """
+        synchronize_time!(client::RESTClient; server_time_provider=...) -> Int64
+
+    Update the REST signing offset and return it in milliseconds. By default,
+    fetch Binance's REST server time. A custom zero-argument provider may return
+    a `DateTime` or Unix milliseconds, for example the `serverTime` from an
+    already-connected WebSocket API client. A failed query leaves the old offset
+    intact.
+    """
+    function synchronize_time!(client::RESTClient;
+        server_time_provider=() -> get_server_time(client))
+        response = server_time_provider()
+        server_time = response isa DateTime ?
+            round(Int64, datetime2unix(response) * 1000) : Int64(response)
+        # Measure after the successful response. The provider may have retried;
+        # including failed attempts in an RTT midpoint would bias the offset.
+        local_time = round(Int64, datetime2unix(now(Dates.UTC)) * 1000)
+        client.time_offset = server_time - local_time
+        return client.time_offset
     end
 
     """
@@ -263,28 +292,59 @@ module RESTAPI
         end
     end
 
-    """
-        binance_retry_if(attempt, err, request, response) -> Union{Bool,Nothing}
-
-    `retry_if` hook for the HTTP.jl client retry policy.
-
-    Binance escalates repeated rate-limit violations from `429` to a `418` IP ban,
-    so rate-limit and WAF responses must never be retried on the transport level;
-    they are surfaced to the caller and the `Retry-After` backoff is recorded in
-    the [`BinanceRateLimit`](@ref) instead. Everything else defers to HTTP.jl's
-    built-in policy (transient transport errors plus retryable 5xx/408 for
-    replayable idempotent requests).
-    """
-    function binance_retry_if(attempt::Int, err, request, response)
-        response === nothing && return nothing
-        status = response.status
-        (status == 429 || status == 418 || status == 403) && return false
-        return nothing
+    # This classification is only used for GET requests. In particular, a TLS
+    # read deadline is safe to retry as a new read with a new deadline, although
+    # HTTP.jl deliberately does not retry it inside the expired request.
+    function retryable_read_error(err)
+        err isa HTTP.RequestRetryError && return retryable_read_error(err.err)
+        err isa HTTP.ConnectError && return retryable_read_error(err.cause)
+        err isa HTTP.TimeoutError && return true
+        err isa HTTP.TLSTransportError && return true
+        err isa BinanceServerError && return err.http_status in (500, 502, 503, 504)
+        return HTTP.isrecoverable(err)
     end
 
+    """
+        make_request(client, method, endpoint; params=Dict(), signed=false, max_attempts=3)
+
+    GET requests retry transient transport failures and retryable server errors
+    up to `max_attempts` times in total. Each attempt gets a fresh signature and
+    its own rate-limit reservation. Other methods are sent once; rate-limit,
+    authentication and validation errors are surfaced immediately.
+    """
     function make_request(
         client::RESTClient, method::String, endpoint::String;
-        params::Dict{String,Any}=Dict{String,Any}(), signed::Bool=false
+        params::Dict{String,Any}=Dict{String,Any}(), signed::Bool=false,
+        max_attempts::Int=3
+        )
+        return request_with_retries(HTTP.request, client, method, endpoint;
+            params=params, signed=signed, max_attempts=max_attempts)
+    end
+
+    function request_with_retries(request_fn, client::RESTClient, method::String, endpoint::String;
+        params::Dict{String,Any}=Dict{String,Any}(), signed::Bool=false,
+        max_attempts::Int=3, retry_delay::Real=0.5)
+        max_attempts >= 1 || throw(ArgumentError("max_attempts must be >= 1"))
+        isfinite(retry_delay) && retry_delay >= 0 ||
+            throw(ArgumentError("retry_delay must be finite and >= 0"))
+        attempts = method == "GET" ? max_attempts : 1
+        for attempt in 1:attempts
+            try
+                return make_request_once(request_fn, client, method, endpoint;
+                    params=copy(params), signed=signed)
+            catch e
+                e isa InterruptException && rethrow()
+                attempt < attempts && retryable_read_error(e) || rethrow()
+                close_idle_connections!(client)
+                @debug "Retrying Binance REST read" method endpoint attempt max_attempts error_type=typeof(e)
+                sleep(backoff_delay(retry_delay, attempt))
+            end
+        end
+    end
+
+    function make_request_once(
+        request_fn, client::RESTClient, method::String, endpoint::String;
+        params::Dict{String,Any}, signed::Bool
         )
         # Charge the documented weight, not one unit per request.
         #
@@ -332,33 +392,28 @@ module RESTAPI
             # (Authorization/Cookie/...) across origins — `X-MBX-APIKEY` would be
             # replayed to whatever host a redirect pointed at.
             #
-            # `retry = !signed`: HTTP.jl replays the exact same bytes, and a signed
-            # request carries a fixed `timestamp`/`signature` pair. After a backoff
-            # sleep the replay can land outside `recvWindow` (-1021), and PUT/DELETE
-            # (order amend/cancel) — which HTTP.jl classifies as idempotent — would
-            # be re-sent against live orders. Public endpoints keep the built-in
-            # transient-failure retries.
+            # Retries belong to request_with_retries: HTTP.jl would replay a
+            # stale timestamp/signature and bypass our per-attempt rate limits.
+            # It also treats PUT/DELETE as idempotent, unlike trading operations.
             response = if isempty(body)
-                HTTP.request(method, url;
+                request_fn(method, url;
                     client = client.http_client,
                     headers = headers,
                     status_exception = false,
                     redirect = false,
-                    retry = !signed,
-                    retry_if = binance_retry_if,
+                    retry = false,
                     connect_timeout = timeout,
                     request_timeout = timeout,
                     read_idle_timeout = timeout,
                 )
             else
-                HTTP.request(method, url;
+                request_fn(method, url;
                     client = client.http_client,
                     headers = headers,
                     body = body,
                     status_exception = false,
                     redirect = false,
-                    retry = !signed,
-                    retry_if = binance_retry_if,
+                    retry = false,
                     connect_timeout = timeout,
                     request_timeout = timeout,
                     read_idle_timeout = timeout,

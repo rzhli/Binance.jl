@@ -101,7 +101,7 @@ export BlockTrade
 export ExecutionReport, OutboundAccountPosition, BalanceUpdate, ListStatus, ServerShutdown
 
 # Export RESTAPI functions
-export get_server_time, get_exchange_info, ping
+export get_server_time, synchronize_time!, get_exchange_info, ping
 export get_symbol_ticker, get_orderbook, get_recent_trades, get_historical_trades, get_historical_block_trades
 export place_order, test_order, cancel_order, cancel_all_orders, cancel_replace_order, amend_order
 export get_open_orders, get_order, get_all_orders, get_my_trades
