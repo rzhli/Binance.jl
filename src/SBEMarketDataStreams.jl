@@ -40,6 +40,7 @@ export SBEStreamClient, connect_sbe!, sbe_subscribe, sbe_unsubscribe,
     sbe_subscribe_trade, sbe_subscribe_best_bid_ask,
     sbe_subscribe_depth, sbe_subscribe_depth20,
     sbe_subscribe_combined, sbe_close_all, sbe_list_streams,
+    sbe_force_reconnect!,
     sbe_unsubscribe_trade, sbe_unsubscribe_best_bid_ask,
     sbe_unsubscribe_depth, sbe_unsubscribe_depth20
 
@@ -203,6 +204,32 @@ function sbe_connected(client::SBEStreamClient)
     return ws !== nothing && !HTTP.WebSockets.isclosed(ws)
 end
 
+"""
+    sbe_force_reconnect!(client::SBEStreamClient) -> Bool
+
+Force the current connection to re-dial, for use by an external freeze
+watchdog. `read_idle_timeout` normally turns a dead socket into a close within
+`SBE_READ_IDLE_TIMEOUT` seconds, but a TUN/proxy half-open socket can stay
+kernel-"open" with no bytes flowing, leaving the read blocked indefinitely.
+Closing the socket here makes `for msg in ws` return so the reconnect loop
+opens a fresh connection. `should_reconnect` is left untouched, so this only
+nudges an existing feed — it never tears the stream down. Returns `true` if a
+live socket was closed.
+"""
+function sbe_force_reconnect!(client::SBEStreamClient)
+    ws = lock(client.connection_changed) do
+        client.ws_connection
+    end
+    ws === nothing && return false      # already between connections; loop will redial
+    try
+        close(ws)
+        return true
+    catch e
+        @debug "sbe_force_reconnect! close error: $e"
+        return false
+    end
+end
+
 # The opener is passed explicitly so the connection lifecycle can be tested
 # with in-memory WebSockets and scripted handshake failures.
 function connect_sbe_with!(open_websocket, client::SBEStreamClient)
@@ -268,6 +295,12 @@ function run_sbe_connection!(open_websocket, client::SBEStreamClient)
     @info "Connecting to SBE stream: $uri"
 
     failures = 0
+    # Once the stream has delivered data at least once we treat drops as
+    # transient: a running strategy must never lose its feed permanently just
+    # because a proxy/node hiccups for a few minutes. `max_reconnect_attempts`
+    # therefore only bounds the INITIAL connect (so startup still fails fast on
+    # bad credentials / URL); post-connect it retries forever at capped backoff.
+    ever_connected = false
     try
         while client.should_reconnect
             failure = nothing
@@ -276,6 +309,7 @@ function run_sbe_connection!(open_websocket, client::SBEStreamClient)
                 # Binance SBE streams require the "stream" subprotocol during handshake
                 open_websocket(uri; open_kwargs...) do ws
                     failures = 0
+                    ever_connected = true
                     _handle_sbe_ws_session(client, ws)
                 end
             catch e
@@ -296,16 +330,18 @@ function run_sbe_connection!(open_websocket, client::SBEStreamClient)
             lock(client.connection_changed) do
                 client.connection_error = failure === nothing ? EOFError() : failure
             end
-            if failures > client.config.max_reconnect_attempts
-                @error "SBE WebSocket connection attempts exhausted" attempts=failures uri exception=client.connection_error
+            if !ever_connected && failures > client.config.max_reconnect_attempts
+                @error "SBE WebSocket initial connection attempts exhausted" attempts=failures uri exception=client.connection_error
                 break
             end
 
             delay = backoff_delay(client.config.reconnect_delay, failures)
+            # Post-connect the cap on attempts no longer applies, so report ∞.
+            max_retries = ever_connected ? "∞" : client.config.max_reconnect_attempts
             if failure === nothing
-                @info "SBE WebSocket closed; reconnecting" retry=failures max_retries=client.config.max_reconnect_attempts delay=round(delay, digits=2)
+                @info "SBE WebSocket closed; reconnecting" retry=failures max_retries=max_retries delay=round(delay, digits=2)
             else
-                @warn "SBE WebSocket connection failed; retrying" retry=failures max_retries=client.config.max_reconnect_attempts delay=round(delay, digits=2) uri exception=failure
+                @warn "SBE WebSocket connection failed; retrying" retry=failures max_retries=max_retries delay=round(delay, digits=2) uri exception=failure
                 @debug "SBE WebSocket failure details" exception=(failure, failure_backtrace)
             end
             wait_sbe_retry(client, delay) || break

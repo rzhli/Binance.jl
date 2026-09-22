@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-22
+
+SBE market data streams reconnect indefinitely once established.
+
+### Fixed
+- The SBE reconnect loop no longer gives up permanently after
+  `max_reconnect_attempts` consecutive failures. Once a connection has delivered
+  data at least once, drops are treated as transient and retried forever at
+  capped backoff — a running strategy must not lose its feed just because a
+  proxy/node hiccups for a few minutes. `max_reconnect_attempts` now only bounds
+  the *initial* connect, so startup still fails fast on bad credentials or URL.
+
+### Added
+- `sbe_force_reconnect!(client)` closes the live socket to force a re-dial,
+  letting an external freeze watchdog break out of a half-open (TUN/proxy)
+  connection that `read_idle_timeout` cannot detect. Leaves `should_reconnect`
+  untouched, so it nudges an existing feed rather than tearing it down.
+
 ## [0.16.0] - 2026-09-04
 
 Connection resilience for SBE market data and REST reads.

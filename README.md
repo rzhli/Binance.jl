@@ -24,6 +24,17 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.17.0 - SBE reconnects for good
+
+- **The feed no longer dies quietly** — the SBE reconnect loop used to give up
+  permanently after `max_reconnect_attempts` failures, leaving a strategy running
+  on frozen data. Once a stream has delivered data at least once, drops are now
+  retried forever at capped backoff; `max_reconnect_attempts` only bounds the
+  initial connect so startup still fails fast on misconfiguration.
+- **`sbe_force_reconnect!`** closes the live socket to force a re-dial, so an
+  external freeze watchdog can break out of a half-open TUN/proxy connection that
+  `read_idle_timeout` never sees drop.
+
 ### v0.16.0 - Connection resilience
 
 - **SBE connects like it means it** — `connect_sbe!` now waits through the

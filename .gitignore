@@ -45,6 +45,10 @@ dist/
 # Personal trading strategies
 strategy/
 # Add specific local-only strategy files here if needed; do not ignore *.jl
+
+# Convert 决策日志（运行期生成，不入库）
+logs/
+*.jsonl
 # globally, or new package source and test files will be invisible to Git.
 
 # Other files that might contain sensitive data

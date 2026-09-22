@@ -78,47 +78,43 @@ run_convert_strategy(;
 # 返回的日线支撑阻力位要通过 support_levels / resistance_levels 注入给威科夫分析器，
 # 否则 Spring / UTAD 只能拿当前窗口的高低点当代用品（等于「创新低就报 Spring」的循环论证）。
 
-function run_convert_with_analysis(;
-    symbol::String = "BTCUSDT",
-    buy_quantities::Vector{Float64} = [5.0, 5.0],
-    sell_percentages::Vector{Float64} = [0.5, 1.0],
-    min_confidence::Float64 = 0.5,
-    config_file::String = CONFIG_FILE,
-)
-    rest_client = RESTClient(config_file)
+config_file = CONFIG_FILE
+symbol = "BTCUSDT"
+buy_quantities = [1.0, 1.0, 1.0]       # USDT 金额（is_quote_qty=true）
+sell_quote_amounts = [1.0, 1.0, 1.0]
+min_confidence = 0.5
 
-    try
-        analysis = prepare_strategy_with_analysis(
-            rest_client = rest_client,
-            symbol = symbol,
-            buy_quantities = buy_quantities,
-            sell_percentages = sell_percentages,
-            auto_adjust_levels = true,        # 按支撑阻力自动定价位
-            require_signal_confirmation = true,
-            # 风险管理
-            max_daily_loss_pct = 5.0,
-            cooldown_seconds = 60.0,
-            min_signal_strength = 0.2,
-            max_spread_pct = 0.5,
-            # 技术分析函数注入（AnalysisWorkflow 不直接依赖 TechnicalAnalysis）
-            analyze_multiple_timeframes_fn = analyze_multiple_timeframes,
-            generate_comprehensive_signal_fn = generate_comprehensive_signal,
-            load_historical_data_fn = load_historical_data,
-            IncrementalIndicators_type = IncrementalIndicators,
-            initialize_from_history_fn = initialize_from_history!,
-            enable_incremental_indicators = true,
-            verbose = true,
-        )
+rest_client = RESTClient(config_file)
+try
+    analysis = prepare_strategy_with_analysis(
+        rest_client = rest_client,
+        symbol = symbol,
+        buy_quantities = buy_quantities,
+        sell_quote_amounts = sell_quote_amounts,
+        auto_adjust_levels = true,        # 按支撑阻力自动定价位
+        require_signal_confirmation = true,
+        # 风险管理
+        max_daily_loss_pct = 5.0,
+        cooldown_seconds = 60.0,
+        min_signal_strength = 0.2,
+        max_spread_pct = 0.5,
+        # 技术分析函数注入（AnalysisWorkflow 不直接依赖 TechnicalAnalysis）
+        analyze_multiple_timeframes_fn = analyze_multiple_timeframes,
+        generate_comprehensive_signal_fn = generate_comprehensive_signal,
+        load_historical_data_fn = load_historical_data,
+        IncrementalIndicators_type = IncrementalIndicators,
+        initialize_from_history_fn = initialize_from_history!,
+        enable_incremental_indicators = true,
+        verbose = true,
+    )
 
-        print_analysis_summary(analysis)
-        print_comprehensive_signal(analysis.initial_signal)
+    print_analysis_summary(analysis)
+    print_comprehensive_signal(analysis.initial_signal)
 
-        if analysis.confidence < min_confidence
-            println("\n⚠️  置信度 $(round(analysis.confidence * 100, digits=1))% 低于要求 $(round(min_confidence * 100, digits=1))%，已放弃启动")
-            return nothing
-        end
-
-        # 日线支撑阻力位 → 威科夫分析器
+    if analysis.confidence < min_confidence
+        println("\n⚠️  置信度 $(round(analysis.confidence * 100, digits=1))% 低于要求 $(round(min_confidence * 100, digits=1))%，已放弃启动")
+    else
+        # 日线支撑阻力位 → 威科夫分析器（必须在下单前算好并注入）
         supports, resistances = daily_support_resistance(analysis)
 
         run_convert_strategy(;
@@ -126,7 +122,7 @@ function run_convert_with_analysis(;
             buy_prices = analysis.buy_prices,
             buy_quantities = analysis.buy_quantities,
             sell_prices = analysis.sell_prices,
-            sell_percentages = analysis.sell_percentages,
+            sell_quote_amounts = analysis.sell_quote_amounts,
             incremental_indicators = analysis.incremental_indicators,
             risk_manager = analysis.risk_manager,
             support_levels = supports,
@@ -135,13 +131,11 @@ function run_convert_with_analysis(;
             depth_levels = 20,
             config_file = config_file,
         )
-    finally
-        # v0.13.0：RESTClient 内置 HTTP.jl 连接池，用完要释放空闲连接
-        close(rest_client)
     end
+finally
+    # v0.13.0：RESTClient 内置 HTTP.jl 连接池，用完要释放空闲连接
+    close(rest_client)
 end
-
-# run_convert_with_analysis(symbol = "BTCUSDT")
 
 # ============================================================================
 # 示例 3: 多币种闪兑策略
