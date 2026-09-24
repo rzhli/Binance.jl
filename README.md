@@ -24,6 +24,17 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.18.0 - ntfy notifications
+
+- **Push signals and fills to your phone** — the new `Notifier` module forwards
+  key events to an [ntfy](https://ntfy.sh) topic. `NtfyLogger` wraps the global
+  logger so any log at/above a configurable level, or any record tagged
+  `ntfy=true`, is pushed while console/file output stays unchanged. Configure it
+  under `[ntfy]`; `install_ntfy_logger!` / `send_to_ntfy` are exported.
+- **Never blocks trading** — sends are async and failure-tolerant (errors log
+  once to stderr), and a local ntfy server is reached directly, bypassing the
+  configured proxy.
+
 ### v0.17.0 - SBE reconnects for good
 
 - **The feed no longer dies quietly** — the SBE reconnect loop used to give up
@@ -288,6 +299,14 @@ testnet = false
 # Leave empty to use the standard HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY
 # environment variables; set explicitly to override them.
 proxy = ""  # e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:7891"
+
+[ntfy]
+# Push trigger signals / order fills to an ntfy topic (set enabled = false to disable).
+enabled = true
+url = "http://127.0.0.1:2586"  # local server is reached directly, bypassing proxy
+token = "YOUR_NTFY_TOKEN"
+topic = "Binance"
+min_level = "Warn"  # records tagged ntfy=true are forwarded regardless of level
 ```
 
 See `config_example.toml` for all options.

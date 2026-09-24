@@ -81,3 +81,18 @@ ws_return_rate_limits = true
 debug = false
 # Log file path (leave empty to log to console)
 log_file = ""
+
+[ntfy]
+# Push trigger signals / order fills and other key logs to an ntfy topic.
+# Set enabled = false to disable all ntfy notifications.
+enabled = false
+# ntfy server URL. A local server (127.0.0.1) is reached directly, bypassing
+# [connection].proxy. Use https://ntfy.sh for the public hosted service.
+url = "http://127.0.0.1:2586"
+# Access token for the ntfy server (leave empty for anonymous servers).
+token = "YOUR_NTFY_TOKEN_HERE"
+# Topic to publish to.
+topic = "Binance"
+# Minimum log level auto-forwarded to ntfy (Debug/Info/Warn/Error).
+# Records tagged with `ntfy=true` are forwarded regardless of this threshold.
+min_level = "Warn"

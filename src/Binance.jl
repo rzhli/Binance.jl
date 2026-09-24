@@ -14,6 +14,7 @@ include("Convert.jl")
 include("Events.jl")
 include("WebSocketAPI.jl")
 include("OrderBookManager.jl")
+include("Notifier.jl")
 
 # Import from submodules
 using .Config
@@ -30,6 +31,7 @@ using .Convert
 using .Signature
 using .Events
 using .OrderBookManagers
+using .Notifier
 
 # Resolve names intentionally shared by REST and WebSocket APIs. Keeping these
 # methods at the package root preserves one dispatch-based public API without
@@ -179,5 +181,8 @@ export calculate_vwap, calculate_depth_imbalance
 
 # Export Config functions (for BinanceFIX to use)
 export load_config
+
+# Export ntfy notification helpers
+export send_to_ntfy, notify_ntfy, install_ntfy_logger!, restore_logger!, NtfyLogger
 
 end # module Binance

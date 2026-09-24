@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-24
+
+Push trigger signals and order fills to an ntfy topic.
+
+### Added
+- `Notifier` module (`src/Notifier.jl`): `send_to_ntfy` posts a message to an
+  ntfy topic, and `NtfyLogger` wraps the global logger so records at or above a
+  configurable level — or any record tagged `ntfy=true` — are forwarded to ntfy
+  while console/file output is untouched. `install_ntfy_logger!` /
+  `restore_logger!` install and revert the wrapping logger; `configure_from_toml!`
+  reads settings from the `[ntfy]` config section. Exported from `Binance`.
+- `[ntfy]` configuration section (`enabled`, `url`, `token`, `topic`,
+  `min_level`). A local ntfy server (`127.0.0.1`) is reached directly, bypassing
+  `[connection].proxy`. See `config_example.toml`.
+
+### Notes
+- Sends are asynchronous and failure-tolerant: a push error is logged once to
+  stderr and never blocks the trading path. The send path runs under a guard
+  logger so ntfy's own HTTP logs are not re-forwarded (no recursion).
+
 ## [0.17.0] - 2026-09-22
 
 SBE market data streams reconnect indefinitely once established.
