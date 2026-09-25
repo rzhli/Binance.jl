@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-09-25
+
+ntfy priority tuning and HTTP compat bump.
+
+### Changed
+- ntfy notifications default to low priority (2) for every forwarded log level,
+  so transient connection/retry/exception warnings and errors no longer buzz at
+  high priority. A log record can override priority and tags per call with
+  `priority=`/`tags=` keywords (e.g. `@info "..." ntfy=true priority=4`); those
+  keywords are consumed by the forwarder and excluded from the pushed body.
+- Raised the `HTTP` compat lower bound to `2.8.0` (the version this release is
+  tested against). No API changes were required; 2.8.0 sends HTTP/1 request
+  header names as spelled (e.g. `X-MBX-APIKEY`) and matches names
+  case-insensitively, which suits Binance's endpoints.
+
 ## [0.18.0] - 2026-09-24
 
 Push trigger signals and order fills to an ntfy topic.

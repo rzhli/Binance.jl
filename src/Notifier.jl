@@ -135,18 +135,20 @@ end
 
 # ======================= NtfyLogger =======================
 
-# level → (priority, tags)
+# level → (默认 priority, tags)。连接/重试/异常类 warn/error 一律默认低优先级(2),
+# 避免半夜刷屏；真正重要的信号/成交由日志点显式传 `priority=4`（见下方覆盖逻辑）。
 function _level_style(level::LogLevel)
-    level >= Logging.Error && return (5, "rotating_light")
-    level >= Logging.Warn  && return (4, "warning")
-    level >= Logging.Info  && return (3, "bell")
+    level >= Logging.Error && return (2, "rotating_light")
+    level >= Logging.Warn  && return (2, "warning")
+    level >= Logging.Info  && return (2, "bell")
     return (2, "information_source")
 end
 
 function _format_body(message, kwargs)
     parts = String[]
     for (k, v) in kwargs
-        (k === :ntfy || k === :maxlog || k === :_group) && continue
+        (k === :ntfy || k === :maxlog || k === :_group ||
+         k === :priority || k === :tags) && continue
         if k === :exception
             err = v isa Tuple ? first(v) : v
             push!(parts, string("**exception**: ", sprint(showerror, err)))
@@ -190,7 +192,10 @@ function Logging.handle_message(l::NtfyLogger, level, message, _module, group, i
     (tagged || level >= l.ntfy_min_level) || return nothing
     CONFIG[].enabled || return nothing
 
-    prio, tags = _level_style(level)
+    # 优先级/标签：日志点可用 `priority=`/`tags=` 覆盖默认(按级别推得的低优先级)。
+    def_prio, def_tags = _level_style(level)
+    prio = get(kwargs, :priority, def_prio)
+    tags = get(kwargs, :tags, def_tags)
     title = String(first(split(string(message), '\n')))
     notify_ntfy(_format_body(message, kwargs); title = title, tags = tags, priority = prio)
     return nothing
