@@ -58,8 +58,21 @@ run_convert_strategy(;
     symbol = "BTCUSDT",
     buy_prices = [55000.0, 50000.0, 45000.0],
     buy_quantities = [1.0, 1.0, 1.0],       # USDT 金额（is_quote_qty=true）
-    sell_prices = [87000.0, 97000.0, 107000.0],
+    sell_prices = [88000.0, 99000.0, 110000.0],
     sell_quote_amounts= [1.0, 1.0, 1.0],
+    config_file = CONFIG_FILE,
+)
+
+
+run_convert_strategy(;
+    symbol = "BTCUSDT",
+    buy_prices = [55000.0, 50000.0, 45000.0],
+    buy_quantities = [1.0, 1.0, 1.0],
+    sell_prices = [88000.0, 99000.0, 110000.0],
+    sell_quote_amounts = [1.0, 1.0, 1.0],
+    enable_squeeze = true,          # ← 开启实时挤压监测(仅日志)
+    # squeeze_daily_interval = "1d",     ← 挤压周期,原策略锚定 4h;也可 "30m"
+    # squeeze_vol_interval = "4h",
     config_file = CONFIG_FILE,
 )
 

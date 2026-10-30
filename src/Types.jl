@@ -178,7 +178,7 @@ macro binance_struct(expr)
 end
 
 """
-    to_decimal_string(value)
+to_decimal_string(value)
 
 Convert a numeric value to its exact string representation for API calls.
 Supports Float64, String, and FixedDecimal types.

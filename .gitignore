@@ -11,9 +11,8 @@ Thumbs.db
 
 # IDE files
 .vscode/
-.idea/
-*.swp
-*.swo
+
+analysis
 
 # AI coding agent session pointers (local resume IDs, not project content)
 codex.txt
