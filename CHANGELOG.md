@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-10-30
+
+Documentation-only release for the October Binance Spot API notices.
+Includes BinanceFIX 0.6.1; runtime behavior and dependencies are unchanged.
+
+### Documentation
+
+- Synced the Binance Spot API notices dated 2026-10-27 and 2026-10-30.
+  REST/WebSocket API SBE schema `3:3`, deprecated on 2026-05-08, will retire
+  on 2026-11-09; the current production schema is `3:5`. Documented the
+  separate schema families and migration guidance in `docs/SBE.md`.
+  This SDK's REST/WebSocket API clients use JSON; its dedicated SBE market
+  streams use `1:0` and FIX SBE uses `1:1`, so no protocol change is needed.
+- Documented the optional FIX `ExpiryReason (25056)` field, its eight values,
+  and the existing text-FIX/SBE representations in `BinanceFIX/README.md`.
+  Binance's 2026-10-27 update adds documentation for an already announced
+  field; the parsers and exported `EXPIRY_*` constants already support it.
+
 ## [0.18.1] - 2026-09-25
 
 ntfy priority tuning and HTTP compat bump.

@@ -12,6 +12,13 @@ BinanceFIX.jl provides complete FIX protocol support for Binance Spot trading:
 
 ## Recent Updates
 
+### v0.6.1 - ExpiryReason documentation sync (2026-10-30)
+
+Binance added the previously announced `ExpiryReason (25056)` field to its
+FIX API documentation. The existing text-FIX and FIX SBE parsers already
+expose `expiry_reason`; see [field values and representations](#execution-report-expiry-reason).
+No wire-format or parser change is required by this notice.
+
 ### v0.6.0 - Changelog Sync 2026-09-02
 
 - **Top-level `Symbol (55)` removed from `ListStatus <N>`** — Binance removed the
@@ -373,6 +380,32 @@ while true
     sleep(0.01)
 end
 ```
+
+### Execution Report Expiry Reason
+
+[`ExecutionReport <8>`](https://developers.binance.com/docs/binance-spot-api-docs/fix-api#executionreport-8)
+has an optional integer field, `ExpiryReason (25056)`, which appears only for
+expired orders. Binance documented it on 2026-10-27 after announcing it on
+2026-03-09.
+
+| Value | Exported text-FIX constant |
+|-------|---------------------------|
+| `1` | `EXPIRY_REJECTED` |
+| `2` | `EXPIRY_EXCHANGE_CANCELED` |
+| `3` | `EXPIRY_OCO_TRIGGER` |
+| `4` | `EXPIRY_OTO_PHASE_ONE_EXPIRED` |
+| `5` | `EXPIRY_UNFILLED_IOC_QUANTITY_EXPIRED` |
+| `6` | `EXPIRY_UNFILLED_FOK_ORDER_EXPIRED` |
+| `7` | `EXPIRY_INSUFFICIENT_LIQUIDITY` |
+| `8` | `EXPIRY_EXECUTION_RULE_PRICE_RANGE_EXCEEDED` |
+
+- Text FIX: `ExecutionReportMsg.expiry_reason` preserves the wire value as a
+  `String` (`"1"`–`"8"`), or `""` when tag 25056 is absent. The `EXPIRY_*`
+  constants are strings, so they can be compared directly with this field.
+- FIX SBE schema `1:1`: `SBEExecutionReport.expiry_reason` is
+  `Union{UInt8,Nothing}` (`UInt8(1)`–`UInt8(8)`, or `nothing` for an absent/null
+  value). For example, compare with `UInt8(8)` for
+  `EXECUTION_RULE_PRICE_RANGE_EXCEEDED`.
 
 ## Constants
 

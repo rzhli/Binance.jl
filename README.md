@@ -24,6 +24,19 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.18.2 - Binance API documentation sync (2026-10-30)
+
+Documentation-only release covering the Binance API notices dated 2026-10-27
+and 2026-10-30. Includes BinanceFIX 0.6.1.
+
+- REST/WebSocket API SBE schema `3:3` will retire on **2026-11-09**; the
+  current production schema is `3:5`. This SDK's REST/WebSocket API clients
+  use JSON, and its dedicated SBE market streams use the separate `1:0`
+  schema. See [schema versions and migration guidance](docs/SBE.md#schema-versions).
+- Binance documented the existing FIX `ExpiryReason (25056)` field.
+  `BinanceFIX` already parses it in text FIX and FIX SBE; see the
+  [field values and representations](BinanceFIX/README.md#execution-report-expiry-reason).
+
 ### v0.18.0 - ntfy notifications
 
 - **Push signals and fills to your phone** — the new `Notifier` module forwards

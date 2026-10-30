@@ -517,9 +517,38 @@ This client tracks Binance's dedicated Spot data-stream schema from
 |---------|-----------|---------|------------------|
 | `spot_stream` | 1 | 0 | 5.2 |
 
-Do not confuse this with `spot_3_x.xml`, which is the Spot WebSocket API SBE
-response schema. The dedicated `stream-sbe.binance.com` market-data endpoint
-uses schema `1:0` and template IDs 10000–10003.
+The dedicated `stream-sbe.binance.com` market-data endpoint uses schema `1:0`
+and template IDs 10000–10003. Schema versions belong to separate API families:
+
+| API family | SDK client | Format / schema used by this SDK |
+|------------|------------|---------------------------------|
+| REST API | `RESTClient` | JSON |
+| WebSocket API | `WebSocketClient` | JSON |
+| Dedicated SBE market data streams | `SBEStreamClient` | `stream_1_0.xml`, schema `1:0` |
+| FIX SBE | `BinanceFIX` | FIX schema `1:1` |
+
+#### REST/WebSocket API SBE retirement — 2026-10-30 notice
+
+Binance will retire REST/WebSocket API SBE schema **`3:3` on 2026-11-09**,
+following its deprecation on 2026-05-08. As of 2026-10-30, the
+[production lifecycle](https://github.com/binance/binance-spot-api-docs/blob/master/sbe/schemas/sbe_schema_lifecycle_prod.json)
+lists **`3:5`** (`spot_3_5.xml`) as current; `3:4` is also deprecated.
+
+This retirement applies to the `spot_3_x.xml` response schemas. The SDK clients
+listed above need no configuration or decoder changes for this notice.
+
+Applications that request SBE responses through custom REST/WebSocket API
+code should update their decoder to the current schema and select `3:5`
+before the deadline:
+
+- REST: `Accept: application/sbe` and `X-MBX-SBE: 3:5`.
+- WebSocket API: `responseFormat=sbe&sbeSchemaId=3&sbeSchemaVersion=5` in the
+  connection URL.
+
+Under Binance's [SBE policy](https://developers.binance.com/docs/binance-spot-api-docs/faqs/sbe_faq),
+requests selecting a retired schema fail with HTTP 400 (REST requests or
+WebSocket API handshakes). These settings are for custom API SBE clients;
+`RESTClient` and `WebSocketClient` currently decode JSON responses only.
 
 ### SBE Message Format
 
