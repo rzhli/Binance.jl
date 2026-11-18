@@ -10,8 +10,9 @@ It depends on the main Binance.jl package for configuration and signature utilit
 - **MarketData**: Market data streams via FIX (port 9000)
 
 ## FIX SBE Support
-- Port 9001: FIX request → FIX SBE response (hybrid mode)
 - Port 9002: FIX SBE request → FIX SBE response (pure SBE mode)
+
+Sessions connect directly to `fix-oe` / `fix-dc` / `fix-md.binance.com` over TLS.
 
 Use `SBESession` for pure SBE mode connections.
 
@@ -59,9 +60,9 @@ session = SBESession(config, "SENDER"; session_type=SBEOrderEntry)
 connect_sbe(session)
 logon_sbe(session)
 
-# Place order (using UInt8 enums)
-cl_ord_id = new_order_single_sbe(session, "BTCUSDT", UInt8(1);  # 1=BUY
-    quantity=0.001, price=50000.0, order_type=UInt8(2))  # 2=LIMIT
+# Place order. Enums are the FIX characters: '1' = BUY, '2' = LIMIT
+cl_ord_id = new_order_single_sbe(session, "BTCUSDT", UInt8('1');
+    quantity=0.001, price=50000.0, order_type=UInt8('2'))
 
 # Start connection monitor
 start_sbe_monitor(session)
@@ -128,13 +129,17 @@ export TRIGGER_UP, TRIGGER_DOWN
 export EXPIRY_REJECTED, EXPIRY_EXCHANGE_CANCELED, EXPIRY_OCO_TRIGGER,
     EXPIRY_OTO_PHASE_ONE_EXPIRED, EXPIRY_UNFILLED_IOC_QUANTITY_EXPIRED,
     EXPIRY_UNFILLED_FOK_ORDER_EXPIRED, EXPIRY_INSUFFICIENT_LIQUIDITY,
-    EXPIRY_EXECUTION_RULE_PRICE_RANGE_EXCEEDED
+    EXPIRY_EXECUTION_RULE_PRICE_RANGE_EXCEEDED,
+    EXPIRY_EXHAUSTED, EXPIRY_INSUFFICIENT_QUOTE_NOTIONAL_LIMIT
 
 # ExecInst Values
 export EXEC_INST_PARTICIPATE_DONT_INITIATE
 
 # Market Data Entry Types
 export MD_ENTRY_BID, MD_ENTRY_OFFER, MD_ENTRY_TRADE
+
+# InstrumentListRequestType Values
+export INSTRUMENT_LIST_SINGLE, INSTRUMENT_LIST_ALL
 
 # Market Data Subscription Types
 export MD_SUBSCRIBE, MD_UNSUBSCRIBE
@@ -148,6 +153,7 @@ export FIXSession, FIXSessionType, OrderEntry, DropCopy, MarketData
 
 # Connection management
 export connect_fix, logon, logout, close_fix
+export new_sender_comp_id, with_fix_session, pump_messages, fix_decimal
 export heartbeat, test_request
 export start_monitor, stop_monitor, reconnect
 
@@ -211,6 +217,7 @@ export get_list_symbol
 
 # SBE Constants
 export SBE_SCHEMA_ID_FIX, SBE_SCHEMA_VERSION_FIX, SBE_ENCODING_TYPE_LE
+export SBE_SCHEMA_VERSION_FIX_V1, SBE_SCHEMA_VERSION_FIX_V2
 export SBE_SOFH_SIZE, SBE_MESSAGE_HEADER_SIZE
 export SBE_INT64_NULL, SBE_UINT64_NULL
 
@@ -249,6 +256,8 @@ export SBELimitResponse, SBELimitIndicator
 export SBEMarketDataSnapshot, SBEMarketDataReject
 export SBEMarketDataIncrementalTrade, SBEMarketDataIncrementalBookTicker, SBEMarketDataIncrementalDepth
 export SBEInstrumentList, SBEInstrumentInfo, SBEMDEntry, SBEMiscFee
+export SBEListStatusOrder, SBE_MD_ENTRY_BID, SBE_MD_ENTRY_OFFER, SBE_MD_ENTRY_TRADE
+export char_enum
 
 # SBE Message decoder dispatch
 export decode_sbe_message
@@ -295,6 +304,7 @@ export SBEOrderEntry, SBEDropCopy, SBEMarketData
 
 # SBE Connection management
 export connect_sbe, logon_sbe, logout_sbe, close_sbe
+export with_sbe_session, pump_sbe_messages
 export heartbeat_sbe, test_request_sbe
 export start_sbe_monitor, stop_sbe_monitor, reconnect_sbe
 

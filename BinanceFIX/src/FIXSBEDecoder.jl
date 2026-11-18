@@ -4,9 +4,9 @@ FIX SBE Decoder Module
 Decodes FIX SBE (Simple Binary Encoding) responses from Binance FIX API.
 
 Schema Information:
-- Schema Files: spot-fixsbe-1_0.xml (deprecated), spot-fixsbe-1_1.xml (current)
+- Schema Files: spot-fixsbe-1_1.xml (session default), spot-fixsbe-1_2.xml (published 2026-11-11)
 - Schema ID: 1
-- Schema Versions: 0 (deprecated as of 2026-03-09), 1 (current)
+- Schema Versions: 1 (session default), 2 (published 2026-11-11); version 0 is retired
 - Byte order: Little Endian
 
 Wire Format:
@@ -31,7 +31,8 @@ export SBEListStatus, SBEOrderMassCancelReport, SBEOrderAmendReject
 export SBELimitResponse, SBELimitIndicator
 export SBEMarketDataSnapshot, SBEMarketDataReject
 export SBEMarketDataIncrementalTrade, SBEMarketDataIncrementalBookTicker, SBEMarketDataIncrementalDepth
-export SBEInstrumentList, SBEInstrumentInfo, SBEMDEntry, SBEMiscFee
+export SBEInstrumentList, SBEInstrumentInfo, SBEMDEntry, SBEMiscFee, SBEListStatusOrder
+export SBE_MD_ENTRY_BID, SBE_MD_ENTRY_OFFER, SBE_MD_ENTRY_TRADE
 
 # Decoder functions
 export decode_logon_ack, decode_logout, decode_heartbeat, decode_test_request
@@ -324,6 +325,16 @@ end
 # =============================================================================
 # Decoded Message Structures
 # =============================================================================
+#
+# Conventions for every decoded message:
+# - Field layouts follow spot-fixsbe-1_1.xml / 1_2.xml exactly; offsets below are
+#   the zero-based offsets of the schema's root or group block.
+# - Optional fields are `nothing` when the wire carries the SBE null value.
+# - Enumerations keep their wire value as `UInt8`. Most are ASCII characters
+#   (e.g. Side `UInt8('1')` = BUY, ExecType `UInt8('F')` = TRADE), matching the
+#   text-FIX constants; a few are small integers (see the schema).
+# - IDs are `Int64`, timestamps are microseconds since the Unix epoch.
+# - Decimals are converted with the exponent carried in the same message.
 
 """LogonAck response (templateId=20009)"""
 struct SBELogonAck
@@ -357,79 +368,115 @@ end
 struct SBEReject
     seq_num::UInt32
     sending_time::Int64
-    ref_seq_num::UInt32
-    ref_tag_id::UInt16
+    ref_seq_num::Union{UInt32,Nothing}
+    ref_tag_id::Union{UInt32,Nothing}
     ref_msg_type::String
-    session_reject_reason::UInt8
-    error_code::Int32
+    session_reject_reason::Union{UInt8,Nothing}
+    error_code::Union{Int32,Nothing}
     text::String
 end
 
-"""News message (templateId=20100)"""
+"""News message (templateId=20100). FIX SBE carries only the headline."""
 struct SBENews
     seq_num::UInt32
     sending_time::Int64
     headline::String
-    text::String
-    urgency::UInt8
 end
 
-"""Miscellaneous fee entry"""
+"""Miscellaneous fee entry (ExecutionReport MiscFees group)"""
 struct SBEMiscFee
-    amount::Float64      # mantissa with exponent -8
+    amount::Float64
     currency::String
     fee_type::UInt8
 end
 
 """ExecutionReport (templateId=98)"""
-struct SBEExecutionReport
+Base.@kwdef struct SBEExecutionReport
     seq_num::UInt32
     sending_time::Int64
 
     # Order identification
-    order_id::UInt64
+    order_id::Union{Int64,Nothing}
     cl_ord_id::String
     orig_cl_ord_id::String
-    list_id::Union{UInt64,Nothing}
-    exec_id::UInt64
+    list_id::Union{Int64,Nothing}
+    exec_id::Union{Int64,Nothing}
 
     # Order details
     symbol::String
     side::UInt8
     ord_type::UInt8
-    order_qty::Float64
+    order_qty::Union{Float64,Nothing}
+    cash_order_qty::Union{Float64,Nothing}
     price::Union{Float64,Nothing}
-    time_in_force::UInt8
+    time_in_force::Union{UInt8,Nothing}
+    exec_inst::Union{UInt8,Nothing}
+    max_floor::Union{Float64,Nothing}
 
     # Execution status
     exec_type::UInt8
     ord_status::UInt8
+    ord_rej_reason::Union{UInt8,Nothing}
 
     # Quantities
     cum_qty::Float64
-    leaves_qty::Float64
-    cum_quote_qty::Float64
-    last_qty::Union{Float64,Nothing}
+    leaves_qty::Union{Float64,Nothing}
+    cum_quote_qty::Union{Float64,Nothing}
+    last_qty::Float64
     last_px::Union{Float64,Nothing}
 
-    # Timestamps
-    transact_time::Int64  # microseconds
+    # Timestamps (microseconds)
+    transact_time::Union{Int64,Nothing}
     order_creation_time::Union{Int64,Nothing}
     working_time::Union{Int64,Nothing}
+    trailing_time::Union{Int64,Nothing}
 
     # Trade details
-    trade_id::Union{UInt64,Nothing}
-    aggressor_indicator::Union{UInt8,Nothing}
-    working_indicator::Union{UInt8,Nothing}
+    trade_id::Union{Int64,Nothing}
+    aggressor_indicator::Union{UInt8,Nothing}   # boolEnum: 0=false, 1=true
+    alloc_id::Union{Int64,Nothing}
+    match_type::Union{UInt8,Nothing}
+
+    # Working status
+    working_indicator::Union{UInt8,Nothing}     # boolEnum
+    working_floor::Union{UInt8,Nothing}
+
+    # Strategy
+    target_strategy::Union{Int32,Nothing}
+    strategy_id::Union{Int64,Nothing}
+    sor::Union{UInt8,Nothing}                   # boolEnum
+    order_capacity::Union{UInt8,Nothing}
 
     # Self-trade prevention
     self_trade_prevention_mode::Union{UInt8,Nothing}
-    prevented_match_id::Union{UInt64,Nothing}
+    prevented_match_id::Union{Int64,Nothing}
+    prevented_execution_price::Union{Float64,Nothing}
+    prevented_execution_qty::Union{Float64,Nothing}
+    trade_group_id::Union{Int64,Nothing}
+    counter_symbol::String
+    counter_order_id::Union{Int64,Nothing}
     prevented_qty::Union{Float64,Nothing}
+    last_prevented_qty::Union{Float64,Nothing}
+
+    # Secondary (SOR / allocation) identification
+    secondary_order_id::Union{Int64,Nothing}
+    secondary_external_account_id::Union{Int64,Nothing}
+    secondary_symbol::String
 
     # Trigger fields
+    trigger_type::Union{UInt8,Nothing}
+    trigger_action::Union{UInt8,Nothing}
     trigger_price::Union{Float64,Nothing}
+    trigger_price_type::Union{UInt8,Nothing}
     trigger_price_direction::Union{UInt8,Nothing}
+    trigger_trailing_delta_bips::Union{UInt64,Nothing}
+
+    # Pegged order fields
+    peg_offset_value::Union{UInt8,Nothing}
+    peg_price_type::Union{UInt8,Nothing}
+    peg_move_type::Union{UInt8,Nothing}
+    peg_offset_type::Union{UInt8,Nothing}
+    pegged_price::Union{Float64,Nothing}
 
     # Fees
     fees::Vector{SBEMiscFee}
@@ -438,20 +485,26 @@ struct SBEExecutionReport
     error_code::Union{Int32,Nothing}
     text::String
 
-    # Schema 1:1 fields
-    expiry_reason::Union{UInt8,Nothing}  # ExpiryReason (TAG 25056)
+    # Schema 1:1 field (`nothing` on older messages)
+    expiry_reason::Union{UInt8,Nothing}  # ExpiryReason (25056); 1:2 adds 9=Exhausted, 10=InsufficientQuoteNotionalLimit
+
+    # Schema 1:2 fields (`nothing` on 1:1 sessions)
+    quote_notional_limit::Union{Float64,Nothing}                 # QuoteNotionalLimit (25057)
+    effective_self_trade_prevention_mode::Union{UInt8,Nothing}   # EffectiveSelfTradePreventionMode (25058)
 end
 
 """ExecutionReportAck (templateId=198) - Mini execution report"""
 struct SBEExecutionReportAck
     seq_num::UInt32
     sending_time::Int64
-    order_id::UInt64
+    order_id::Union{Int64,Nothing}
+    list_id::Union{Int64,Nothing}
     cl_ord_id::String
     symbol::String
     exec_type::UInt8
     ord_status::UInt8
-    transact_time::Int64
+    ord_rej_reason::Union{UInt8,Nothing}
+    transact_time::Union{Int64,Nothing}
     error_code::Union{Int32,Nothing}
     text::String
 end
@@ -460,36 +513,43 @@ end
 struct SBEOrderCancelReject
     seq_num::UInt32
     sending_time::Int64
-    order_id::Union{UInt64,Nothing}
+    order_id::Union{Int64,Nothing}
+    list_id::Union{Int64,Nothing}
     cl_ord_id::String
     orig_cl_ord_id::String
+    orig_cl_list_id::String
     symbol::String
+    cancel_restrictions::Union{UInt8,Nothing}
     cxl_rej_response_to::UInt8
     error_code::Int32
     text::String
 end
 
-"""ListStatus order entry"""
+"""One order of a ListStatus message"""
 struct SBEListStatusOrder
     symbol::String
-    order_id::UInt64
+    order_id::Union{Int64,Nothing}
     cl_ord_id::String
+    ord_rej_reason::Union{UInt8,Nothing}
+    error_code::Union{Int32,Nothing}
+    text::String
+    # (ListTriggerType, ListTriggerTriggerIndex, ListTriggerAction)
+    list_triggering_instructions::Vector{NTuple{3,UInt8}}
 end
 
 """ListStatus (templateId=102)"""
 struct SBEListStatus
     seq_num::UInt32
     sending_time::Int64
-    list_id::UInt64
+    list_id::Union{Int64,Nothing}
     cl_list_id::String
-    contingency_type::UInt8
+    orig_cl_list_id::String
+    contingency_type::Union{UInt8,Nothing}
     list_status_type::UInt8
     list_order_status::UInt8
     list_reject_reason::Union{UInt8,Nothing}
-    transact_time::Int64
+    transact_time::Union{Int64,Nothing}
     orders::Vector{SBEListStatusOrder}
-    error_code::Union{Int32,Nothing}
-    text::String
 end
 
 """OrderMassCancelReport (templateId=104)"""
@@ -501,7 +561,7 @@ struct SBEOrderMassCancelReport
     mass_cancel_request_type::UInt8
     mass_cancel_response::UInt8
     mass_cancel_reject_reason::Union{UInt8,Nothing}
-    total_affected_orders::UInt32
+    total_affected_orders::Union{Int64,Nothing}
     error_code::Union{Int32,Nothing}
     text::String
 end
@@ -510,7 +570,7 @@ end
 struct SBEOrderAmendReject
     seq_num::UInt32
     sending_time::Int64
-    order_id::Union{UInt64,Nothing}
+    order_id::Union{Int64,Nothing}
     cl_ord_id::String
     orig_cl_ord_id::String
     symbol::String
@@ -521,11 +581,11 @@ end
 
 """Limit indicator entry"""
 struct SBELimitIndicator
-    limit_type::UInt8
-    limit_count::UInt32
-    limit_max::UInt32
-    limit_reset_interval::UInt32
-    limit_reset_interval_resolution::UInt8
+    limit_type::UInt8                                        # '1'=ORDER_LIMIT, '2'=MESSAGE_LIMIT
+    limit_count::UInt64
+    limit_max::UInt64
+    limit_reset_interval::Union{UInt32,Nothing}
+    limit_reset_interval_resolution::Union{UInt8,Nothing}    # 's','m','h','d'
 end
 
 """LimitResponse (templateId=121)"""
@@ -536,27 +596,33 @@ struct SBELimitResponse
     limits::Vector{SBELimitIndicator}
 end
 
-"""Market data entry"""
+const SBE_MD_ENTRY_BID = UInt8('0')
+const SBE_MD_ENTRY_OFFER = UInt8('1')
+const SBE_MD_ENTRY_TRADE = UInt8('2')
+
+"""
+Market data entry. `entry_type` is `SBE_MD_ENTRY_BID`, `SBE_MD_ENTRY_OFFER` or
+`SBE_MD_ENTRY_TRADE` (the FIX SBE messages use separate bid/ask groups; the type
+is filled in from the group). `size === nothing` means the wire carried no size.
+"""
 struct SBEMDEntry
-    entry_type::UInt8       # 0=Bid, 1=Offer, 2=Trade
+    entry_type::UInt8
     price::Float64
-    size::Float64
-    update_action::Union{UInt8,Nothing}  # 0=New, 1=Change, 2=Delete
+    size::Union{Float64,Nothing}
     symbol::String
     transact_time::Union{Int64,Nothing}
-    trade_id::Union{UInt64,Nothing}
+    trade_id::Union{Int64,Nothing}
     aggressor_side::Union{UInt8,Nothing}
-    first_book_update_id::Union{UInt64,Nothing}
-    last_book_update_id::Union{UInt64,Nothing}
+    first_book_update_id::Union{Int64,Nothing}
+    last_book_update_id::Union{Int64,Nothing}
 end
 
 """MarketDataSnapshot (templateId=204)"""
 struct SBEMarketDataSnapshot
     seq_num::UInt32
     sending_time::Int64
-    md_req_id::String
     symbol::String
-    last_book_update_id::UInt64
+    last_book_update_id::Union{Int64,Nothing}
     entries::Vector{SBEMDEntry}
 end
 
@@ -565,8 +631,8 @@ struct SBEMarketDataReject
     seq_num::UInt32
     sending_time::Int64
     md_req_id::String
-    reject_reason::UInt8
-    error_code::Int32
+    reject_reason::Union{UInt8,Nothing}
+    error_code::Union{Int32,Nothing}
     text::String
 end
 
@@ -574,7 +640,8 @@ end
 struct SBEMarketDataIncrementalTrade
     seq_num::UInt32
     sending_time::Int64
-    md_req_id::String
+    symbol::String
+    transact_time::Int64
     entries::Vector{SBEMDEntry}
 end
 
@@ -582,7 +649,8 @@ end
 struct SBEMarketDataIncrementalBookTicker
     seq_num::UInt32
     sending_time::Int64
-    md_req_id::String
+    symbol::String
+    last_book_update_id::Int64
     entries::Vector{SBEMDEntry}
 end
 
@@ -593,9 +661,9 @@ Update Speed: 20ms from 2026-08-04 ~07:00 UTC (25ms before rollout)
 struct SBEMarketDataIncrementalDepth
     seq_num::UInt32
     sending_time::Int64
-    md_req_id::String
-    first_book_update_id::UInt64
-    last_book_update_id::UInt64
+    symbol::String
+    first_book_update_id::Int64
+    last_book_update_id::Int64
     entries::Vector{SBEMDEntry}
 end
 
@@ -603,13 +671,17 @@ end
 struct SBEInstrumentInfo
     symbol::String
     currency::String
-    min_trade_vol::Float64
-    max_trade_vol::Float64
-    min_qty_increment::Float64
-    market_min_trade_vol::Float64
-    market_max_trade_vol::Float64
-    market_min_qty_increment::Float64
-    min_price_increment::Float64
+    min_trade_vol::Union{Float64,Nothing}
+    max_trade_vol::Union{Float64,Nothing}
+    min_qty_increment::Union{Float64,Nothing}
+    market_min_trade_vol::Union{Float64,Nothing}
+    market_max_trade_vol::Union{Float64,Nothing}
+    market_min_qty_increment::Union{Float64,Nothing}
+    start_price_range::Union{Float64,Nothing}
+    end_price_range::Union{Float64,Nothing}
+    min_price_increment::Union{Float64,Nothing}
+    price_exponent::Int8
+    qty_exponent::Int8
 end
 
 """InstrumentList (templateId=201)"""
@@ -621,60 +693,119 @@ struct SBEInstrumentList
 end
 
 # =============================================================================
+# Field readers
+# =============================================================================
+#
+# `base` is the 1-based index of the first byte of a block; `off` is the field's
+# zero-based offset inside that block, as listed in the schema.
+
+"""Helper to read int32 (little-endian)"""
+@inline function read_int32(data::Vector{UInt8}, offset::Int)
+    return reinterpret(Int32, read_uint32(data, offset))
+end
+
+@inline f_u8(b, base, off) = b[base+off]
+@inline f_i8(b, base, off) = reinterpret(Int8, b[base+off])
+@inline f_u32(b, base, off) = read_uint32(b, base + off)
+@inline f_i32(b, base, off) = read_int32(b, base + off)
+@inline f_u64(b, base, off) = read_uint64(b, base + off)
+@inline f_i64(b, base, off) = read_int64(b, base + off)
+
+@inline f_opt_u8(b, base, off) = (v = f_u8(b, base, off); v == SBE_UINT8_NULL ? nothing : v)
+@inline f_opt_char(b, base, off) = (v = f_u8(b, base, off); v == SBE_CHAR_NULL ? nothing : v)
+@inline f_opt_u32(b, base, off) = (v = f_u32(b, base, off); v == SBE_UINT32_NULL ? nothing : v)
+@inline f_opt_i32(b, base, off) = (v = f_i32(b, base, off); v == SBE_INT32_NULL ? nothing : v)
+@inline f_opt_u64(b, base, off) = (v = f_u64(b, base, off); v == SBE_UINT64_NULL ? nothing : v)
+@inline f_opt_i64(b, base, off) = (v = f_i64(b, base, off); v == SBE_INT64_NULL ? nothing : v)
+
+"""Decimal value of a mantissa: `mantissa × 10^exponent`."""
+@inline function decimal_value(mantissa::Int64, exponent::Int8)
+    return exponent < 0 ? mantissa / 10.0^(-Int(exponent)) : mantissa * 10.0^Int(exponent)
+end
+
+@inline f_dec(b, base, off, exponent::Int8) = decimal_value(f_i64(b, base, off), exponent)
+@inline function f_opt_dec(b, base, off, exponent::Int8)
+    m = f_i64(b, base, off)
+    return m == SBE_INT64_NULL ? nothing : decimal_value(m, exponent)
+end
+
+# The root block must be fully present before any field is read.
+function require_block(body::Vector{UInt8}, header::FIXSBEMessageHeader, minimum::Int, name::String)
+    block = Int(header.blockLength)
+    block >= minimum || throw(ArgumentError(
+        "$name root block is $block bytes; schema requires at least $minimum"))
+    length(body) >= block || throw(ArgumentError(
+        "Truncated $name: root block is $block bytes, body has $(length(body))"))
+    return block
+end
+
+# Repeating-group dimensions. Each returns (entry block length, entry count,
+# index of the first entry). The four encodings differ only in field widths.
+function group_dims(body::Vector{UInt8}, pos::Int, block_bytes::Int, count_bytes::Int, name::String)
+    header_size = block_bytes + count_bytes
+    pos + header_size - 1 <= length(body) || throw(ArgumentError("Truncated $name group header"))
+    block = block_bytes == 1 ? Int(body[pos]) : Int(read_uint16(body, pos))
+    cpos = pos + block_bytes
+    count = count_bytes == 1 ? Int(body[cpos]) :
+            count_bytes == 2 ? Int(read_uint16(body, cpos)) : Int(read_uint32(body, cpos))
+    first = pos + header_size
+    # Entries without var data occupy exactly count × block bytes; with var data
+    # they occupy more. Either way this is a lower bound, checked before looping.
+    first + count * block - 1 <= length(body) || throw(ArgumentError(
+        "Invalid $name group: $count entries of $block bytes exceed the message body"))
+    return block, count, first
+end
+
+function require_entry(block::Int, minimum::Int, name::String)
+    block >= minimum || throw(ArgumentError(
+        "$name group entry is $block bytes; schema requires at least $minimum"))
+    return nothing
+end
+
+# =============================================================================
 # Message Decoder Functions
 # =============================================================================
 
 """Decode LogonAck message"""
 function decode_logon_ack(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-
-    # Variable-length field: uuid
+    # Root block (6 bytes): EncryptMethod uint8, HeartBtInt uint32,
+    # SbeSchemaIdVersionDeprecated boolEnum. Var data starts after it.
+    offset = require_block(body, header, 0, "LogonAck") + 1
     uuid, offset = read_var_string8(body, offset)
-
     return SBELogonAck(header.seqNum, header.sendingTime, uuid)
 end
 
 """Decode Logout message"""
 function decode_logout(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-
-    # Variable-length field: text
+    offset = require_block(body, header, 0, "Logout") + 1
     text, offset = read_var_string16(body, offset)
-
     return SBELogout(header.seqNum, header.sendingTime, text)
 end
 
 """Decode Heartbeat message"""
 function decode_heartbeat(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-
-    # Variable-length field: testReqId
+    offset = require_block(body, header, 0, "Heartbeat") + 1
     test_req_id, offset = read_var_string8(body, offset)
-
     return SBEHeartbeat(header.seqNum, header.sendingTime, test_req_id)
 end
 
 """Decode TestRequest message"""
 function decode_test_request(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-
-    # Variable-length field: testReqId
+    offset = require_block(body, header, 0, "TestRequest") + 1
     test_req_id, offset = read_var_string8(body, offset)
-
     return SBETestRequest(header.seqNum, header.sendingTime, test_req_id)
 end
 
 """Decode Reject message"""
 function decode_reject(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
+    # RefSeqNum u32 (0), RefTagID u32 (4), SessionRejectReason u8 (8), ErrorCode i32 (9)
+    block = require_block(body, header, 13, "Reject")
+    ref_seq_num = f_opt_u32(body, 1, 0)
+    ref_tag_id = f_opt_u32(body, 1, 4)
+    session_reject_reason = f_opt_u8(body, 1, 8)
+    error_code = f_opt_i32(body, 1, 9)
 
-    # Fixed fields
-    ref_seq_num = read_uint32(body, offset); offset += 4
-    ref_tag_id = read_uint16(body, offset); offset += 2
-    session_reject_reason = read_uint8(body, offset); offset += 1
-    error_code = read_int32(body, offset); offset += 4
-
-    # Variable-length fields
+    offset = block + 1
     ref_msg_type, offset = read_var_string8(body, offset)
     text, offset = read_var_string16(body, offset)
 
@@ -687,285 +818,231 @@ end
 
 """Decode News message"""
 function decode_news(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-
-    # Fixed fields
-    urgency = read_uint8(body, offset); offset += 1
-
-    # Variable-length fields
-    headline, offset = read_var_string8(body, offset)
-    text, offset = read_var_string16(body, offset)
-
-    return SBENews(header.seqNum, header.sendingTime, headline, text, urgency)
+    offset = require_block(body, header, 0, "News") + 1
+    headline, offset = read_var_string16(body, offset)
+    return SBENews(header.seqNum, header.sendingTime, headline)
 end
 
-"""Helper to read int32 (little-endian)"""
-@inline function read_int32(data::Vector{UInt8}, offset::Int)
-    return reinterpret(Int32, read_uint32(data, offset))
-end
+# Zero-based offsets of the fields that later schema versions appended to the
+# ExecutionReport root block. `blockLength` tells whether a message has them.
+const ER_BLOCK_LENGTH_V0 = 280                # schema 1:0
+const ER_EXPIRY_REASON_OFFSET = 280           # uint8 enum, since 1:1 (block = 281)
+const ER_QUOTE_NOTIONAL_LIMIT_OFFSET = 281    # mantissa64 with PriceExponent, since 1:2
+const ER_EFFECTIVE_STP_OFFSET = 289           # char enum, since 1:2 (block = 290)
 
 """Decode ExecutionReport message"""
 function decode_execution_report(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-    QTY_EXP = Int8(-8)
+    block = require_block(body, header, ER_BLOCK_LENGTH_V0, "ExecutionReport")
+    b = body
+    px = f_i8(b, 1, 0)        # PriceExponent
+    qty = f_i8(b, 1, 1)       # QtyExponent
+    has(off, size) = block >= off + size
 
-    # Fixed fields
-    order_id = read_uint64(body, offset); offset += 8
-    list_id_raw = read_uint64(body, offset); offset += 8
-    list_id = list_id_raw == SBE_UINT64_NULL ? nothing : list_id_raw
-    exec_id = read_uint64(body, offset); offset += 8
-
-    side = read_uint8(body, offset); offset += 1
-    ord_type = read_uint8(body, offset); offset += 1
-    time_in_force = read_uint8(body, offset); offset += 1
-    exec_type = read_uint8(body, offset); offset += 1
-    ord_status = read_uint8(body, offset); offset += 1
-
-    # Quantities (mantissa64)
-    order_qty_m = read_int64(body, offset); offset += 8
-    order_qty = mantissa_to_float(order_qty_m, QTY_EXP)
-
-    price_m = read_int64(body, offset); offset += 8
-    price = price_m == SBE_INT64_NULL ? nothing : mantissa_to_float(price_m, QTY_EXP)
-
-    cum_qty_m = read_int64(body, offset); offset += 8
-    cum_qty = mantissa_to_float(cum_qty_m, QTY_EXP)
-
-    leaves_qty_m = read_int64(body, offset); offset += 8
-    leaves_qty = mantissa_to_float(leaves_qty_m, QTY_EXP)
-
-    cum_quote_qty_m = read_int64(body, offset); offset += 8
-    cum_quote_qty = mantissa_to_float(cum_quote_qty_m, QTY_EXP)
-
-    last_qty_m = read_int64(body, offset); offset += 8
-    last_qty = last_qty_m == SBE_INT64_NULL ? nothing : mantissa_to_float(last_qty_m, QTY_EXP)
-
-    last_px_m = read_int64(body, offset); offset += 8
-    last_px = last_px_m == SBE_INT64_NULL ? nothing : mantissa_to_float(last_px_m, QTY_EXP)
-
-    transact_time = read_int64(body, offset); offset += 8
-
-    order_creation_time_raw = read_int64(body, offset); offset += 8
-    order_creation_time = order_creation_time_raw == SBE_INT64_NULL ? nothing : order_creation_time_raw
-
-    working_time_raw = read_int64(body, offset); offset += 8
-    working_time = working_time_raw == SBE_INT64_NULL ? nothing : working_time_raw
-
-    trade_id_raw = read_uint64(body, offset); offset += 8
-    trade_id = trade_id_raw == SBE_UINT64_NULL ? nothing : trade_id_raw
-
-    aggressor_raw = read_uint8(body, offset); offset += 1
-    aggressor_indicator = aggressor_raw == SBE_UINT8_NULL ? nothing : aggressor_raw
-
-    working_raw = read_uint8(body, offset); offset += 1
-    working_indicator = working_raw == SBE_UINT8_NULL ? nothing : working_raw
-
-    stp_raw = read_uint8(body, offset); offset += 1
-    self_trade_prevention_mode = stp_raw == SBE_UINT8_NULL ? nothing : stp_raw
-
-    prevented_match_id_raw = read_uint64(body, offset); offset += 8
-    prevented_match_id = prevented_match_id_raw == SBE_UINT64_NULL ? nothing : prevented_match_id_raw
-
-    prevented_qty_m = read_int64(body, offset); offset += 8
-    prevented_qty = prevented_qty_m == SBE_INT64_NULL ? nothing : mantissa_to_float(prevented_qty_m, QTY_EXP)
-
-    trigger_price_m = read_int64(body, offset); offset += 8
-    trigger_price = trigger_price_m == SBE_INT64_NULL ? nothing : mantissa_to_float(trigger_price_m, QTY_EXP)
-
-    trigger_dir_raw = read_uint8(body, offset); offset += 1
-    trigger_price_direction = trigger_dir_raw == SBE_UINT8_NULL ? nothing : trigger_dir_raw
-
-    error_code_raw = read_int32(body, offset); offset += 4
-    error_code = error_code_raw == typemax(Int32) ? nothing : error_code_raw
-
-    # Schema 1:1 field: ExpiryReason (optional UInt8, TAG 25056)
-    # Use blockLength to detect if the new field is present in the fixed block
-    expiry_reason = nothing
-    if offset <= header.blockLength
-        expiry_raw = read_uint8(body, offset); offset += 1
-        expiry_reason = expiry_raw == SBE_UINT8_NULL ? nothing : expiry_raw
-    end
-
-    # Skip any remaining unknown fixed fields to align with blockLength
-    offset = header.blockLength + 1
-
-    # Read NoMiscFees group
+    # MiscFees group: smallGroupSize16Encoding (blockLength uint8, numInGroup uint16)
+    fee_block, fee_count, offset = group_dims(b, block + 1, 1, 2, "MiscFees")
     fees = SBEMiscFee[]
-    if offset + 2 < length(body)
-        group_block_length = read_uint16(body, offset); offset += 2
-        num_fees = read_uint8(body, offset); offset += 1
-        for _ in 1:num_fees
-            fee_amt_m = read_int64(body, offset); offset += 8
-            fee_type = read_uint8(body, offset); offset += 1
-            # Skip to var data for currency
-            fee_currency, offset = read_var_string8(body, offset)
-            push!(fees, SBEMiscFee(
-                mantissa_to_float(fee_amt_m, QTY_EXP),
-                fee_currency,
-                fee_type
-            ))
+    if fee_count > 0
+        require_entry(fee_block, 10, "MiscFees")
+        sizehint!(fees, fee_count)
+        for _ in 1:fee_count
+            fee_exponent = f_i8(b, offset, 0)
+            amount = f_dec(b, offset, 1, fee_exponent)
+            fee_type = f_u8(b, offset, 9)
+            currency, offset = read_var_string8(b, offset + fee_block)
+            push!(fees, SBEMiscFee(amount, currency, fee_type))
         end
     end
 
-    # Variable-length fields
-    cl_ord_id, offset = read_var_string8(body, offset)
-    orig_cl_ord_id, offset = read_var_string8(body, offset)
-    symbol, offset = read_var_string8(body, offset)
-    text, offset = read_var_string16(body, offset)
+    cl_ord_id, offset = read_var_string8(b, offset)
+    orig_cl_ord_id, offset = read_var_string8(b, offset)
+    symbol, offset = read_var_string8(b, offset)
+    secondary_symbol, offset = read_var_string8(b, offset)
+    counter_symbol, offset = read_var_string8(b, offset)
+    text, offset = read_var_string16(b, offset)
 
-    return SBEExecutionReport(
-        header.seqNum, header.sendingTime,
-        order_id, cl_ord_id, orig_cl_ord_id, list_id, exec_id,
-        symbol, side, ord_type, order_qty, price, time_in_force,
-        exec_type, ord_status,
-        cum_qty, leaves_qty, cum_quote_qty, last_qty, last_px,
-        transact_time, order_creation_time, working_time,
-        trade_id, aggressor_indicator, working_indicator,
-        self_trade_prevention_mode, prevented_match_id, prevented_qty,
-        trigger_price, trigger_price_direction,
-        fees, error_code, text, expiry_reason
+    return SBEExecutionReport(;
+        seq_num=header.seqNum,
+        sending_time=header.sendingTime,
+        exec_id=f_opt_i64(b, 1, 2),
+        order_id=f_opt_i64(b, 1, 10),
+        order_qty=f_opt_dec(b, 1, 18, qty),
+        ord_type=f_u8(b, 1, 26),
+        side=f_u8(b, 1, 27),
+        exec_inst=f_opt_char(b, 1, 28),
+        price=f_opt_dec(b, 1, 29, px),
+        trigger_type=f_opt_char(b, 1, 37),
+        trigger_action=f_opt_char(b, 1, 38),
+        trigger_price=f_opt_dec(b, 1, 39, px),
+        trigger_price_type=f_opt_char(b, 1, 47),
+        trigger_price_direction=f_opt_char(b, 1, 48),
+        trigger_trailing_delta_bips=f_opt_u64(b, 1, 49),
+        peg_offset_value=f_opt_u8(b, 1, 57),
+        peg_price_type=f_opt_char(b, 1, 58),
+        peg_move_type=f_opt_u8(b, 1, 59),
+        peg_offset_type=f_opt_char(b, 1, 60),
+        pegged_price=f_opt_dec(b, 1, 61, px),
+        time_in_force=f_opt_char(b, 1, 69),
+        transact_time=f_opt_i64(b, 1, 70),
+        order_creation_time=f_opt_i64(b, 1, 78),
+        max_floor=f_opt_dec(b, 1, 86, qty),
+        list_id=f_opt_i64(b, 1, 94),
+        cash_order_qty=f_opt_dec(b, 1, 102, px),
+        target_strategy=f_opt_i32(b, 1, 110),
+        strategy_id=f_opt_i64(b, 1, 114),
+        order_capacity=f_opt_char(b, 1, 122),
+        self_trade_prevention_mode=f_opt_char(b, 1, 123),
+        exec_type=f_u8(b, 1, 124),
+        cum_qty=f_dec(b, 1, 125, qty),
+        leaves_qty=f_opt_dec(b, 1, 133, qty),
+        cum_quote_qty=f_opt_dec(b, 1, 141, px),
+        aggressor_indicator=f_opt_u8(b, 1, 149),
+        trade_id=f_opt_i64(b, 1, 150),
+        last_px=f_opt_dec(b, 1, 158, px),
+        last_qty=f_dec(b, 1, 166, qty),
+        ord_status=f_u8(b, 1, 174),
+        secondary_order_id=f_opt_i64(b, 1, 175),
+        secondary_external_account_id=f_opt_i64(b, 1, 183),
+        alloc_id=f_opt_i64(b, 1, 191),
+        match_type=f_opt_char(b, 1, 199),
+        working_floor=f_opt_u8(b, 1, 200),
+        working_indicator=f_opt_u8(b, 1, 201),
+        working_time=f_opt_i64(b, 1, 202),
+        trailing_time=f_opt_i64(b, 1, 210),
+        prevented_match_id=f_opt_i64(b, 1, 218),
+        prevented_execution_price=f_opt_dec(b, 1, 226, px),
+        prevented_execution_qty=f_opt_dec(b, 1, 234, qty),
+        trade_group_id=f_opt_i64(b, 1, 242),
+        counter_order_id=f_opt_i64(b, 1, 250),
+        prevented_qty=f_opt_dec(b, 1, 258, qty),
+        last_prevented_qty=f_opt_dec(b, 1, 266, qty),
+        sor=f_opt_u8(b, 1, 274),
+        ord_rej_reason=f_opt_u8(b, 1, 275),
+        error_code=f_opt_i32(b, 1, 276),
+        expiry_reason=has(ER_EXPIRY_REASON_OFFSET, 1) ? f_opt_u8(b, 1, ER_EXPIRY_REASON_OFFSET) : nothing,
+        quote_notional_limit=has(ER_QUOTE_NOTIONAL_LIMIT_OFFSET, 8) ?
+            f_opt_dec(b, 1, ER_QUOTE_NOTIONAL_LIMIT_OFFSET, px) : nothing,
+        effective_self_trade_prevention_mode=has(ER_EFFECTIVE_STP_OFFSET, 1) ?
+            f_opt_char(b, 1, ER_EFFECTIVE_STP_OFFSET) : nothing,
+        fees=fees,
+        cl_ord_id=cl_ord_id,
+        orig_cl_ord_id=orig_cl_ord_id,
+        symbol=symbol,
+        secondary_symbol=secondary_symbol,
+        counter_symbol=counter_symbol,
+        text=text,
     )
 end
 
 """Decode ExecutionReportAck message (mini report)"""
 function decode_execution_report_ack(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-
-    # Fixed fields
-    order_id = read_uint64(body, offset); offset += 8
-    exec_type = read_uint8(body, offset); offset += 1
-    ord_status = read_uint8(body, offset); offset += 1
-    transact_time = read_int64(body, offset); offset += 8
-
-    error_code_raw = read_int32(body, offset); offset += 4
-    error_code = error_code_raw == typemax(Int32) ? nothing : error_code_raw
-
-    # Variable-length fields
+    # OrderID i64 (0), ListID i64 (8), TransactTime i64 (16), ExecType char (24),
+    # OrdStatus char (25), OrdRejReason u8 (26), ErrorCode i32 (27)
+    block = require_block(body, header, 31, "ExecutionReportAck")
+    offset = block + 1
     cl_ord_id, offset = read_var_string8(body, offset)
     symbol, offset = read_var_string8(body, offset)
     text, offset = read_var_string16(body, offset)
 
     return SBEExecutionReportAck(
         header.seqNum, header.sendingTime,
-        order_id, cl_ord_id, symbol,
-        exec_type, ord_status, transact_time,
-        error_code, text
+        f_opt_i64(body, 1, 0), f_opt_i64(body, 1, 8), cl_ord_id, symbol,
+        f_u8(body, 1, 24), f_u8(body, 1, 25), f_opt_u8(body, 1, 26),
+        f_opt_i64(body, 1, 16), f_opt_i32(body, 1, 27), text
     )
 end
 
 """Decode OrderCancelReject message"""
 function decode_order_cancel_reject(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-
-    # Fixed fields
-    order_id_raw = read_uint64(body, offset); offset += 8
-    order_id = order_id_raw == SBE_UINT64_NULL ? nothing : order_id_raw
-
-    cxl_rej_response_to = read_uint8(body, offset); offset += 1
-    error_code = read_int32(body, offset); offset += 4
-
-    # Variable-length fields
+    # OrderID i64 (0), ListID i64 (8), CancelRestrictions u8 (16),
+    # CxlRejResponseTo char (17), ErrorCode i32 (18)
+    block = require_block(body, header, 22, "OrderCancelReject")
+    offset = block + 1
     cl_ord_id, offset = read_var_string8(body, offset)
     orig_cl_ord_id, offset = read_var_string8(body, offset)
+    orig_cl_list_id, offset = read_var_string8(body, offset)
     symbol, offset = read_var_string8(body, offset)
     text, offset = read_var_string16(body, offset)
 
     return SBEOrderCancelReject(
         header.seqNum, header.sendingTime,
-        order_id, cl_ord_id, orig_cl_ord_id, symbol,
-        cxl_rej_response_to, error_code, text
+        f_opt_i64(body, 1, 0), f_opt_i64(body, 1, 8),
+        cl_ord_id, orig_cl_ord_id, orig_cl_list_id, symbol,
+        f_opt_u8(body, 1, 16), f_u8(body, 1, 17), f_i32(body, 1, 18), text
     )
 end
 
 """Decode ListStatus message"""
 function decode_list_status(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
+    # ListID i64 (0), ContingencyType u8 (8), ListStatusType u8 (9),
+    # ListOrderStatus u8 (10), ListRejectReason u8 (11), TransactTime i64 (12)
+    block = require_block(body, header, 20, "ListStatus")
 
-    # Fixed fields
-    list_id = read_uint64(body, offset); offset += 8
-    contingency_type = read_uint8(body, offset); offset += 1
-    list_status_type = read_uint8(body, offset); offset += 1
-    list_order_status = read_uint8(body, offset); offset += 1
-
-    list_rej_raw = read_uint8(body, offset); offset += 1
-    list_reject_reason = list_rej_raw == SBE_UINT8_NULL ? nothing : list_rej_raw
-
-    transact_time = read_int64(body, offset); offset += 8
-
-    error_code_raw = read_int32(body, offset); offset += 4
-    error_code = error_code_raw == typemax(Int32) ? nothing : error_code_raw
-
-    # Read NoOrders group
+    # Orders group: smallGroupSize8Encoding. Entry: OrderID i64 (0),
+    # OrdRejReason u8 (8), ErrorCode i32 (9); then a nested
+    # ListTriggeringInstructions group and three var-data fields.
+    order_block, order_count, offset = group_dims(body, block + 1, 1, 1, "ListStatus Orders")
     orders = SBEListStatusOrder[]
-    if offset + 2 < length(body)
-        group_block_length = read_uint16(body, offset); offset += 2
-        num_orders = read_uint8(body, offset); offset += 1
+    if order_count > 0
+        require_entry(order_block, 13, "ListStatus Orders")
+        for _ in 1:order_count
+            order_id = f_opt_i64(body, offset, 0)
+            ord_rej_reason = f_opt_u8(body, offset, 8)
+            error_code = f_opt_i32(body, offset, 9)
 
-        for _ in 1:num_orders
-            o_order_id = read_uint64(body, offset); offset += 8
-            # Variable fields for this order
-            o_symbol, offset = read_var_string8(body, offset)
-            o_cl_ord_id, offset = read_var_string8(body, offset)
-            push!(orders, SBEListStatusOrder(o_symbol, o_order_id, o_cl_ord_id))
+            instr_block, instr_count, pos = group_dims(body, offset + order_block, 1, 1,
+                "ListTriggeringInstructions")
+            instructions = NTuple{3,UInt8}[]
+            if instr_count > 0
+                require_entry(instr_block, 3, "ListTriggeringInstructions")
+                for _ in 1:instr_count
+                    push!(instructions, (f_u8(body, pos, 0), f_u8(body, pos, 1), f_u8(body, pos, 2)))
+                    pos += instr_block
+                end
+            end
+
+            cl_ord_id, pos = read_var_string8(body, pos)
+            symbol, pos = read_var_string8(body, pos)
+            text, pos = read_var_string16(body, pos)
+            push!(orders, SBEListStatusOrder(symbol, order_id, cl_ord_id,
+                ord_rej_reason, error_code, text, instructions))
+            offset = pos
         end
     end
 
-    # Variable-length fields
     cl_list_id, offset = read_var_string8(body, offset)
-    text, offset = read_var_string16(body, offset)
+    orig_cl_list_id, offset = read_var_string8(body, offset)
 
     return SBEListStatus(
         header.seqNum, header.sendingTime,
-        list_id, cl_list_id, contingency_type,
-        list_status_type, list_order_status, list_reject_reason,
-        transact_time, orders, error_code, text
+        f_opt_i64(body, 1, 0), cl_list_id, orig_cl_list_id,
+        f_opt_u8(body, 1, 8), f_u8(body, 1, 9), f_u8(body, 1, 10), f_opt_u8(body, 1, 11),
+        f_opt_i64(body, 1, 12), orders
     )
 end
 
 """Decode OrderMassCancelReport message"""
 function decode_order_mass_cancel_report(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-
-    # Fixed fields
-    mass_cancel_request_type = read_uint8(body, offset); offset += 1
-    mass_cancel_response = read_uint8(body, offset); offset += 1
-
-    mass_cancel_rej_raw = read_uint8(body, offset); offset += 1
-    mass_cancel_reject_reason = mass_cancel_rej_raw == SBE_UINT8_NULL ? nothing : mass_cancel_rej_raw
-
-    total_affected_orders = read_uint32(body, offset); offset += 4
-
-    error_code_raw = read_int32(body, offset); offset += 4
-    error_code = error_code_raw == typemax(Int32) ? nothing : error_code_raw
-
-    # Variable-length fields
-    cl_ord_id, offset = read_var_string8(body, offset)
+    # MassCancelRequestType char (0), MassCancelResponse char (1),
+    # MassCancelRejectReason u8 (2), TotalAffectedOrders i64 (3), ErrorCode i32 (11)
+    block = require_block(body, header, 15, "OrderMassCancelReport")
+    offset = block + 1
     symbol, offset = read_var_string8(body, offset)
+    cl_ord_id, offset = read_var_string8(body, offset)
     text, offset = read_var_string16(body, offset)
 
     return SBEOrderMassCancelReport(
         header.seqNum, header.sendingTime,
         cl_ord_id, symbol,
-        mass_cancel_request_type, mass_cancel_response, mass_cancel_reject_reason,
-        total_affected_orders, error_code, text
+        f_u8(body, 1, 0), f_u8(body, 1, 1), f_opt_u8(body, 1, 2),
+        f_opt_i64(body, 1, 3), f_opt_i32(body, 1, 11), text
     )
 end
 
 """Decode OrderAmendReject message"""
 function decode_order_amend_reject(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-    QTY_EXP = Int8(-8)
-
-    # Fixed fields
-    order_id_raw = read_uint64(body, offset); offset += 8
-    order_id = order_id_raw == SBE_UINT64_NULL ? nothing : order_id_raw
-
-    order_qty_m = read_int64(body, offset); offset += 8
-    order_qty = mantissa_to_float(order_qty_m, QTY_EXP)
-
-    error_code = read_int32(body, offset); offset += 4
-
-    # Variable-length fields
+    # OrderID i64 (0), QtyExponent i8 (8), OrderQty mantissa (9), ErrorCode i32 (17)
+    block = require_block(body, header, 21, "OrderAmendReject")
+    offset = block + 1
     cl_ord_id, offset = read_var_string8(body, offset)
     orig_cl_ord_id, offset = read_var_string8(body, offset)
     symbol, offset = read_var_string8(body, offset)
@@ -973,276 +1050,188 @@ function decode_order_amend_reject(header::FIXSBEMessageHeader, body::Vector{UIn
 
     return SBEOrderAmendReject(
         header.seqNum, header.sendingTime,
-        order_id, cl_ord_id, orig_cl_ord_id, symbol,
-        order_qty, error_code, text
+        f_opt_i64(body, 1, 0), cl_ord_id, orig_cl_ord_id, symbol,
+        f_dec(body, 1, 9, f_i8(body, 1, 8)), f_i32(body, 1, 17), text
     )
 end
 
 """Decode LimitResponse message"""
 function decode_limit_response(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
+    block = require_block(body, header, 0, "LimitResponse")
 
-    # Read NoLimitIndicators group
+    # LimitIndicators group: smallGroupSize8Encoding. Entry: LimitType char (0),
+    # LimitCount u64 (1), LimitMax u64 (9), LimitResetInterval u32 (17),
+    # LimitResetIntervalResolution char (21)
+    entry_block, count, offset = group_dims(body, block + 1, 1, 1, "LimitIndicators")
     limits = SBELimitIndicator[]
-    if offset + 2 < length(body)
-        group_block_length = read_uint16(body, offset); offset += 2
-        num_limits = read_uint8(body, offset); offset += 1
-
-        for _ in 1:num_limits
-            limit_type = read_uint8(body, offset); offset += 1
-            limit_count = read_uint32(body, offset); offset += 4
-            limit_max = read_uint32(body, offset); offset += 4
-            limit_reset_interval = read_uint32(body, offset); offset += 4
-            limit_reset_interval_res = read_uint8(body, offset); offset += 1
-
+    if count > 0
+        require_entry(entry_block, 22, "LimitIndicators")
+        for _ in 1:count
             push!(limits, SBELimitIndicator(
-                limit_type, limit_count, limit_max,
-                limit_reset_interval, limit_reset_interval_res
+                f_u8(body, offset, 0), f_u64(body, offset, 1), f_u64(body, offset, 9),
+                f_opt_u32(body, offset, 17), f_opt_char(body, offset, 21)
             ))
+            offset += entry_block
         end
     end
 
-    # Variable-length field
     req_id, offset = read_var_string8(body, offset)
-
     return SBELimitResponse(header.seqNum, header.sendingTime, req_id, limits)
+end
+
+# One side of a book: entries of MDEntryPx mantissa (0), MDEntrySize mantissa (8).
+# Returns the (price, size) pairs and the index after the group.
+function read_book_side(body::Vector{UInt8}, pos::Int, block_bytes::Int, count_bytes::Int,
+    px::Int8, qty::Int8, name::String)
+    entry_block, count, offset = group_dims(body, pos, block_bytes, count_bytes, name)
+    levels = Tuple{Float64,Union{Float64,Nothing}}[]
+    if count > 0
+        require_entry(entry_block, 16, name)
+        sizehint!(levels, count)
+        for _ in 1:count
+            push!(levels, (f_dec(body, offset, 0, px), f_opt_dec(body, offset, 8, qty)))
+            offset += entry_block
+        end
+    end
+    return levels, offset
+end
+
+function book_entries(bids, asks, symbol::String, first_id, last_id)
+    entries = SBEMDEntry[]
+    sizehint!(entries, length(bids) + length(asks))
+    for (price, size) in bids
+        push!(entries, SBEMDEntry(SBE_MD_ENTRY_BID, price, size, symbol, nothing, nothing, nothing, first_id, last_id))
+    end
+    for (price, size) in asks
+        push!(entries, SBEMDEntry(SBE_MD_ENTRY_OFFER, price, size, symbol, nothing, nothing, nothing, first_id, last_id))
+    end
+    return entries
 end
 
 """Decode MarketDataSnapshot message"""
 function decode_market_data_snapshot(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-    PRICE_EXP = Int8(-8)
+    # LastBookUpdateID i64 (0), PriceExponent i8 (8), QtyExponent i8 (9);
+    # bid and ask groups use smallGroupSize16Encoding
+    block = require_block(body, header, 10, "MarketDataSnapshot")
+    last_id = f_opt_i64(body, 1, 0)
+    px, qty = f_i8(body, 1, 8), f_i8(body, 1, 9)
 
-    # Fixed fields
-    last_book_update_id = read_uint64(body, offset); offset += 8
-
-    # Read NoMDEntries group
-    entries = SBEMDEntry[]
-    if offset + 2 < length(body)
-        group_block_length = read_uint16(body, offset); offset += 2
-        num_entries = read_uint8(body, offset); offset += 1
-
-        for _ in 1:num_entries
-            entry_type = read_uint8(body, offset); offset += 1
-            price_m = read_int64(body, offset); offset += 8
-            size_m = read_int64(body, offset); offset += 8
-
-            push!(entries, SBEMDEntry(
-                entry_type,
-                mantissa_to_float(price_m, PRICE_EXP),
-                mantissa_to_float(size_m, PRICE_EXP),
-                nothing, "", nothing, nothing, nothing, nothing,
-                last_book_update_id
-            ))
-        end
-    end
-
-    # Variable-length fields
-    md_req_id, offset = read_var_string8(body, offset)
+    bids, offset = read_book_side(body, block + 1, 1, 2, px, qty, "MDEntriesBids")
+    asks, offset = read_book_side(body, offset, 1, 2, px, qty, "MDEntriesAsks")
     symbol, offset = read_var_string8(body, offset)
 
-    # Update entries with symbol
-    for i in eachindex(entries)
-        entries[i] = SBEMDEntry(
-            entries[i].entry_type, entries[i].price, entries[i].size,
-            entries[i].update_action, symbol,
-            entries[i].transact_time, entries[i].trade_id, entries[i].aggressor_side,
-            entries[i].first_book_update_id, entries[i].last_book_update_id
-        )
-    end
-
-    return SBEMarketDataSnapshot(
-        header.seqNum, header.sendingTime,
-        md_req_id, symbol, last_book_update_id, entries
-    )
+    return SBEMarketDataSnapshot(header.seqNum, header.sendingTime, symbol, last_id,
+        book_entries(bids, asks, symbol, nothing, last_id))
 end
 
 """Decode MarketDataRequestReject message"""
 function decode_market_data_reject(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-
-    # Fixed fields
-    reject_reason = read_uint8(body, offset); offset += 1
-    error_code = read_int32(body, offset); offset += 4
-
-    # Variable-length fields
+    # MDReqRejReason char (0), ErrorCode i32 (1)
+    block = require_block(body, header, 5, "MarketDataRequestReject")
+    offset = block + 1
     md_req_id, offset = read_var_string8(body, offset)
     text, offset = read_var_string16(body, offset)
 
     return SBEMarketDataReject(
         header.seqNum, header.sendingTime,
-        md_req_id, reject_reason, error_code, text
+        md_req_id, f_opt_char(body, 1, 0), f_opt_i32(body, 1, 1), text
     )
 end
 
 """Decode MarketDataIncrementalTrade message"""
 function decode_market_data_incremental_trade(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-    PRICE_EXP = Int8(-8)
+    # TransactTime i64 (0), PriceExponent i8 (8), QtyExponent i8 (9)
+    block = require_block(body, header, 10, "MarketDataIncrementalTrade")
+    transact_time = f_i64(body, 1, 0)
+    px, qty = f_i8(body, 1, 8), f_i8(body, 1, 9)
 
-    # Read NoMDEntries group
-    entries = SBEMDEntry[]
-    if offset + 2 < length(body)
-        group_block_length = read_uint16(body, offset); offset += 2
-        num_entries = read_uint8(body, offset); offset += 1
-
-        for _ in 1:num_entries
-            price_m = read_int64(body, offset); offset += 8
-            size_m = read_int64(body, offset); offset += 8
-            transact_time = read_int64(body, offset); offset += 8
-            trade_id = read_uint64(body, offset); offset += 8
-            aggressor_side = read_uint8(body, offset); offset += 1
-
-            # Variable field for symbol
-            symbol, offset = read_var_string8(body, offset)
-
-            push!(entries, SBEMDEntry(
-                UInt8(2),  # Trade
-                mantissa_to_float(price_m, PRICE_EXP),
-                mantissa_to_float(size_m, PRICE_EXP),
-                UInt8(0),  # New
-                symbol,
-                transact_time, trade_id, aggressor_side,
-                nothing, nothing
-            ))
+    # MDEntries group: groupSize32Encoding (blockLength uint16, numInGroup uint32).
+    # Entry: TradeID i64 (0), MDEntryPx (8), MDEntrySize (16), AggressorSide char (24)
+    entry_block, count, offset = group_dims(body, block + 1, 2, 4, "MDEntries")
+    trades = Tuple{Int64,Float64,Float64,Union{UInt8,Nothing}}[]
+    if count > 0
+        require_entry(entry_block, 25, "MDEntries")
+        sizehint!(trades, count)
+        for _ in 1:count
+            push!(trades, (f_i64(body, offset, 0), f_dec(body, offset, 8, px),
+                f_dec(body, offset, 16, qty), f_opt_char(body, offset, 24)))
+            offset += entry_block
         end
     end
+    symbol, offset = read_var_string8(body, offset)
 
-    # Variable-length field
-    md_req_id, offset = read_var_string8(body, offset)
-
-    return SBEMarketDataIncrementalTrade(
-        header.seqNum, header.sendingTime,
-        md_req_id, entries
-    )
+    entries = SBEMDEntry[
+        SBEMDEntry(SBE_MD_ENTRY_TRADE, price, size, symbol, transact_time, trade_id, side, nothing, nothing)
+        for (trade_id, price, size, side) in trades
+    ]
+    return SBEMarketDataIncrementalTrade(header.seqNum, header.sendingTime, symbol, transact_time, entries)
 end
 
 """Decode MarketDataIncrementalBookTicker message"""
 function decode_market_data_incremental_book_ticker(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-    PRICE_EXP = Int8(-8)
+    # LastBookUpdateID i64 (0), PriceExponent i8 (8), QtyExponent i8 (9);
+    # bid and ask groups use smallGroupSize8Encoding
+    block = require_block(body, header, 10, "MarketDataIncrementalBookTicker")
+    last_id = f_i64(body, 1, 0)
+    px, qty = f_i8(body, 1, 8), f_i8(body, 1, 9)
 
-    # Read NoMDEntries group
-    entries = SBEMDEntry[]
-    if offset + 2 < length(body)
-        group_block_length = read_uint16(body, offset); offset += 2
-        num_entries = read_uint8(body, offset); offset += 1
+    bids, offset = read_book_side(body, block + 1, 1, 1, px, qty, "MDEntriesBids")
+    asks, offset = read_book_side(body, offset, 1, 1, px, qty, "MDEntriesAsks")
+    symbol, offset = read_var_string8(body, offset)
 
-        for _ in 1:num_entries
-            entry_type = read_uint8(body, offset); offset += 1
-            price_m = read_int64(body, offset); offset += 8
-            size_m = read_int64(body, offset); offset += 8
-            last_book_update_id = read_uint64(body, offset); offset += 8
-
-            # Variable field for symbol
-            symbol, offset = read_var_string8(body, offset)
-
-            push!(entries, SBEMDEntry(
-                entry_type,
-                mantissa_to_float(price_m, PRICE_EXP),
-                mantissa_to_float(size_m, PRICE_EXP),
-                UInt8(1),  # Change
-                symbol,
-                nothing, nothing, nothing,
-                nothing, last_book_update_id
-            ))
-        end
-    end
-
-    # Variable-length field
-    md_req_id, offset = read_var_string8(body, offset)
-
-    return SBEMarketDataIncrementalBookTicker(
-        header.seqNum, header.sendingTime,
-        md_req_id, entries
-    )
+    return SBEMarketDataIncrementalBookTicker(header.seqNum, header.sendingTime, symbol, last_id,
+        book_entries(bids, asks, symbol, nothing, last_id))
 end
 
 """Decode MarketDataIncrementalDepth message"""
 function decode_market_data_incremental_depth(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-    PRICE_EXP = Int8(-8)
+    # FirstBookUpdateID i64 (0), LastBookUpdateID i64 (8), PriceExponent i8 (16),
+    # QtyExponent i8 (17); bid and ask groups use smallGroupSize16Encoding
+    block = require_block(body, header, 18, "MarketDataIncrementalDepth")
+    first_id, last_id = f_i64(body, 1, 0), f_i64(body, 1, 8)
+    px, qty = f_i8(body, 1, 16), f_i8(body, 1, 17)
 
-    # Fixed fields at message level
-    first_book_update_id = read_uint64(body, offset); offset += 8
-    last_book_update_id = read_uint64(body, offset); offset += 8
+    bids, offset = read_book_side(body, block + 1, 1, 2, px, qty, "MDEntriesBids")
+    asks, offset = read_book_side(body, offset, 1, 2, px, qty, "MDEntriesAsks")
+    symbol, offset = read_var_string8(body, offset)
 
-    # Read NoMDEntries group
-    entries = SBEMDEntry[]
-    if offset + 2 < length(body)
-        group_block_length = read_uint16(body, offset); offset += 2
-        num_entries = read_uint8(body, offset); offset += 1
-
-        for _ in 1:num_entries
-            update_action = read_uint8(body, offset); offset += 1
-            entry_type = read_uint8(body, offset); offset += 1
-            price_m = read_int64(body, offset); offset += 8
-            size_m = read_int64(body, offset); offset += 8
-
-            # Variable field for symbol
-            symbol, offset = read_var_string8(body, offset)
-
-            push!(entries, SBEMDEntry(
-                entry_type,
-                mantissa_to_float(price_m, PRICE_EXP),
-                mantissa_to_float(size_m, PRICE_EXP),
-                update_action,
-                symbol,
-                nothing, nothing, nothing,
-                first_book_update_id, last_book_update_id
-            ))
-        end
-    end
-
-    # Variable-length field
-    md_req_id, offset = read_var_string8(body, offset)
-
-    return SBEMarketDataIncrementalDepth(
-        header.seqNum, header.sendingTime,
-        md_req_id, first_book_update_id, last_book_update_id, entries
-    )
+    return SBEMarketDataIncrementalDepth(header.seqNum, header.sendingTime, symbol,
+        first_id, last_id, book_entries(bids, asks, symbol, first_id, last_id))
 end
 
 """Decode InstrumentList message"""
 function decode_instrument_list(header::FIXSBEMessageHeader, body::Vector{UInt8})
-    offset = 1
-    QTY_EXP = Int8(-8)
+    block = require_block(body, header, 0, "InstrumentList")
 
-    # Read NoRelatedSym group
+    # RelatedSym group: groupSize16Encoding (blockLength uint16, numInGroup uint16).
+    # Entry: PriceExponent i8 (0), QtyExponent i8 (1), then nine optional mantissas.
+    entry_block, count, offset = group_dims(body, block + 1, 2, 2, "RelatedSym")
     instruments = SBEInstrumentInfo[]
-    if offset + 2 < length(body)
-        group_block_length = read_uint16(body, offset); offset += 2
-        num_instruments = read_uint8(body, offset); offset += 1
-
-        for _ in 1:num_instruments
-            min_trade_vol_m = read_int64(body, offset); offset += 8
-            max_trade_vol_m = read_int64(body, offset); offset += 8
-            min_qty_increment_m = read_int64(body, offset); offset += 8
-            market_min_trade_vol_m = read_int64(body, offset); offset += 8
-            market_max_trade_vol_m = read_int64(body, offset); offset += 8
-            market_min_qty_increment_m = read_int64(body, offset); offset += 8
-            min_price_increment_m = read_int64(body, offset); offset += 8
-
-            # Variable fields
-            symbol, offset = read_var_string8(body, offset)
+    if count > 0
+        require_entry(entry_block, 74, "RelatedSym")
+        sizehint!(instruments, count)
+        for _ in 1:count
+            px, qty = f_i8(body, offset, 0), f_i8(body, offset, 1)
+            fixed = offset
+            symbol, offset = read_var_string8(body, offset + entry_block)
             currency, offset = read_var_string8(body, offset)
-
             push!(instruments, SBEInstrumentInfo(
                 symbol, currency,
-                mantissa_to_float(min_trade_vol_m, QTY_EXP),
-                mantissa_to_float(max_trade_vol_m, QTY_EXP),
-                mantissa_to_float(min_qty_increment_m, QTY_EXP),
-                mantissa_to_float(market_min_trade_vol_m, QTY_EXP),
-                mantissa_to_float(market_max_trade_vol_m, QTY_EXP),
-                mantissa_to_float(market_min_qty_increment_m, QTY_EXP),
-                mantissa_to_float(min_price_increment_m, QTY_EXP)
+                f_opt_dec(body, fixed, 2, qty),    # MinTradeVol
+                f_opt_dec(body, fixed, 10, qty),   # MaxTradeVol
+                f_opt_dec(body, fixed, 18, qty),   # MinQtyIncrement
+                f_opt_dec(body, fixed, 26, qty),   # MarketMinTradeVol
+                f_opt_dec(body, fixed, 34, qty),   # MarketMaxTradeVol
+                f_opt_dec(body, fixed, 42, qty),   # MarketMinQtyIncrement
+                f_opt_dec(body, fixed, 50, px),    # StartPriceRange
+                f_opt_dec(body, fixed, 58, px),    # EndPriceRange
+                f_opt_dec(body, fixed, 66, px),    # MinPriceIncrement
+                px, qty
             ))
         end
     end
 
-    # Variable-length field
     instrument_req_id, offset = read_var_string8(body, offset)
-
     return SBEInstrumentList(header.seqNum, header.sendingTime, instrument_req_id, instruments)
 end
 
@@ -1250,57 +1239,42 @@ end
 # Main Decoder Dispatch
 # =============================================================================
 
+# templateId => (message kind, decoder). `decode_sbe_message` dispatches through
+# this table; it is also what the tests iterate over.
+const DECODERS = Dict{UInt16,Tuple{Symbol,Function}}(
+    SBE_TEMPLATE_LOGON_ACK => (:logon_ack, decode_logon_ack),
+    SBE_TEMPLATE_LOGOUT => (:logout, decode_logout),
+    SBE_TEMPLATE_HEARTBEAT => (:heartbeat, decode_heartbeat),
+    SBE_TEMPLATE_TEST_REQUEST => (:test_request, decode_test_request),
+    SBE_TEMPLATE_REJECT => (:reject, decode_reject),
+    SBE_TEMPLATE_NEWS => (:news, decode_news),
+    SBE_TEMPLATE_EXECUTION_REPORT => (:execution_report, decode_execution_report),
+    SBE_TEMPLATE_EXECUTION_REPORT_ACK => (:execution_report_ack, decode_execution_report_ack),
+    SBE_TEMPLATE_ORDER_CANCEL_REJECT => (:order_cancel_reject, decode_order_cancel_reject),
+    SBE_TEMPLATE_LIST_STATUS => (:list_status, decode_list_status),
+    SBE_TEMPLATE_ORDER_MASS_CANCEL_REPORT => (:order_mass_cancel_report, decode_order_mass_cancel_report),
+    SBE_TEMPLATE_ORDER_AMEND_REJECT => (:order_amend_reject, decode_order_amend_reject),
+    SBE_TEMPLATE_LIMIT_RESPONSE => (:limit_response, decode_limit_response),
+    SBE_TEMPLATE_MARKET_DATA_SNAPSHOT => (:market_data_snapshot, decode_market_data_snapshot),
+    SBE_TEMPLATE_MARKET_DATA_REQUEST_REJECT => (:market_data_reject, decode_market_data_reject),
+    SBE_TEMPLATE_MARKET_DATA_INCREMENTAL_TRADE => (:market_data_incremental_trade, decode_market_data_incremental_trade),
+    SBE_TEMPLATE_MARKET_DATA_INCREMENTAL_BOOK_TICKER => (:market_data_incremental_book_ticker, decode_market_data_incremental_book_ticker),
+    SBE_TEMPLATE_MARKET_DATA_INCREMENTAL_DEPTH => (:market_data_incremental_depth, decode_market_data_incremental_depth),
+    SBE_TEMPLATE_INSTRUMENT_LIST => (:instrument_list, decode_instrument_list),
+)
+
 """
     decode_sbe_message(data::Vector{UInt8}) -> (Symbol, Any)
 
 Decode a complete FIX SBE message and return (message_type_symbol, decoded_struct).
+An unknown template yields `(:unknown, FIXSBEMessage)`.
 """
 function decode_sbe_message(data::Vector{UInt8})
     msg = decode_fix_sbe_message(data)
-    header = msg.header
-    body = msg.body
-
-    if header.templateId == SBE_TEMPLATE_LOGON_ACK
-        return (:logon_ack, decode_logon_ack(header, body))
-    elseif header.templateId == SBE_TEMPLATE_LOGOUT
-        return (:logout, decode_logout(header, body))
-    elseif header.templateId == SBE_TEMPLATE_HEARTBEAT
-        return (:heartbeat, decode_heartbeat(header, body))
-    elseif header.templateId == SBE_TEMPLATE_TEST_REQUEST
-        return (:test_request, decode_test_request(header, body))
-    elseif header.templateId == SBE_TEMPLATE_REJECT
-        return (:reject, decode_reject(header, body))
-    elseif header.templateId == SBE_TEMPLATE_NEWS
-        return (:news, decode_news(header, body))
-    elseif header.templateId == SBE_TEMPLATE_EXECUTION_REPORT
-        return (:execution_report, decode_execution_report(header, body))
-    elseif header.templateId == SBE_TEMPLATE_EXECUTION_REPORT_ACK
-        return (:execution_report_ack, decode_execution_report_ack(header, body))
-    elseif header.templateId == SBE_TEMPLATE_ORDER_CANCEL_REJECT
-        return (:order_cancel_reject, decode_order_cancel_reject(header, body))
-    elseif header.templateId == SBE_TEMPLATE_LIST_STATUS
-        return (:list_status, decode_list_status(header, body))
-    elseif header.templateId == SBE_TEMPLATE_ORDER_MASS_CANCEL_REPORT
-        return (:order_mass_cancel_report, decode_order_mass_cancel_report(header, body))
-    elseif header.templateId == SBE_TEMPLATE_ORDER_AMEND_REJECT
-        return (:order_amend_reject, decode_order_amend_reject(header, body))
-    elseif header.templateId == SBE_TEMPLATE_LIMIT_RESPONSE
-        return (:limit_response, decode_limit_response(header, body))
-    elseif header.templateId == SBE_TEMPLATE_MARKET_DATA_SNAPSHOT
-        return (:market_data_snapshot, decode_market_data_snapshot(header, body))
-    elseif header.templateId == SBE_TEMPLATE_MARKET_DATA_REQUEST_REJECT
-        return (:market_data_reject, decode_market_data_reject(header, body))
-    elseif header.templateId == SBE_TEMPLATE_MARKET_DATA_INCREMENTAL_TRADE
-        return (:market_data_incremental_trade, decode_market_data_incremental_trade(header, body))
-    elseif header.templateId == SBE_TEMPLATE_MARKET_DATA_INCREMENTAL_BOOK_TICKER
-        return (:market_data_incremental_book_ticker, decode_market_data_incremental_book_ticker(header, body))
-    elseif header.templateId == SBE_TEMPLATE_MARKET_DATA_INCREMENTAL_DEPTH
-        return (:market_data_incremental_depth, decode_market_data_incremental_depth(header, body))
-    elseif header.templateId == SBE_TEMPLATE_INSTRUMENT_LIST
-        return (:instrument_list, decode_instrument_list(header, body))
-    else
-        return (:unknown, msg)
-    end
+    entry = get(DECODERS, msg.header.templateId, nothing)
+    isnothing(entry) && return (:unknown, msg)
+    kind, decoder = entry
+    return (kind, decoder(msg.header, msg.body))
 end
 
 end # module FIXSBEDecoder

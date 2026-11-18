@@ -158,6 +158,7 @@ export order_amendments
 export user_data_stream_start, user_data_stream_ping, user_data_stream_stop, on_event
 export userdata_stream_subscribe, userdata_stream_unsubscribe, session_subscriptions
 export userdata_stream_subscribe_signature
+export userdata_stream_filter, userdata_stream_filter_json, userdata_stream_signature_payload
 
 # Export Account functions
 export get_api_key_permission, get_account_info, get_deposit_history, get_deposit_address

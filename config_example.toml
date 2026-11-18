@@ -32,27 +32,42 @@ recv_window = 5000
 proxy = "socks5://127.0.0.1:7891"
 
 [fix]
-  # PROD stunnel proxy settings for FIX API
-  # Configure your stunnel to proxy these local ports to the Binance FIX servers
-  host = "127.0.0.1"
+  # BinanceFIX connects straight to these hosts over TLS, with SNI and
+  # certificate verification. The values below are also the defaults, so the
+  # whole section can be omitted.
+  order_entry_host = "fix-oe.binance.com"
+  drop_copy_host = "fix-dc.binance.com"
+  market_data_host = "fix-md.binance.com"
 
-  # Standard FIX encoding (remote port 9000)
-  # FIX text protocol requests → FIX text protocol responses
-  order_entry_port = 9000   # fix-oe.binance.com:9000
-  drop_copy_port = 9001     # fix-dc.binance.com:9000
-  market_data_port = 9002   # fix-md.binance.com:9000
+  # Standard FIX encoding: FIX text requests -> FIX text responses
+  order_entry_port = 9000
+  drop_copy_port = 9000
+  market_data_port = 9000
 
-  # FIX SBE Hybrid mode (remote port 9001) - Available 2025-12-18
-  # FIX text protocol requests → SBE binary responses
-  order_entry_sbe_hybrid_port = 9010   # fix-oe.binance.com:9001
-  drop_copy_sbe_hybrid_port = 9011     # fix-dc.binance.com:9001
-  market_data_sbe_hybrid_port = 9012   # fix-md.binance.com:9001
+  # FIX SBE Hybrid mode: FIX text requests -> SBE binary responses
+  order_entry_sbe_hybrid_port = 9001
+  drop_copy_sbe_hybrid_port = 9001
+  market_data_sbe_hybrid_port = 9001
 
-  # FIX SBE Full mode (remote port 9002) - Available 2025-12-18
-  # SBE binary requests → SBE binary responses
-  order_entry_sbe_full_port = 9020     # fix-oe.binance.com:9002
-  drop_copy_sbe_full_port = 9021       # fix-dc.binance.com:9002
-  market_data_sbe_full_port = 9022     # fix-md.binance.com:9002
+  # FIX SBE Full mode: SBE binary requests -> SBE binary responses
+  order_entry_sbe_full_port = 9002
+  drop_copy_sbe_full_port = 9002
+  market_data_sbe_full_port = 9002
+
+# Used instead of [fix] when testnet = true
+[fix_testnet]
+  order_entry_host = "fix-oe.testnet.binance.vision"
+  drop_copy_host = "fix-dc.testnet.binance.vision"
+  market_data_host = "fix-md.testnet.binance.vision"
+  order_entry_port = 9000
+  drop_copy_port = 9000
+  market_data_port = 9000
+  order_entry_sbe_hybrid_port = 9001
+  drop_copy_sbe_hybrid_port = 9001
+  market_data_sbe_hybrid_port = 9001
+  order_entry_sbe_full_port = 9002
+  drop_copy_sbe_full_port = 9002
+  market_data_sbe_full_port = 9002
 
 [rate_limiting]
 # Starting ceilings only. The client corrects them from the server's own

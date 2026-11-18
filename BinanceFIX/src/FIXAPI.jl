@@ -5,6 +5,8 @@ using Dates
 using Base64
 using Random
 using Binance: BinanceConfig, Signature
+import OpenSSL
+using Printf: @sprintf
 using ..FIXConstants
 
 export FIXSession, FIXSessionType, OrderEntry, DropCopy, MarketData
@@ -29,6 +31,7 @@ export InstrumentListMsg, InstrumentInfo, MDEntry
 export parse_instrument_list
 export NewsMsg, is_maintenance_news
 export start_monitor, stop_monitor, reconnect
+export new_sender_comp_id, with_fix_session, pump_messages, fix_decimal
 export SESSION_LIMITS, get_session_limits
 export is_error, get_error_info
 export validate_client_order_id, generate_client_order_id, validate_comp_id
@@ -212,6 +215,11 @@ struct ExecutionReportMsg
     error_code::String          # ErrorCode (25016)
     text::String                # Text (58)
     expiry_reason::String       # ExpiryReason (25056) - reason an order expired
+
+    # Added 2026-11-11 (effective after 2026-11-20 07:00 UTC)
+    quote_notional_limit::String              # QuoteNotionalLimit (25057) - only if sent on the order
+    effective_self_trade_prevention::String   # EffectiveSelfTradePreventionMode (25058) - prevented-match
+                                              # reports where the applied STP mode differs from 25001
 
     # Raw fields for anything not explicitly parsed
     raw_fields::Dict{Int,String}
@@ -489,7 +497,11 @@ function get_stp_info(msg::ExecutionReportMsg)
         trade_group_id=msg.trade_group_id,
         counter_symbol=msg.counter_symbol,
         counter_order_id=msg.counter_order_id,
-        self_trade_prevention_mode=msg.self_trade_prevention
+        self_trade_prevention_mode=msg.self_trade_prevention,
+        # Mode the engine actually applied. Tag 25058 is sent only when it differs
+        # from the order's own mode, so fall back to that.
+        effective_self_trade_prevention_mode=isempty(msg.effective_self_trade_prevention) ?
+            msg.self_trade_prevention : msg.effective_self_trade_prevention
     )
 end
 
@@ -796,10 +808,121 @@ wrap_session_callback(::Nothing) = nothing
 wrap_session_callback(callback::SessionCallback) = callback
 wrap_session_callback(callback) = SessionCallback(callback)
 
+# =============================================================================
+# Connection (shared by text FIX and FIX SBE sessions)
+# =============================================================================
+
+"""
+A TLS connection to a Binance FIX endpoint.
+
+A background task reads from the stream into `buffer`. Julia sockets only
+receive while a task is reading them, so polling `bytesavailable` on an idle
+socket never sees data; sessions poll `take_bytes!` instead.
+"""
+mutable struct FIXConnection
+    io::IO
+    buffer::Vector{UInt8}
+    buffer_lock::ReentrantLock
+    @atomic closed::Bool
+    reader::Union{Task,Nothing}
+
+    function FIXConnection(io::IO)
+        conn = new(io, UInt8[], ReentrantLock(), false, nothing)
+        conn.reader = errormonitor(Threads.@spawn read_loop(conn))
+        return conn
+    end
+end
+
+function read_loop(conn::FIXConnection)
+    try
+        # `eof` blocks until bytes arrive or the peer closes; for TLS it also
+        # drives record decryption, after which `readavailable` returns them.
+        while !(@atomic conn.closed) && !eof(conn.io)
+            data = readavailable(conn.io)
+            isempty(data) && continue
+            lock(conn.buffer_lock) do
+                append!(conn.buffer, data)
+            end
+        end
+    catch e
+        (@atomic conn.closed) || @debug "FIX connection reader stopped" exception=e
+    finally
+        @atomic conn.closed = true
+    end
+    return nothing
+end
+
+"""
+    take_bytes!(conn) -> Vector{UInt8}
+
+Remove and return everything received so far (empty if nothing arrived).
+"""
+function take_bytes!(conn::FIXConnection)
+    return lock(conn.buffer_lock) do
+        isempty(conn.buffer) && return UInt8[]
+        data = conn.buffer
+        conn.buffer = UInt8[]
+        return data
+    end
+end
+
+# Open until closed locally or by the peer. Bytes already received stay
+# available through `take_bytes!` after the peer closes.
+Base.isopen(conn::FIXConnection) = !(@atomic conn.closed)
+
+Base.write(conn::FIXConnection, data::Union{AbstractString,AbstractVector{UInt8}}) = write(conn.io, data)
+Base.flush(conn::FIXConnection) = conn.io isa TCPSocket ? flush(conn.io) : nothing
+
+function Base.close(conn::FIXConnection)
+    @atomic conn.closed = true
+    try
+        close(conn.io)
+    catch e
+        @debug "Error while closing FIX connection" exception=e
+    end
+    return nothing
+end
+
+"""
+    open_connection(host, port; timeout=15) -> FIXConnection
+
+Connect to a Binance FIX endpoint over TLS. SNI is set to `host` (Binance
+requires it) and the certificate chain and hostname are verified.
+"""
+function open_connection(host::AbstractString, port::Integer; timeout::Real=15)
+    tcp = Sockets.TCPSocket()
+    try
+        run_with_timeout(timeout, "TCP connect to $host:$port") do
+            Sockets.connect(tcp, host, port)
+        end
+        stream = OpenSSL.SSLStream(OpenSSL.SSLContext(OpenSSL.TLSClientMethod()), tcp)
+        OpenSSL.hostname!(stream, String(host))
+        run_with_timeout(timeout, "TLS handshake with $host:$port") do
+            Sockets.connect(stream; require_ssl_verification=true)
+        end
+        return FIXConnection(stream)
+    catch
+        close(tcp)
+        rethrow()
+    end
+end
+
+# Run `f` on another task and wait at most `timeout` seconds. A failure inside
+# `f` is rethrown as itself, not wrapped in a `TaskFailedException`, so callers
+# see the real cause (DNS failure, connection refused, certificate error, ...).
+function run_with_timeout(f, timeout::Real, what::AbstractString)
+    task = Threads.@spawn f()
+    if timedwait(() -> istaskdone(task), timeout) === :timed_out
+        error("$what timed out after $(timeout)s")
+    end
+    istaskfailed(task) && throw(task.exception)
+    return fetch(task)
+end
+
 mutable struct FIXSession
     host::String
     port::Int
-    socket::Union{TCPSocket,Nothing}
+    socket::Union{FIXConnection,Nothing}
     seq_num::Int
     sender_comp_id::String
     target_comp_id::String
@@ -884,12 +1007,10 @@ end
 
 function connect_fix(session::FIXSession)
     try
-        # TCP connection to local stunnel proxy
-        # stunnel handles TLS termination to Binance FIX servers
-        @debug "Connecting to FIX stunnel proxy" host=session.host port=session.port
-        tcp_socket = connect(session.host, session.port)
-        session.socket = tcp_socket
-        @info "Connected to FIX server via stunnel" host=session.host port=session.port
+        # Direct TLS to Binance (SNI + certificate check)
+        @debug "Connecting to FIX server" host=session.host port=session.port
+        session.socket = open_connection(session.host, session.port)
+        @info "Connected to FIX server" host=session.host port=session.port
 
         # Reset timestamps on new connection
         now_time = now(Dates.UTC)
@@ -901,8 +1022,8 @@ function connect_fix(session::FIXSession)
 
         return session.socket
     catch e
-        error("Failed to connect to FIX server: $e\n" *
-              "Make sure stunnel is running. See BinanceFIX/stunnel.conf for configuration.")
+        error("Failed to connect to FIX server $(session.host):$(session.port): $(sprint(showerror, e))\n" *
+              "Check that the [fix] hosts in the config are fix-oe/fix-dc/fix-md.binance.com.")
     end
 end
 
@@ -929,6 +1050,25 @@ end
 
 # Client order ID regex pattern: ^[a-zA-Z0-9-_]{1,36}$
 const CLIENT_ORDER_ID_REGEX = r"^[a-zA-Z0-9\-_]{1,36}$"
+
+"""
+    validate_quote_notional_limit(side; cash_order_qty=nothing, exec_inst="", sor=false)
+
+Check the documented, state-independent rules for `QuoteNotionalLimit (25057)`:
+BUY side only, and not combined with `CashOrderQty (152)`, `SOR (25032)` or
+`ExecInst (18)` = `6`. Symbol support and the price/notional rules are left to
+the exchange.
+"""
+function validate_quote_notional_limit(side; cash_order_qty=nothing, exec_inst="", sor::Bool=false)
+    string(side) == SIDE_BUY || throw(ArgumentError(
+        "QuoteNotionalLimit (25057) is only accepted on BUY orders (got Side=$side)"))
+    isnothing(cash_order_qty) || throw(ArgumentError(
+        "QuoteNotionalLimit (25057) cannot be combined with CashOrderQty (152)"))
+    string(exec_inst) == EXEC_INST_PARTICIPATE_DONT_INITIATE && throw(ArgumentError(
+        "QuoteNotionalLimit (25057) cannot be combined with ExecInst (18) = 6"))
+    sor && throw(ArgumentError("QuoteNotionalLimit (25057) cannot be combined with SOR (25032)"))
+    return nothing
+end
 
 """
     validate_client_order_id(id::String)
@@ -971,8 +1111,21 @@ function calculate_checksum(msg::String)
 end
 
 @inline function write_fix_field(io::IO, tag, value)
-    print(io, tag, '=', value, '\x01')
+    print(io, tag, '=', value isa AbstractFloat ? fix_decimal(value) : value, '\x01')
     return nothing
+end
+
+"""
+    fix_decimal(x) -> String
+
+Plain decimal text for a price or quantity, at most 8 decimals, no exponent.
+`string(0.00001)` is `"1.0e-5"`, which is not a valid FIX decimal.
+"""
+function fix_decimal(x::Real)
+    isfinite(x) || throw(ArgumentError("cannot format $x as a FIX decimal"))
+    text = @sprintf("%.8f", x)
+    text = rstrip(rstrip(text, '0'), '.')
+    return text == "-0" ? "0" : String(text)
 end
 
 # Build message with optional timestamp (for signature consistency)
@@ -1122,12 +1275,13 @@ function logon(session::FIXSession;
             error("Logon timeout: no response from server within $(timeout_sec) seconds")
         end
 
-        if !isopen(session.socket)
+        # Read first: a Reject/Logout explaining a refusal arrives right before
+        # the server closes the connection.
+        closed = !isopen(session.socket)
+        messages = receive_message(session; timeout_ms=500)
+        if closed && isempty(messages)
             error("Connection closed by server while waiting for Logon response")
         end
-
-        # Receive and process messages (with 500ms timeout for each poll)
-        messages = receive_message(session; timeout_ms=500)
         for raw_msg in messages
             parsed_fields = parse_fix_message(raw_msg)
             msg_type_recv = get_msg_type(parsed_fields)
@@ -1229,6 +1383,10 @@ Send a new order request.
 - `strategy_id::Union{Int,Nothing}=nothing`: Strategy identifier
 - `target_strategy::Union{Int,Nothing}=nothing`: Must be >= 1000000 if specified
 - `sor::Bool=false`: Enable Smart Order Routing
+- `quote_notional_limit::Union{Float64,Nothing}=nothing`: QuoteNotionalLimit (25057). BUY
+  orders only: maximum quote-asset notional the order may consume. Cannot be combined
+  with `cash_order_qty`, `sor` or `exec_inst="6"` (Binance 2026-11-11, enabled after
+  2026-11-20 07:00 UTC).
 
 Returns the ClOrdID used for the order.
 """
@@ -1255,9 +1413,13 @@ function new_order_single(session::FIXSession, symbol::String, side::String;
     self_trade_prevention::String="",
     strategy_id::Union{Int,Nothing}=nothing,
     target_strategy::Union{Int,Nothing}=nothing,
-    sor::Bool=false)
+    sor::Bool=false,
+    quote_notional_limit::Union{Float64,Nothing}=nothing)
     if session.session_type != OrderEntry
         error("NewOrderSingle is only supported on Order Entry sessions")
+    end
+    if !isnothing(quote_notional_limit)
+        validate_quote_notional_limit(side; cash_order_qty=cash_order_qty, exec_inst=exec_inst, sor=sor)
     end
 
     # Validate quantity - at least one must be specified
@@ -1279,15 +1441,15 @@ function new_order_single(session::FIXSession, symbol::String, side::String;
 
     # Quantity
     if !isnothing(quantity)
-        fields[TAG_ORDER_QTY] = string(quantity)
+        fields[TAG_ORDER_QTY] = fix_decimal(quantity)
     end
     if !isnothing(cash_order_qty)
-        fields[TAG_CASH_ORDER_QTY] = string(cash_order_qty)
+        fields[TAG_CASH_ORDER_QTY] = fix_decimal(cash_order_qty)
     end
 
     # Price and time in force
     if !isnothing(price)
-        fields[TAG_PRICE] = string(price)
+        fields[TAG_PRICE] = fix_decimal(price)
     end
     if !isempty(time_in_force)
         fields[TAG_TIME_IN_FORCE] = time_in_force
@@ -1295,12 +1457,12 @@ function new_order_single(session::FIXSession, symbol::String, side::String;
 
     # Iceberg
     if !isnothing(max_floor)
-        fields[TAG_MAX_FLOOR] = string(max_floor)
+        fields[TAG_MAX_FLOOR] = fix_decimal(max_floor)
     end
 
     # Stop/Trigger fields
     if !isnothing(trigger_price)
-        fields[TAG_TRIGGER_PRICE] = string(trigger_price)
+        fields[TAG_TRIGGER_PRICE] = fix_decimal(trigger_price)
         fields[TAG_TRIGGER_TYPE] = TRIGGER_TYPE_PRICE_MOVEMENT
         fields[TAG_TRIGGER_ACTION] = TRIGGER_ACTION_ACTIVATE
         fields[TAG_TRIGGER_PRICE_TYPE] = TRIGGER_PRICE_TYPE_LAST_TRADE
@@ -1342,6 +1504,9 @@ function new_order_single(session::FIXSession, symbol::String, side::String;
     end
     if sor
         fields[TAG_SOR] = "Y"
+    end
+    if !isnothing(quote_notional_limit)
+        fields[TAG_QUOTE_NOTIONAL_LIMIT] = fix_decimal(quote_notional_limit)
     end
 
     # RecvWindow
@@ -1476,7 +1641,7 @@ function order_amend_keep_priority(session::FIXSession, symbol::String, quantity
     fields = Dict{Int,String}()
     fields[TAG_CL_ORD_ID] = cl_ord_id
     fields[TAG_SYMBOL] = symbol
-    fields[TAG_ORDER_QTY] = string(quantity)
+    fields[TAG_ORDER_QTY] = fix_decimal(quantity)
 
     if !isempty(orig_cl_ord_id)
         fields[TAG_ORIG_CL_ORD_ID] = orig_cl_ord_id
@@ -2210,6 +2375,8 @@ Place an order list (OCO, OTO, OTOCO, OPO, OPOCO).
   - `:target_strategy` - Must be >= 1000000
   - `:strategy_id` - Strategy identifier
   - `:self_trade_prevention` - STP mode
+  - `:quote_notional_limit` - QuoteNotionalLimit (25057), BUY orders only; not allowed on
+    OPO/OPOCO pending orders, with `:cash_order_qty`, or with `:exec_inst` "6"
 
   Trigger/Stop fields:
   - `:trigger_price` - Activation price
@@ -2391,6 +2558,15 @@ function new_order_list(session::FIXSession, symbol::String, orders::Vector{Dict
             write_fix_field(body, TAG_TRIGGER_TRAILING_DELTA_BIPS, order[:trigger_trailing_delta_bips])
         end
 
+        # Quote notional limit (BUY orders only). Sits between the trigger
+        # fields and NoListTriggeringInstructions in the Orders group.
+        if haskey(order, :quote_notional_limit)
+            validate_quote_notional_limit(order[:side];
+                cash_order_qty=get(order, :cash_order_qty, nothing),
+                exec_inst=get(order, :exec_inst, ""))
+            write_fix_field(body, TAG_QUOTE_NOTIONAL_LIMIT, order[:quote_notional_limit])
+        end
+
         # List triggering instructions (for OTO/OTOCO)
         if haskey(order, :list_trigger_instructions)
             instructions = order[:list_trigger_instructions]
@@ -2469,6 +2645,8 @@ Filters and Order Count are evaluated before the processing occurs.
 # Advanced Options
 - `exec_inst::String=""`: "6"=PARTICIPATE_DONT_INITIATE (post-only)
 - `self_trade_prevention::String=""`: STP mode
+- `quote_notional_limit::Union{Float64,Nothing}=nothing`: QuoteNotionalLimit (25057) of the
+  replacement order, BUY side only; cannot be combined with `cash_order_qty` or `exec_inst="6"`
 - `strategy_id::Union{Int,Nothing}=nothing`: Strategy identifier
 - `target_strategy::Union{Int,Nothing}=nothing`: Must be >= 1000000
 
@@ -2506,9 +2684,13 @@ function order_cancel_and_new_order(session::FIXSession, symbol::String, side::S
     exec_inst::String="",
     self_trade_prevention::String="",
     strategy_id::Union{Int,Nothing}=nothing,
-    target_strategy::Union{Int,Nothing}=nothing)
+    target_strategy::Union{Int,Nothing}=nothing,
+    quote_notional_limit::Union{Float64,Nothing}=nothing)
     if session.session_type != OrderEntry
         error("OrderCancelAndNewOrder is only supported on Order Entry sessions")
+    end
+    if !isnothing(quote_notional_limit)
+        validate_quote_notional_limit(side; cash_order_qty=cash_order_qty, exec_inst=exec_inst)
     end
 
     # Validate client order IDs
@@ -2555,15 +2737,15 @@ function order_cancel_and_new_order(session::FIXSession, symbol::String, side::S
 
     # Quantity
     if !isnothing(quantity)
-        fields[TAG_ORDER_QTY] = string(quantity)
+        fields[TAG_ORDER_QTY] = fix_decimal(quantity)
     end
     if !isnothing(cash_order_qty)
-        fields[TAG_CASH_ORDER_QTY] = string(cash_order_qty)
+        fields[TAG_CASH_ORDER_QTY] = fix_decimal(cash_order_qty)
     end
 
     # Price and time in force
     if !isnothing(price)
-        fields[TAG_PRICE] = string(price)
+        fields[TAG_PRICE] = fix_decimal(price)
     end
     if !isempty(time_in_force)
         fields[TAG_TIME_IN_FORCE] = time_in_force
@@ -2571,12 +2753,12 @@ function order_cancel_and_new_order(session::FIXSession, symbol::String, side::S
 
     # Iceberg
     if !isnothing(max_floor)
-        fields[TAG_MAX_FLOOR] = string(max_floor)
+        fields[TAG_MAX_FLOOR] = fix_decimal(max_floor)
     end
 
     # Stop/Trigger fields
     if !isnothing(trigger_price)
-        fields[TAG_TRIGGER_PRICE] = string(trigger_price)
+        fields[TAG_TRIGGER_PRICE] = fix_decimal(trigger_price)
         fields[TAG_TRIGGER_TYPE] = TRIGGER_TYPE_PRICE_MOVEMENT
         fields[TAG_TRIGGER_ACTION] = TRIGGER_ACTION_ACTIVATE
         fields[TAG_TRIGGER_PRICE_TYPE] = TRIGGER_PRICE_TYPE_LAST_TRADE
@@ -2617,6 +2799,9 @@ function order_cancel_and_new_order(session::FIXSession, symbol::String, side::S
             error("TargetStrategy must be >= 1000000")
         end
         fields[TAG_TARGET_STRATEGY] = string(target_strategy)
+    end
+    if !isnothing(quote_notional_limit)
+        fields[TAG_QUOTE_NOTIONAL_LIMIT] = fix_decimal(quote_notional_limit)
     end
 
     msg = build_message(session, MSG_ORDER_CANCEL_AND_NEW, fields)
@@ -2939,21 +3124,23 @@ function receive_message(session::FIXSession; timeout_ms::Int=0, verbose::Bool=f
     timeout_ms >= 0 || throw(ArgumentError("timeout_ms must be non-negative"))
     return lock(session.read_lock) do
         socket = session.socket
-        if isnothing(socket) || !isopen(socket)
+        if isnothing(socket)
             return String[]
         end
         try
             max_wait_sec = timeout_ms > 0 ? timeout_ms / 1000 : 0.1
             deadline = time() + max_wait_sec
             buf = IOBuffer()
-            while isopen(socket) && time() < deadline
-                available = bytesavailable(socket)
-                if available > 0
-                    write(buf, read(socket, available))
+            while true
+                chunk = take_bytes!(socket)
+                if !isempty(chunk)
+                    write(buf, chunk)
                     data = String(take!(copy(buf)))
                     if occursin(r"10=\d{3}\x01", data)
                         break
                     end
+                elseif !isopen(socket) || time() >= deadline
+                    break
                 else
                     sleep(min(0.001, max(deadline - time(), 0.0)))
                 end
@@ -2963,6 +3150,8 @@ function receive_message(session::FIXSession; timeout_ms::Int=0, verbose::Bool=f
                 session.recv_buffer *= data
             end
         catch e
+            # Ctrl-C must reach the caller, not be logged and swallowed here.
+            e isa InterruptException && rethrow()
             if !(e isa EOFError || e isa Base.IOError)
                 @warn "Error reading from socket" exception=(e, catch_backtrace())
             end
@@ -3145,6 +3334,8 @@ function parse_execution_report(fields::Dict{Int,String}, msg::AbstractString=""
         get(fields, TAG_ERROR_CODE, ""),
         get(fields, TAG_TEXT, ""),
         get(fields, TAG_EXPIRY_REASON, ""),
+        get(fields, TAG_QUOTE_NOTIONAL_LIMIT, ""),
+        get(fields, TAG_EFFECTIVE_SELF_TRADE_PREVENTION, ""),
 
         # Raw fields
         fields
@@ -4278,6 +4469,95 @@ function monitor_loop(session::FIXSession)
 
         sleep(check_interval)
     end
+end
+
+# =============================================================================
+# Session helpers
+# =============================================================================
+
+"""
+    new_sender_comp_id() -> String
+
+A random 8-character SenderCompID. Binance requires 1-8 characters and a
+different value for every concurrent session of one API key.
+"""
+new_sender_comp_id() = String(rand(vcat('a':'z', 'A':'Z', '0':'9'), 8))
+
+"""
+    with_fix_session(f, config, session_type=OrderEntry; kwargs...)
+
+Connect, log on, run `f(session)`, then log out and close the connection,
+also when `f` throws. Returns what `f` returns.
+
+# Keyword Arguments
+- `sender_comp_id=new_sender_comp_id()`
+- `heartbeat_interval::Int=30`, `logon_timeout::Int=15`
+- any other keyword is passed to [`logon`](@ref) (e.g. `response_mode`)
+
+```julia
+with_fix_session(config, MarketData) do session
+    subscribe_book_ticker(session, ["BTCUSDT"])
+    pump_messages(session, 5) do type, data
+        type == :market_data_incremental && println(data.entries)
+    end
+end
+```
+"""
+function with_fix_session(f, config::BinanceConfig, session_type::FIXSessionType=OrderEntry;
+    sender_comp_id::String=new_sender_comp_id(), heartbeat_interval::Int=30,
+    logon_timeout::Int=15, logon_kwargs...)
+    session = FIXSession(config, sender_comp_id; session_type=session_type)
+    connect_fix(session)
+    try
+        logon(session; heartbeat_interval=heartbeat_interval, timeout_sec=logon_timeout, logon_kwargs...)
+        return f(session)
+    finally
+        try
+            if session.is_logged_in && !isnothing(session.socket) && isopen(session.socket)
+                logout(session)
+                sleep(0.3)      # let the Logout leave before the socket closes
+            end
+        catch e
+            @warn "FIX logout failed" exception=e
+        end
+        close_fix(session)
+    end
+end
+
+"""
+    pump_messages(handle, session, seconds; poll_ms=100) -> Int
+
+Receive for `seconds`, calling `handle(type, data)` for every message, where
+`(type, data)` is what [`process_message`](@ref) returns. TestRequests are
+answered and a Heartbeat is sent when the session has been silent for a
+heartbeat interval, so a loop of `pump_messages` calls keeps a session alive
+without `start_monitor`. Do not combine the two on one session: both read the
+same messages. Returns the number of messages handled.
+"""
+function pump_messages(handle, session::FIXSession, seconds::Real; poll_ms::Int=100)
+    deadline = time() + seconds
+    handled = 0
+    while true
+        remaining_ms = round(Int, (deadline - time()) * 1000)
+        for raw in receive_message(session; timeout_ms=clamp(remaining_ms, 1, poll_ms))
+            type, data = process_message(session, raw)
+            handle(type, data)
+            handled += 1
+        end
+        keepalive(session)
+        time() >= deadline && break
+    end
+    return handled
+end
+
+# Send a Heartbeat if nothing was sent for a heartbeat interval.
+function keepalive(session::FIXSession)
+    session.is_logged_in || return nothing
+    socket = session.socket
+    (isnothing(socket) || !isopen(socket)) && return nothing
+    idle_ms = Dates.value(now(Dates.UTC) - session.last_sent_time)
+    idle_ms > session.heartbeat_interval * 1000 && heartbeat(session)
+    return nothing
 end
 
 """

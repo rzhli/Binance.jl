@@ -4,9 +4,12 @@ FIX SBE Encoder Module
 Encodes FIX SBE (Simple Binary Encoding) messages for Binance FIX API.
 
 Schema Information:
-- Schema File: spot-fixsbe-1_1.xml
+- Schema Files: spot-fixsbe-1_1.xml (default), spot-fixsbe-1_2.xml (opt-in)
 - Schema ID: 1
-- Schema Version: 1 (current; v0 deprecated 2026-03-09)
+- Schema Version: 1 by default; every encoder accepts `schema_version` and
+  writes it to the message header. Version 2 (published 2026-11-11) appends
+  QuoteNotionalLimit to NewOrderSingle, OrderCancelRequestAndNewOrderSingle and
+  the NewOrderList Orders group.
 - Byte order: Little Endian
 
 Wire Format:
@@ -32,6 +35,7 @@ export encode_new_order_single, encode_new_order_list, encode_order_cancel_reque
 export encode_order_cancel_request_and_new
 export encode_order_mass_cancel_request, encode_order_amend_keep_priority, encode_limit_query
 export encode_market_data_request, encode_instrument_list_request
+export unix_micros, char_enum
 export SBEBuffer, write_uint8!, write_uint16!, write_uint32!, write_uint64!
 export write_int8!, write_int32!, write_int64!, write_fixed_string!
 export write_var_string8!, write_var_string16!
@@ -46,10 +50,15 @@ SBE Buffer for building messages incrementally.
 Handles SOFH + message header + body encoding.
 
 `block_length` is set by `mark_block_end!` to record the size of the root
-block (fixed fields only). If left at 0, `finalize_message!` falls back to
+block (fixed fields only). If never set, `finalize_message!` falls back to
 "all bytes after the header" which is incorrect for messages with groups
 or var data — encoders must call `mark_block_end!` after fixed fields.
 """
+# `block_length` before `mark_block_end!` was called. Zero cannot serve as the
+# marker: messages such as Heartbeat, Logout and LimitQuery have an empty root
+# block, and their blockLength must be written as 0.
+const BLOCK_LENGTH_UNSET = typemax(UInt16)
+
 mutable struct SBEBuffer
     data::Vector{UInt8}
     position::Int
@@ -59,7 +68,7 @@ mutable struct SBEBuffer
     function SBEBuffer(initial_size::Int=1024)
         initial_size > 0 || throw(ArgumentError("initial_size must be positive"))
         capacity = max(initial_size, SBE_SOFH_SIZE + SBE_MESSAGE_HEADER_SIZE)
-        buf = new(zeros(UInt8, capacity), 1, 0, UInt16(0))
+        buf = new(zeros(UInt8, capacity), 1, 0, BLOCK_LENGTH_UNSET)
         # Reserve space for SOFH (6 bytes) + message header (20 bytes)
         buf.position = SBE_SOFH_SIZE + SBE_MESSAGE_HEADER_SIZE + 1
         buf.body_start = buf.position
@@ -204,17 +213,39 @@ function encode_sofh!(buf::SBEBuffer)
 end
 
 """
+    char_enum(value) -> UInt8
+
+Wire value of a char-encoded enum (Side, OrdType, TimeInForce, ...). The schema
+encodes these as ASCII characters, e.g. BUY is `'1'` (0x31). A `Char`, the ASCII
+code, or the bare digit (`UInt8(1)`) are all accepted; digits 0-9 can never be
+valid ASCII codes of an enum value, so the mapping is unambiguous.
+"""
+@inline char_enum(v::UInt8) = v <= 0x09 ? v + 0x30 : v
+@inline char_enum(v::Char) = UInt8(v)
+@inline char_enum(v::Integer) = char_enum(UInt8(v))
+
+"""Microseconds since the Unix epoch, computed in integers (no Float64 rounding)."""
+unix_micros(t::DateTime) = Int64(Dates.value(t - DateTime(1970))) * 1000
+
+"""
 Encode message header at position 7.
 """
-function encode_message_header!(buf::SBEBuffer, templateId::UInt16, seqNum::UInt32)
+function encode_message_header!(buf::SBEBuffer, templateId::UInt16, seqNum::UInt32;
+    schema_version::Integer=SBE_SCHEMA_VERSION_FIX,
+    sending_time::Union{Int64,Nothing}=nothing)
+    schema_version in SBE_SUPPORTED_SCHEMA_VERSIONS_FIX || throw(ArgumentError(
+        "Unsupported FIX SBE schema version $schema_version; supported: $(Int.(SBE_SUPPORTED_SCHEMA_VERSIONS_FIX))"))
     # blockLength = size of root block (fixed fields only). Encoders should
     # call mark_block_end! after fixed fields. If they didn't, fall back to
     # "everything after header" which matches the legacy encoder behavior
     # (acceptable for messages with no groups/data).
-    block_length = buf.block_length != 0 ? buf.block_length : UInt16(buf.position - buf.body_start)
+    block_length = buf.block_length != BLOCK_LENGTH_UNSET ? buf.block_length : UInt16(buf.position - buf.body_start)
 
-    # Sending time in microseconds since epoch
-    sending_time = Int64(Dates.datetime2unix(now(Dates.UTC)) * 1_000_000)
+    # Sending time in microseconds since epoch. Logon passes its own value: the
+    # signature covers SendingTime, so header and signed text must be one instant.
+    if isnothing(sending_time)
+        sending_time = unix_micros(now(Dates.UTC))
+    end
 
     pos = SBE_SOFH_SIZE + 1  # Position 7
 
@@ -225,7 +256,7 @@ function encode_message_header!(buf::SBEBuffer, templateId::UInt16, seqNum::UInt
     # schemaId (2)
     store_uint16!(buf.data, pos + 4, SBE_SCHEMA_ID_FIX)
     # version (2)
-    store_uint16!(buf.data, pos + 6, SBE_SCHEMA_VERSION_FIX)
+    store_uint16!(buf.data, pos + 6, UInt16(schema_version))
     # seqNum (4)
     store_uint32!(buf.data, pos + 8, seqNum)
     # sendingTime (8)
@@ -243,11 +274,42 @@ function mark_block_end!(buf::SBEBuffer)
 end
 
 """Finalize message: encode headers and return complete message bytes"""
-function finalize_message!(buf::SBEBuffer, templateId::UInt16, seqNum::UInt32)
-    encode_message_header!(buf, templateId, seqNum)
+function finalize_message!(buf::SBEBuffer, templateId::UInt16, seqNum::UInt32;
+    schema_version::Integer=SBE_SCHEMA_VERSION_FIX,
+    sending_time::Union{Int64,Nothing}=nothing)
+    encode_message_header!(buf, templateId, seqNum; schema_version=schema_version, sending_time=sending_time)
     encode_sofh!(buf)
     resize!(buf.data, buf.position - 1)
     return buf.data
+end
+
+"""
+    write_quote_notional_limit!(buf, limit, side, price_exponent, schema_version; cash_order_qty=nothing)
+
+Append `QuoteNotionalLimit (25057)`, the fixed field schema 1:2 adds after the
+last 1:1 field of an order. Nothing is written for schema 1:1, which has no
+such field; asking for a limit there is an error rather than a silent drop.
+
+The absent value is the SBE null for int64 (`typemin(Int64)`).
+"""
+function write_quote_notional_limit!(buf::SBEBuffer, limit::Union{Float64,Nothing}, side::UInt8,
+    price_exponent::Int8, schema_version::Integer; cash_order_qty::Union{Float64,Nothing}=nothing)
+    if schema_version < SBE_SCHEMA_VERSION_FIX_V2
+        isnothing(limit) || throw(ArgumentError(
+            "QuoteNotionalLimit requires FIX SBE schema 1:2; create the session with " *
+            "schema_version=SBE_SCHEMA_VERSION_FIX_V2"))
+        return buf
+    end
+    if isnothing(limit)
+        write_int64!(buf, SBE_INT64_NULL)
+        return buf
+    end
+    char_enum(side) == UInt8('1') || throw(ArgumentError("QuoteNotionalLimit is only accepted on BUY orders"))
+    isnothing(cash_order_qty) || throw(ArgumentError(
+        "QuoteNotionalLimit cannot be combined with CashOrderQty"))
+    (isfinite(limit) && limit > 0) || throw(ArgumentError("QuoteNotionalLimit must be greater than zero"))
+    write_mantissa!(buf, limit, price_exponent)
+    return buf
 end
 
 # =============================================================================
@@ -286,7 +348,9 @@ function encode_logon(;
     response_mode::Union{UInt8,Nothing}=nothing,
     execution_report_type::Union{UInt8,Nothing}=nothing,
     drop_copy_flag::Union{UInt8,Nothing}=nothing,
-    recv_window::Union{Real,Nothing}=nothing
+    recv_window::Union{Real,Nothing}=nothing,
+    sending_time::Union{Int64,Nothing}=nothing,   # header SendingTime (µs); must match the signed timestamp
+    schema_version::Integer=SBE_SCHEMA_VERSION_FIX
 )
     buf = SBEBuffer()
 
@@ -332,7 +396,8 @@ function encode_logon(;
     write_var_string16!(buf, signature)   # rawData
     write_var_string16!(buf, api_key)     # username
 
-    return finalize_message!(buf, SBE_TEMPLATE_LOGON, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_LOGON, seq_num; schema_version=schema_version,
+        sending_time=sending_time)
 end
 
 """
@@ -340,13 +405,13 @@ Encode Logout message (templateId=20004)
 
 No fixed fields. Optional Text data field carries an optional reason.
 """
-function encode_logout(; seq_num::UInt32, text::String="")
+function encode_logout(; seq_num::UInt32, text::String="", schema_version::Integer=SBE_SCHEMA_VERSION_FIX)
     buf = SBEBuffer()
 
     mark_block_end!(buf)
     write_var_string16!(buf, text)
 
-    return finalize_message!(buf, SBE_TEMPLATE_LOGOUT, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_LOGOUT, seq_num; schema_version=schema_version)
 end
 
 """
@@ -355,13 +420,13 @@ Encode Heartbeat message (templateId=20001)
 No fixed fields. Optional TestReqID echoes the request when responding to
 a TestRequest.
 """
-function encode_heartbeat(; seq_num::UInt32, test_req_id::String="")
+function encode_heartbeat(; seq_num::UInt32, test_req_id::String="", schema_version::Integer=SBE_SCHEMA_VERSION_FIX)
     buf = SBEBuffer()
 
     mark_block_end!(buf)
     write_var_string8!(buf, test_req_id)
 
-    return finalize_message!(buf, SBE_TEMPLATE_HEARTBEAT, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_HEARTBEAT, seq_num; schema_version=schema_version)
 end
 
 """
@@ -369,13 +434,13 @@ Encode TestRequest message (templateId=20002)
 
 No fixed fields. TestReqID is required.
 """
-function encode_test_request(; seq_num::UInt32, test_req_id::String)
+function encode_test_request(; seq_num::UInt32, test_req_id::String, schema_version::Integer=SBE_SCHEMA_VERSION_FIX)
     buf = SBEBuffer()
 
     mark_block_end!(buf)
     write_var_string8!(buf, test_req_id)
 
-    return finalize_message!(buf, SBE_TEMPLATE_TEST_REQUEST, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_TEST_REQUEST, seq_num; schema_version=schema_version)
 end
 
 # =============================================================================
@@ -405,6 +470,8 @@ Schema 1.1 fixed-field order (root block):
 - StrategyID (int64, optional)
 - SelfTradePreventionMode (uint8, optional)
 - SOR (boolEnum/uint8, optional)
+- QuoteNotionalLimit (mantissa64 with PriceExponent, optional) — schema 1.2 only;
+  BUY orders only, not with CashOrderQty. Root block is 76 bytes in 1.1, 84 in 1.2.
 
 Data fields:
 - ClOrdID (varString8)
@@ -438,8 +505,10 @@ function encode_new_order_single(;
     strategy_id::Union{Int64,Nothing}=nothing,
     target_strategy::Union{Int32,Nothing}=nothing,
     sor::Bool=false,
+    quote_notional_limit::Union{Float64,Nothing}=nothing,
     price_exponent::Int8=Int8(-8),
-    qty_exponent::Int8=Int8(-8)
+    qty_exponent::Int8=Int8(-8),
+    schema_version::Integer=SBE_SCHEMA_VERSION_FIX
 )
     buf = SBEBuffer()
 
@@ -454,10 +523,10 @@ function encode_new_order_single(;
         write_mantissa!(buf, quantity, qty_exponent)
     end
 
-    write_uint8!(buf, ord_type)                                   # OrdType (required)
+    write_uint8!(buf, char_enum(ord_type))                                   # OrdType (required)
 
     # ExecInst (optional)
-    write_uint8!(buf, isnothing(exec_inst) ? SBE_UINT8_NULL : exec_inst)
+    write_uint8!(buf, isnothing(exec_inst) ? SBE_CHAR_NULL : char_enum(exec_inst))
 
     # Price (optional)
     if isnothing(price)
@@ -467,25 +536,25 @@ function encode_new_order_single(;
     end
 
     # Trigger block
-    write_uint8!(buf, isnothing(trigger_type) ? SBE_UINT8_NULL : trigger_type)
-    write_uint8!(buf, isnothing(trigger_action) ? SBE_UINT8_NULL : trigger_action)
+    write_uint8!(buf, isnothing(trigger_type) ? SBE_CHAR_NULL : char_enum(trigger_type))
+    write_uint8!(buf, isnothing(trigger_action) ? SBE_CHAR_NULL : char_enum(trigger_action))
     if isnothing(trigger_price)
         write_int64!(buf, SBE_INT64_NULL)
     else
         write_mantissa!(buf, trigger_price, price_exponent)
     end
-    write_uint8!(buf, isnothing(trigger_price_type) ? SBE_UINT8_NULL : trigger_price_type)
-    write_uint8!(buf, isnothing(trigger_price_direction) ? SBE_UINT8_NULL : trigger_price_direction)
+    write_uint8!(buf, isnothing(trigger_price_type) ? SBE_CHAR_NULL : char_enum(trigger_price_type))
+    write_uint8!(buf, isnothing(trigger_price_direction) ? SBE_CHAR_NULL : char_enum(trigger_price_direction))
     write_uint64!(buf, isnothing(trigger_trailing_delta_bips) ? SBE_UINT64_NULL : trigger_trailing_delta_bips)
 
     # Peg block (PegOffsetValue is uint8 in SBE, not int64)
     write_uint8!(buf, isnothing(peg_offset_value) ? SBE_UINT8_NULL : UInt8(peg_offset_value))
-    write_uint8!(buf, isnothing(peg_price_type) ? SBE_UINT8_NULL : peg_price_type)
+    write_uint8!(buf, isnothing(peg_price_type) ? SBE_CHAR_NULL : char_enum(peg_price_type))
     write_uint8!(buf, isnothing(peg_move_type) ? SBE_UINT8_NULL : peg_move_type)
-    write_uint8!(buf, isnothing(peg_offset_type) ? SBE_UINT8_NULL : peg_offset_type)
+    write_uint8!(buf, isnothing(peg_offset_type) ? SBE_CHAR_NULL : char_enum(peg_offset_type))
 
-    write_uint8!(buf, side)                                       # Side (required)
-    write_uint8!(buf, isnothing(time_in_force) ? SBE_UINT8_NULL : time_in_force)
+    write_uint8!(buf, char_enum(side))                                       # Side (required)
+    write_uint8!(buf, isnothing(time_in_force) ? SBE_CHAR_NULL : char_enum(time_in_force))
 
     # MaxFloor (optional)
     if isnothing(max_floor)
@@ -502,16 +571,22 @@ function encode_new_order_single(;
     end
 
     # TargetStrategy (int32, optional)
-    write_int32!(buf, isnothing(target_strategy) ? typemax(Int32) : target_strategy)
+    write_int32!(buf, isnothing(target_strategy) ? SBE_INT32_NULL : target_strategy)
 
     # StrategyID (int64, optional)
     write_int64!(buf, isnothing(strategy_id) ? SBE_INT64_NULL : strategy_id)
 
     # SelfTradePreventionMode (optional)
-    write_uint8!(buf, isnothing(self_trade_prevention) ? SBE_UINT8_NULL : self_trade_prevention)
+    write_uint8!(buf, isnothing(self_trade_prevention) ? SBE_CHAR_NULL : char_enum(self_trade_prevention))
 
     # SOR (boolEnum: 0=False, 1=True)
     write_uint8!(buf, sor ? UInt8(1) : SBE_UINT8_NULL)
+
+    # QuoteNotionalLimit (schema 1.2)
+    sor && !isnothing(quote_notional_limit) && throw(ArgumentError(
+        "QuoteNotionalLimit cannot be combined with SOR"))
+    write_quote_notional_limit!(buf, quote_notional_limit, side, price_exponent, schema_version;
+        cash_order_qty=cash_order_qty)
 
     mark_block_end!(buf)
 
@@ -519,7 +594,7 @@ function encode_new_order_single(;
     write_var_string8!(buf, cl_ord_id)
     write_var_string8!(buf, symbol)
 
-    return finalize_message!(buf, SBE_TEMPLATE_NEW_ORDER_SINGLE, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_NEW_ORDER_SINGLE, seq_num; schema_version=schema_version)
 end
 
 """
@@ -538,7 +613,8 @@ function encode_order_cancel_request(;
     order_id::Union{Int64,Nothing}=nothing,
     orig_cl_list_id::String="",
     list_id::Union{Int64,Nothing}=nothing,
-    cancel_restrictions::Union{UInt8,Nothing}=nothing
+    cancel_restrictions::Union{UInt8,Nothing}=nothing,
+    schema_version::Integer=SBE_SCHEMA_VERSION_FIX
 )
     buf = SBEBuffer()
 
@@ -555,7 +631,7 @@ function encode_order_cancel_request(;
     write_var_string8!(buf, orig_cl_list_id)
     write_var_string8!(buf, symbol)
 
-    return finalize_message!(buf, SBE_TEMPLATE_ORDER_CANCEL_REQUEST, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_ORDER_CANCEL_REQUEST, seq_num; schema_version=schema_version)
 end
 
 """
@@ -567,18 +643,19 @@ Data: Symbol, ClOrdID.
 function encode_order_mass_cancel_request(;
     seq_num::UInt32,
     symbol::String,
-    cl_ord_id::String
+    cl_ord_id::String,
+    schema_version::Integer=SBE_SCHEMA_VERSION_FIX
 )
     buf = SBEBuffer()
 
-    write_uint8!(buf, 0x01)  # massCancelRequestType: CANCEL_SYMBOL_ORDERS
+    write_uint8!(buf, UInt8('1'))  # MassCancelRequestType (char): CANCEL_SYMBOL_ORDERS
 
     mark_block_end!(buf)
 
     write_var_string8!(buf, symbol)
     write_var_string8!(buf, cl_ord_id)
 
-    return finalize_message!(buf, SBE_TEMPLATE_ORDER_MASS_CANCEL_REQUEST, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_ORDER_MASS_CANCEL_REQUEST, seq_num; schema_version=schema_version)
 end
 
 """
@@ -596,7 +673,8 @@ function encode_order_amend_keep_priority(;
     order_qty::Float64,
     orig_cl_ord_id::String="",
     order_id::Union{Int64,Nothing}=nothing,
-    qty_exponent::Int8=Int8(-8)
+    qty_exponent::Int8=Int8(-8),
+    schema_version::Integer=SBE_SCHEMA_VERSION_FIX
 )
     buf = SBEBuffer()
 
@@ -610,7 +688,7 @@ function encode_order_amend_keep_priority(;
     write_var_string8!(buf, orig_cl_ord_id)
     write_var_string8!(buf, symbol)
 
-    return finalize_message!(buf, SBE_TEMPLATE_ORDER_AMEND_KEEP_PRIORITY, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_ORDER_AMEND_KEEP_PRIORITY, seq_num; schema_version=schema_version)
 end
 
 """
@@ -618,13 +696,13 @@ Encode LimitQuery message (templateId=120, schema 1.1)
 
 No fixed fields. Data: ReqID (varString8).
 """
-function encode_limit_query(; seq_num::UInt32, req_id::String)
+function encode_limit_query(; seq_num::UInt32, req_id::String, schema_version::Integer=SBE_SCHEMA_VERSION_FIX)
     buf = SBEBuffer()
 
     mark_block_end!(buf)
     write_var_string8!(buf, req_id)
 
-    return finalize_message!(buf, SBE_TEMPLATE_LIMIT_QUERY, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_LIMIT_QUERY, seq_num; schema_version=schema_version)
 end
 
 """
@@ -677,8 +755,10 @@ function encode_order_cancel_request_and_new(;
     self_trade_prevention::Union{UInt8,Nothing}=nothing,
     strategy_id::Union{Int64,Nothing}=nothing,
     target_strategy::Union{Int32,Nothing}=nothing,
+    quote_notional_limit::Union{Float64,Nothing}=nothing,   # schema 1.2, BUY replacement orders only
     price_exponent::Int8=Int8(-8),
-    qty_exponent::Int8=Int8(-8)
+    qty_exponent::Int8=Int8(-8),
+    schema_version::Integer=SBE_SCHEMA_VERSION_FIX
 )
     buf = SBEBuffer()
 
@@ -698,8 +778,8 @@ function encode_order_cancel_request_and_new(;
     else
         write_mantissa!(buf, quantity, qty_exponent)
     end
-    write_uint8!(buf, ord_type)
-    write_uint8!(buf, isnothing(exec_inst) ? SBE_UINT8_NULL : exec_inst)
+    write_uint8!(buf, char_enum(ord_type))
+    write_uint8!(buf, isnothing(exec_inst) ? SBE_CHAR_NULL : char_enum(exec_inst))
     if isnothing(price)
         write_int64!(buf, SBE_INT64_NULL)
     else
@@ -707,25 +787,25 @@ function encode_order_cancel_request_and_new(;
     end
 
     # Trigger block
-    write_uint8!(buf, isnothing(trigger_type) ? SBE_UINT8_NULL : trigger_type)
-    write_uint8!(buf, isnothing(trigger_action) ? SBE_UINT8_NULL : trigger_action)
+    write_uint8!(buf, isnothing(trigger_type) ? SBE_CHAR_NULL : char_enum(trigger_type))
+    write_uint8!(buf, isnothing(trigger_action) ? SBE_CHAR_NULL : char_enum(trigger_action))
     if isnothing(trigger_price)
         write_int64!(buf, SBE_INT64_NULL)
     else
         write_mantissa!(buf, trigger_price, price_exponent)
     end
-    write_uint8!(buf, isnothing(trigger_price_type) ? SBE_UINT8_NULL : trigger_price_type)
-    write_uint8!(buf, isnothing(trigger_price_direction) ? SBE_UINT8_NULL : trigger_price_direction)
+    write_uint8!(buf, isnothing(trigger_price_type) ? SBE_CHAR_NULL : char_enum(trigger_price_type))
+    write_uint8!(buf, isnothing(trigger_price_direction) ? SBE_CHAR_NULL : char_enum(trigger_price_direction))
     write_uint64!(buf, isnothing(trigger_trailing_delta_bips) ? SBE_UINT64_NULL : trigger_trailing_delta_bips)
 
     # Peg block (PegOffsetValue is uint8 in SBE)
     write_uint8!(buf, isnothing(peg_offset_value) ? SBE_UINT8_NULL : UInt8(peg_offset_value))
-    write_uint8!(buf, isnothing(peg_price_type) ? SBE_UINT8_NULL : peg_price_type)
+    write_uint8!(buf, isnothing(peg_price_type) ? SBE_CHAR_NULL : char_enum(peg_price_type))
     write_uint8!(buf, isnothing(peg_move_type) ? SBE_UINT8_NULL : peg_move_type)
-    write_uint8!(buf, isnothing(peg_offset_type) ? SBE_UINT8_NULL : peg_offset_type)
+    write_uint8!(buf, isnothing(peg_offset_type) ? SBE_CHAR_NULL : char_enum(peg_offset_type))
 
-    write_uint8!(buf, side)
-    write_uint8!(buf, isnothing(time_in_force) ? SBE_UINT8_NULL : time_in_force)
+    write_uint8!(buf, char_enum(side))
+    write_uint8!(buf, isnothing(time_in_force) ? SBE_CHAR_NULL : char_enum(time_in_force))
     if isnothing(max_floor)
         write_int64!(buf, SBE_INT64_NULL)
     else
@@ -736,9 +816,13 @@ function encode_order_cancel_request_and_new(;
     else
         write_mantissa!(buf, cash_order_qty, price_exponent)
     end
-    write_int32!(buf, isnothing(target_strategy) ? typemax(Int32) : target_strategy)
+    write_int32!(buf, isnothing(target_strategy) ? SBE_INT32_NULL : target_strategy)
     write_int64!(buf, isnothing(strategy_id) ? SBE_INT64_NULL : strategy_id)
-    write_uint8!(buf, isnothing(self_trade_prevention) ? SBE_UINT8_NULL : self_trade_prevention)
+    write_uint8!(buf, isnothing(self_trade_prevention) ? SBE_CHAR_NULL : char_enum(self_trade_prevention))
+
+    # QuoteNotionalLimit (schema 1.2): root block is 86 bytes in 1.1, 94 in 1.2
+    write_quote_notional_limit!(buf, quote_notional_limit, side, price_exponent, schema_version;
+        cash_order_qty=cash_order_qty)
 
     mark_block_end!(buf)
 
@@ -748,7 +832,7 @@ function encode_order_cancel_request_and_new(;
     write_var_string8!(buf, cl_ord_id)
     write_var_string8!(buf, symbol)
 
-    return finalize_message!(buf, SBE_TEMPLATE_ORDER_CANCEL_REQUEST_AND_NEW, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_ORDER_CANCEL_REQUEST_AND_NEW, seq_num; schema_version=schema_version)
 end
 
 # =============================================================================
@@ -784,6 +868,8 @@ Base.@kwdef struct OrderListEntry
     self_trade_prevention::Union{UInt8,Nothing} = nothing
     target_strategy::Union{Int32,Nothing} = nothing
     strategy_id::Union{Int64,Nothing} = nothing
+    # Schema 1.2 only. BUY orders only; not allowed on OPO/OPOCO pending orders.
+    quote_notional_limit::Union{Float64,Nothing} = nothing
     price_exponent::Int8 = Int8(-8)
     qty_exponent::Int8 = Int8(-8)
     list_triggering_instructions::Vector{NTuple{3,UInt8}} = NTuple{3,UInt8}[]
@@ -820,7 +906,8 @@ function encode_new_order_list(;
     cl_list_id::String,
     contingency_type::UInt8,
     orders::Vector{OrderListEntry},
-    opo::Bool=false
+    opo::Bool=false,
+    schema_version::Integer=SBE_SCHEMA_VERSION_FIX
 )
     if isempty(orders) || length(orders) > 3
         error("NewOrderList must contain 2 or 3 orders, got $(length(orders))")
@@ -835,8 +922,9 @@ function encode_new_order_list(;
     mark_block_end!(buf)
 
     # Orders group header (groupSize8Encoding: blockLength uint16, numInGroup uint8)
-    # Fixed-field block per Order entry = 75 bytes (see schema breakdown in docstring).
-    const_orders_block_len = UInt16(75)
+    # Fixed-field block per Order entry: 75 bytes in schema 1.1, 83 in 1.2
+    # (QuoteNotionalLimit appended).
+    const_orders_block_len = schema_version >= SBE_SCHEMA_VERSION_FIX_V2 ? UInt16(83) : UInt16(75)
     write_uint16!(buf, const_orders_block_len)
     write_uint8!(buf, UInt8(length(orders)))
 
@@ -849,29 +937,29 @@ function encode_new_order_list(;
         else
             write_mantissa!(buf, o.quantity, o.qty_exponent)
         end
-        write_uint8!(buf, o.ord_type)                                               # 1
-        write_uint8!(buf, isnothing(o.exec_inst) ? SBE_UINT8_NULL : o.exec_inst)    # 1
+        write_uint8!(buf, char_enum(o.ord_type))                                               # 1
+        write_uint8!(buf, isnothing(o.exec_inst) ? SBE_CHAR_NULL : char_enum(o.exec_inst))    # 1
         if isnothing(o.price)                                                       # 8
             write_int64!(buf, SBE_INT64_NULL)
         else
             write_mantissa!(buf, o.price, o.price_exponent)
         end
-        write_uint8!(buf, isnothing(o.trigger_type) ? SBE_UINT8_NULL : o.trigger_type)               # 1
-        write_uint8!(buf, isnothing(o.trigger_action) ? SBE_UINT8_NULL : o.trigger_action)           # 1
+        write_uint8!(buf, isnothing(o.trigger_type) ? SBE_CHAR_NULL : char_enum(o.trigger_type))               # 1
+        write_uint8!(buf, isnothing(o.trigger_action) ? SBE_CHAR_NULL : char_enum(o.trigger_action))           # 1
         if isnothing(o.trigger_price)                                                                # 8
             write_int64!(buf, SBE_INT64_NULL)
         else
             write_mantissa!(buf, o.trigger_price, o.price_exponent)
         end
-        write_uint8!(buf, isnothing(o.trigger_price_type) ? SBE_UINT8_NULL : o.trigger_price_type)               # 1
-        write_uint8!(buf, isnothing(o.trigger_price_direction) ? SBE_UINT8_NULL : o.trigger_price_direction)     # 1
+        write_uint8!(buf, isnothing(o.trigger_price_type) ? SBE_CHAR_NULL : char_enum(o.trigger_price_type))               # 1
+        write_uint8!(buf, isnothing(o.trigger_price_direction) ? SBE_CHAR_NULL : char_enum(o.trigger_price_direction))     # 1
         write_uint64!(buf, isnothing(o.trigger_trailing_delta_bips) ? SBE_UINT64_NULL : o.trigger_trailing_delta_bips)  # 8
         write_uint8!(buf, isnothing(o.peg_offset_value) ? SBE_UINT8_NULL : UInt8(o.peg_offset_value))            # 1
-        write_uint8!(buf, isnothing(o.peg_price_type) ? SBE_UINT8_NULL : o.peg_price_type)                       # 1
+        write_uint8!(buf, isnothing(o.peg_price_type) ? SBE_CHAR_NULL : char_enum(o.peg_price_type))                       # 1
         write_uint8!(buf, isnothing(o.peg_move_type) ? SBE_UINT8_NULL : o.peg_move_type)                         # 1
-        write_uint8!(buf, isnothing(o.peg_offset_type) ? SBE_UINT8_NULL : o.peg_offset_type)                     # 1
-        write_uint8!(buf, o.side)                                                                                # 1
-        write_uint8!(buf, isnothing(o.time_in_force) ? SBE_UINT8_NULL : o.time_in_force)                         # 1
+        write_uint8!(buf, isnothing(o.peg_offset_type) ? SBE_CHAR_NULL : char_enum(o.peg_offset_type))                     # 1
+        write_uint8!(buf, char_enum(o.side))                                                                                # 1
+        write_uint8!(buf, isnothing(o.time_in_force) ? SBE_CHAR_NULL : char_enum(o.time_in_force))                         # 1
         if isnothing(o.max_floor)                                                                                # 8
             write_int64!(buf, SBE_INT64_NULL)
         else
@@ -882,18 +970,20 @@ function encode_new_order_list(;
         else
             write_mantissa!(buf, o.cash_order_qty, o.price_exponent)
         end
-        write_int32!(buf, isnothing(o.target_strategy) ? typemax(Int32) : o.target_strategy)                     # 4
+        write_int32!(buf, isnothing(o.target_strategy) ? SBE_INT32_NULL : o.target_strategy)                     # 4
         write_int64!(buf, isnothing(o.strategy_id) ? SBE_INT64_NULL : o.strategy_id)                             # 8
-        write_uint8!(buf, isnothing(o.self_trade_prevention) ? SBE_UINT8_NULL : o.self_trade_prevention)         # 1
+        write_uint8!(buf, isnothing(o.self_trade_prevention) ? SBE_CHAR_NULL : char_enum(o.self_trade_prevention))         # 1
         # Total: 1+1+8+1+1+8+1+1+8+1+1+8+1+1+1+1+1+1+8+8+4+8+1 = 75 bytes
+        write_quote_notional_limit!(buf, o.quote_notional_limit, o.side, o.price_exponent,   # 8 (schema 1.2)
+            schema_version; cash_order_qty=o.cash_order_qty)
 
         # Inner ListTriggeringInstructions group (smallGroupSize8Encoding: blockLength uint8, numInGroup uint8)
         write_uint8!(buf, UInt8(3))                                # blockLength per entry (3 bytes)
         write_uint8!(buf, UInt8(length(o.list_triggering_instructions)))
         for (lt_type, lt_idx, lt_action) in o.list_triggering_instructions
-            write_uint8!(buf, lt_type)
+            write_uint8!(buf, char_enum(lt_type))
             write_uint8!(buf, lt_idx)
-            write_uint8!(buf, lt_action)
+            write_uint8!(buf, char_enum(lt_action))
         end
 
         # Per-order data fields
@@ -904,7 +994,7 @@ function encode_new_order_list(;
     # Root data field
     write_var_string8!(buf, cl_list_id)
 
-    return finalize_message!(buf, SBE_TEMPLATE_NEW_ORDER_LIST, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_NEW_ORDER_LIST, seq_num; schema_version=schema_version)
 end
 
 # =============================================================================
@@ -937,12 +1027,13 @@ function encode_market_data_request(;
     symbols::Vector{String}=String[],
     market_depth::Union{UInt16,Nothing}=nothing,
     aggregated_book::Union{Bool,Nothing}=nothing,
-    md_entry_types::Vector{UInt8}=UInt8[]       # 0=Bid, 1=Offer, 2=Trade
+    md_entry_types::Vector{UInt8}=UInt8[],      # 0=Bid, 1=Offer, 2=Trade
+    schema_version::Integer=SBE_SCHEMA_VERSION_FIX
 )
     buf = SBEBuffer()
 
     # Fixed fields
-    write_uint8!(buf, subscription_request_type)
+    write_uint8!(buf, char_enum(subscription_request_type))
     write_uint16!(buf, isnothing(market_depth) ? SBE_UINT16_NULL : market_depth)
     if isnothing(aggregated_book)
         write_uint8!(buf, SBE_UINT8_NULL)
@@ -963,13 +1054,13 @@ function encode_market_data_request(;
     write_uint8!(buf, UInt8(1))                                # 1 byte per entry
     write_uint8!(buf, UInt8(length(md_entry_types)))
     for et in md_entry_types
-        write_uint8!(buf, et)
+        write_uint8!(buf, char_enum(et))
     end
 
     # Root data
     write_var_string8!(buf, md_req_id)
 
-    return finalize_message!(buf, SBE_TEMPLATE_MARKET_DATA_REQUEST, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_MARKET_DATA_REQUEST, seq_num; schema_version=schema_version)
 end
 
 """
@@ -982,7 +1073,8 @@ function encode_instrument_list_request(;
     seq_num::UInt32,
     instrument_req_id::String,
     request_type::UInt8=UInt8(4),  # 4=All instruments, 0=Single instrument
-    symbol::String=""
+    symbol::String="",
+    schema_version::Integer=SBE_SCHEMA_VERSION_FIX
 )
     buf = SBEBuffer()
 
@@ -993,7 +1085,7 @@ function encode_instrument_list_request(;
     write_var_string8!(buf, instrument_req_id)
     write_var_string8!(buf, symbol)
 
-    return finalize_message!(buf, SBE_TEMPLATE_INSTRUMENT_LIST_REQUEST, seq_num)
+    return finalize_message!(buf, SBE_TEMPLATE_INSTRUMENT_LIST_REQUEST, seq_num; schema_version=schema_version)
 end
 
 end # module FIXSBEEncoder

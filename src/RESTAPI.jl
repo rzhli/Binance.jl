@@ -543,6 +543,27 @@ module RESTAPI
 
     # --- Trading Functions ---
 
+    """
+        validate_quote_notional_limit(side; quote_order_qty=nothing)
+
+    Client-side check of the two documented `quoteNotionalLimit` rules that never
+    depend on exchange state: it is accepted on BUY orders only, and it cannot be
+    combined with `quoteOrderQty`. Everything else (symbol support via
+    `marketQuoteNotionalLimitAllowed` / `limitQuoteNotionalLimitAllowed`, the
+    "must be below quantity × price" rule, balance) is left to the exchange.
+    """
+    function validate_quote_notional_limit(side::AbstractString; quote_order_qty=nothing)
+        uppercase(side) == "BUY" || throw(ArgumentError(
+            "quoteNotionalLimit is only accepted on BUY orders (got side=$side)"))
+        isnothing(quote_order_qty) || throw(ArgumentError(
+            "quoteNotionalLimit cannot be combined with quoteOrderQty"))
+        return nothing
+    end
+
+    # `quote_notional_limit` (BUY orders only, Binance 2026-11-11, enabled after
+    # 2026-11-20 07:00 UTC) caps the quote asset the order may consume while
+    # keeping the requested `quantity`. Check `marketQuoteNotionalLimitAllowed` /
+    # `limitQuoteNotionalLimitAllowed` on the symbol's `SymbolInfo` for support.
     function place_order(
         client::RESTClient, symbol::String, side::String, order_type::String;
         quantity::Union{DecimalInput,Nothing}=nothing,
@@ -552,7 +573,8 @@ module RESTAPI
         stop_price::Union{DecimalInput,Nothing}=nothing,
         iceberg_qty::Union{DecimalInput,Nothing}=nothing,
         time_in_force::String="GTC",
-        new_order_resp_type::String="ACK"
+        new_order_resp_type::String="ACK",
+        quote_notional_limit::Union{DecimalInput,Nothing}=nothing
         )
 
         # --- Validation (使用 O(1) 缓存查找) ---
@@ -603,6 +625,11 @@ module RESTAPI
 
         if !isnothing(iceberg_qty)
             params["icebergQty"] = to_decimal_string(iceberg_qty)
+        end
+
+        if !isnothing(quote_notional_limit)
+            validate_quote_notional_limit(side; quote_order_qty=quote_order_qty)
+            params["quoteNotionalLimit"] = to_decimal_string(quote_notional_limit)
         end
 
         # --- Perform Validation ---
@@ -669,6 +696,8 @@ module RESTAPI
         return make_request(client, "DELETE", "/api/v3/openOrders"; params=params, signed=true)
     end
 
+    # Order parameters are passed through `kwargs` under their API names, e.g.
+    # `quoteNotionalLimit="250"` for a BUY replacement order (2026-11-11).
     function cancel_replace_order(
         client::RESTClient, symbol::String, side::String, order_type::String,
         cancel_replace_mode::String; kwargs...
@@ -868,6 +897,14 @@ module RESTAPI
         return make_request(client, "GET", "/api/v3/openOrderList"; signed=true)
     end
 
+    # Order-list parameters are passed through `kwargs` under their API names.
+    # Quote notional limits (BUY orders only, 2026-11-11) use a per-leg prefix:
+    #   OCO         aboveQuoteNotionalLimit, belowQuoteNotionalLimit
+    #   OTO         workingQuoteNotionalLimit, pendingQuoteNotionalLimit
+    #   OTOCO       workingQuoteNotionalLimit, pendingAboveQuoteNotionalLimit,
+    #               pendingBelowQuoteNotionalLimit
+    #   OPO, OPOCO  workingQuoteNotionalLimit (pending orders are SELL-only)
+    # SOR endpoints reject the parameter with -1106.
     function place_oco_order(
         client::RESTClient, symbol::String, side::String, quantity::DecimalInput,
         above_type::String, below_type::String; kwargs...
@@ -941,6 +978,7 @@ module RESTAPI
     - `workingTimeInForce`: Time in force for working order
     - `workingIcebergQty`: Iceberg quantity for working order
     - `workingSelfTradePreventionMode`: STP mode for working order
+    - `workingQuoteNotionalLimit`: Quote notional limit for the working BUY order
     - `pendingType`: Type of pending order (default: "LIMIT")
     - `pendingSide`: Side of pending order
     - `pendingQuantity`: Quantity for pending order
@@ -1011,6 +1049,7 @@ module RESTAPI
     - `workingTimeInForce`: Time in force for working order
     - `workingIcebergQty`: Iceberg quantity for working order
     - `workingSelfTradePreventionMode`: STP mode for working order
+    - `workingQuoteNotionalLimit`: Quote notional limit for the working BUY order
     - `pendingAboveClientOrderId`: Unique id for pending above order
     - `pendingAbovePrice`: Price for pending above order
     - `pendingAboveStopPrice`: Stop price for pending above order

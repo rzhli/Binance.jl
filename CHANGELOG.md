@@ -7,6 +7,140 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-18
+
+Sync with the Binance Spot API changelog dated 2026-11-11. Includes BinanceFIX 0.7.0.
+
+Binance is rolling the first group of changes out over roughly two weeks; the
+order-related group (quote notional limit, effective STP mode, `EXHAUSTED`)
+takes effect after **2026-11-20 07:00 UTC**, and `quoteNotionalLimit` itself is
+enabled at a later, unannounced time. Everything below is optional and
+backward compatible: fields the exchange does not send yet stay `nothing`.
+
+### Added
+- **User Data Stream subscription filters** — `userdata_stream_subscribe` and
+  `userdata_stream_subscribe_signature` accept `filter`, e.g.
+  `filter=(e=["executionReport"], x=["TRADE"])` for fills only. Keys: `e` event
+  type, `s` symbol, `a` asset, `x` execution type. `userdata_stream_filter`
+  validates and canonicalizes a filter (at least one key, known keys only, no
+  empty or duplicate values) so a malformed one fails before a request is
+  spent; unknown symbols and assets are left to the exchange (`-1121`,
+  `-1108`). `userdata_stream_filter_json` and
+  `userdata_stream_signature_payload` produce the canonical text (keys sorted,
+  no whitespace, no percent encoding) that a signature subscription must sign.
+- The filter of the last successful `userdata_stream_subscribe` is remembered
+  on the `WebSocketClient` and reused by the automatic re-subscribe after a
+  reconnect, so a reconnect does not silently widen the stream to all events.
+- **`quoteNotionalLimit`** (BUY orders only) — REST `place_order` takes
+  `quote_notional_limit`; WebSocket API `place_order` and
+  `cancel_replace_order` take `quoteNotionalLimit`; `place_oco_order` takes
+  `aboveQuoteNotionalLimit` / `belowQuoteNotionalLimit` and `place_oto_order`
+  takes `workingQuoteNotionalLimit` / `pendingQuoteNotionalLimit`. Functions
+  that forward `kwargs` (REST order lists and cancel-replace, WebSocket OTOCO /
+  OPO / OPOCO, `test_order`) accept the documented API names unchanged. A limit
+  on a SELL order, or combined with `quoteOrderQty`, is rejected locally.
+- `SymbolInfo.marketQuoteNotionalLimitAllowed` and
+  `SymbolInfo.limitQuoteNotionalLimitAllowed` (default `false` when absent).
+- `Order.quoteNotionalLimit` (`nothing` unless the order was placed with one).
+- `ExecutionReport.Qq` (quote notional limit) and `ExecutionReport.eV`
+  (effective self-trade prevention mode; only on prevented-match reports where
+  the applied mode differs from `V`). Both are appended after `eR`, so the
+  positional order of the existing fields is unchanged.
+- `ServerShutdown.T`, the announced shutdown time in milliseconds (`nothing`
+  when the server does not send it). The two-argument constructor still works.
+  The shutdown warnings of the WebSocket API, JSON streams and SBE streams log
+  it as `shutdown_time`.
+- BinanceFIX 0.7.0: `QuoteNotionalLimit (25057)`,
+  `EffectiveSelfTradePreventionMode (25058)`, `EXPIRY_EXHAUSTED`,
+  `EXPIRY_INSUFFICIENT_QUOTE_NOTIONAL_LIMIT`, and opt-in FIX SBE schema `1:2`.
+  See `BinanceFIX/README.md`.
+- BinanceFIX 0.7.0: **direct TLS**. Sessions connect straight to
+  `fix-oe` / `fix-dc` / `fix-md.binance.com` with SNI and certificate
+  verification. `[fix]` and `[fix_testnet]` default to those hosts and to ports
+  9000 / 9001 / 9002, so the sections can be omitted.
+
+- BinanceFIX 0.7.0: session helpers `with_fix_session` (connect, log on, run a
+  block, log out, close), `pump_messages` (receive for a given time, dispatch
+  parsed messages, keep the heartbeat going), `new_sender_comp_id`, and the
+  FIX SBE equivalents `with_sbe_session` / `pump_sbe_messages`.
+- BinanceFIX 0.7.0: `INSTRUMENT_LIST_SINGLE` / `INSTRUMENT_LIST_ALL` are
+  exported from the package root (they are the `request_type` values of
+  `instrument_list_request`).
+- `test_fix.jl`: FIX counterpart of `test_convert.jl`, driving
+  `run_fix_strategy` from the local `strategy/FIX.jl` (price-level spot
+  orders over FIX market data and order entry sessions).
+
+### Removed
+- **stunnel support.** `BinanceFIX/stunnel.conf` and
+  `BinanceFIX/stunnel-binance.service` are gone and sessions no longer open
+  plain-TCP connections. A config whose `[fix]` host is `127.0.0.1` must be
+  changed to the Binance hosts (or the section removed). The old default
+  ports (9000/9001/9002 per service, 9010–9022 for SBE, 19xxx on testnet)
+  were local stunnel ports and no longer apply.
+
+### Changed (BinanceFIX 0.7.0, breaking)
+- **FIX SBE responses are decoded per schema.** Every decoder was rewritten
+  against `spot-fixsbe-1_2.xml` and checked against messages captured from
+  the testnet gateway. Consequences for code that reads decoded messages:
+  - IDs are `Int64` (were `UInt64`); optional fields are `nothing` when null.
+  - Enum fields hold the wire value, which for most enums is an ASCII
+    character: `side == UInt8('1')` is BUY, `exec_type == UInt8('F')` is TRADE.
+  - `SBEExecutionReport` gained the fields the schema defines (cash order
+    quantity, pegged and trigger fields, prevented-match details, secondary
+    ids, `ord_rej_reason`, ...); decimals use the exponents carried in the
+    message.
+  - Market data messages carry `symbol` instead of `md_req_id` (the wire has
+    no request id), `SBEMDEntry` dropped `update_action`, `SBENews` has only
+    `headline`, `SBEListStatus` moved `error_code`/`text` onto its orders.
+- **FIX SBE requests encode char enums as characters and nulls per the SBE
+  specification.** `UInt8(1)`-style arguments are still accepted and converted
+  (`char_enum`); absent optional fields are written as `typemin` for signed
+  integers and `0` for char enums (were `typemax` / `0xFF`).
+
+### Fixed
+- BinanceFIX could never complete a logon: the receive loops polled
+  `bytesavailable`, which stays 0 on a Julia socket that no task is reading.
+  A background reader now buffers incoming data for both text FIX and FIX SBE.
+- FIX SBE logon was rejected with `-1022`: the signed timestamp and the header
+  `SendingTime` were taken at different instants and the signed text used
+  milliseconds. Both now come from one instant with microsecond precision.
+- FIX SBE `LogonAck` and `Reject` decoders did not follow the schema layout,
+  so a refused logon surfaced as a `BoundsError` instead of its reason.
+- A logon refused by the gateway now reports the Reject/Logout text even when
+  the server closes the connection immediately afterwards.
+- FIX SBE messages with an empty root block (Heartbeat, TestRequest, Logout,
+  LimitQuery) declared a non-zero `blockLength` and were rejected with `-1221`,
+  after which the gateway closed the session.
+- A failed FIX connection reports the underlying error instead of a
+  `TaskFailedException`.
+- Text FIX orders wrote small prices and quantities in exponent form
+  (`38=1.0e-5`); they are now plain decimals with at most 8 places.
+- `receive_message` / `receive_sbe_message` logged and swallowed
+  `InterruptException`, so Ctrl-C did not stop a receive loop.
+
+### Changed
+- Error table: `PARAM_OVERFLOW` is **`-1018`**; **`-1108` is now `BAD_ASSET`
+  ("Invalid asset.")**. Binance had documented `PARAM_OVERFLOW` under `-1108` by
+  mistake. Code that matched `-1108` as an overflow should match `-1018`.
+- `-1015 TOO_MANY_ORDERS` description follows the new server message ("Too many
+  orders placed without trading; ...").
+- `userdata_stream_subscribe` warns, instead of logging at info level, when an
+  existing subscription is reused and a requested `filter` was therefore not
+  applied.
+
+### Notes
+- `expiryReason` / `eR` are plain strings, so the new values `EXHAUSTED` (order
+  amended down to its filled quantity or less) and
+  `INSUFFICIENT_QUOTE_NOTIONAL_LIMIT` need no code change.
+- REST/WebSocket API SBE schema `3:6` deprecates `3:5` (retirement six months
+  later). `RESTClient` and `WebSocketClient` use JSON, so nothing changes here;
+  see `docs/SBE.md` for custom SBE clients. The corrected `listClientOrderId`
+  in SBE cancel-order-list responses likewise only concerns SBE responses.
+- Behavior changes on the exchange that need no SDK change: partially filled
+  BUY limit orders release the surplus lock as soon as they rest on the book;
+  SOR endpoints reject `quoteNotionalLimit` with `-1106`; the legacy OCO
+  endpoints do not accept the new parameters.
+
 ## [0.18.2] - 2026-10-30
 
 Documentation-only release for the October Binance Spot API notices.

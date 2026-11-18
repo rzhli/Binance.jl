@@ -384,7 +384,9 @@ function handle_control_message(client::SBEStreamClient, msg::String)
 
         if isa(data, AbstractDict) && get(data, :e, nothing) == "serverShutdown"
             event_time = haskey(data, :E) ? unix2datetime(data[:E] / 1000) : nothing
-            @warn "serverShutdown received on SBE stream. Closing connection for reconnect." event_time
+            # `T` (announced shutdown time) is being rolled out; absent on older servers.
+            shutdown_time = haskey(data, :T) ? unix2datetime(data[:T] / 1000) : nothing
+            @warn "serverShutdown received on SBE stream. Closing connection for reconnect." event_time shutdown_time
             if !isnothing(client.ws_connection)
                 try
                     close(client.ws_connection)

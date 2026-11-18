@@ -56,7 +56,7 @@ const CONFIG_FILE = "config.toml"
 
 run_convert_strategy(;
     symbol = "BTCUSDT",
-    buy_prices = [55000.0, 50000.0, 45000.0],
+    buy_prices = [60000.0, 50000.0, 40000.0],
     buy_quantities = [1.0, 1.0, 1.0],       # USDT 金额（is_quote_qty=true）
     sell_prices = [88000.0, 99000.0, 110000.0],
     sell_quote_amounts= [1.0, 1.0, 1.0],

@@ -88,7 +88,8 @@ module WebSocketAPI
     # User Data Stream
     export user_data_stream_start, user_data_stream_ping, user_data_stream_stop,
         userdata_stream_subscribe, userdata_stream_unsubscribe, session_subscriptions,
-        userdata_stream_subscribe_signature
+        userdata_stream_subscribe_signature, userdata_stream_filter, userdata_stream_filter_json,
+        userdata_stream_signature_payload
 
     mutable struct WebSocketClient
         config::BinanceConfig
@@ -109,6 +110,9 @@ module WebSocketAPI
         reconnect_lock::ReentrantLock
         heartbeat_task::Union{Task,Nothing}
         heartbeat_interval::Int # Interval in seconds for heartbeat pings
+        # Filter of the last successful `userdata_stream_subscribe`, in canonical
+        # form, so the automatic re-subscribe after a reconnect keeps it.
+        user_data_filter::Union{Nothing,Vector{Pair{String,Vector{String}}}}
 
         function WebSocketClient(config_path::String="config.toml")
             config = from_toml(config_path)
@@ -125,7 +129,7 @@ module WebSocketAPI
                 config, signer, base_url, nothing, rate_limiter,
                 Dict{String,Channel{JSON.Object{String,Any}}}(), ReentrantLock(),
                 Dict{String,EventCallback}(), ReentrantLock(), 0, false, true, nothing,
-                ReentrantLock(), nothing, 60,
+                ReentrantLock(), nothing, 60, nothing,
             )
 
             # Initialize time offset to 0. This will be synchronized with the server after the WebSocket connection is established.
@@ -343,8 +347,10 @@ module WebSocketAPI
                                     # Automatically re-subscribe to user data stream if callbacks are registered
                                     if has_event_callbacks(client)
                                         try
-                                            userdata_stream_subscribe(client)
-                                            @info "Automatically re-subscribed to user data stream."
+                                            # Carry the filter of the previous subscription over;
+                                            # without it the new session would deliver every event.
+                                            userdata_stream_subscribe(client; filter=client.user_data_filter)
+                                            @info "Automatically re-subscribed to user data stream." filter=client.user_data_filter
                                         catch e_subscribe
                                             @warn "Failed to automatically re-subscribe to user data stream: $e_subscribe"
                                         end
@@ -524,7 +530,9 @@ module WebSocketAPI
 
     function handle_server_shutdown!(client::WebSocketClient, event::ServerShutdown)
         event_time = unix2datetime(event.E / 1000)
-        @warn "Server shutdown event received. Closing WebSocket API connection for reconnect." event_time
+        # `T` (announced shutdown time) is being rolled out; absent on older servers.
+        shutdown_time = isnothing(event.T) ? nothing : unix2datetime(event.T / 1000)
+        @warn "Server shutdown event received. Closing WebSocket API connection for reconnect." event_time shutdown_time
         if !isnothing(client.ws_connection) && !WebSockets.isclosed(client.ws_connection)
             try
                 close(client.ws_connection)
@@ -1486,6 +1494,10 @@ module WebSocketAPI
     - `strategyId::Int`: Strategy ID
     - `strategyType::Int`: Strategy type
     - `selfTradePreventionMode::String`: Self trade prevention mode
+    - `quoteNotionalLimit::Union{Float64,String}`: BUY orders only. Maximum quote-asset
+      notional the order may consume; cannot be combined with `quoteOrderQty`. Check
+      `marketQuoteNotionalLimitAllowed` / `limitQuoteNotionalLimitAllowed` in exchange
+      info for symbol support (Binance 2026-11-11, enabled after 2026-11-20 07:00 UTC).
     """
     function place_order(
         client::WebSocketClient, symbol::String, side::String, type::String;
@@ -1495,6 +1507,7 @@ module WebSocketAPI
         trailingDelta::Union{Int,Nothing}=nothing, icebergQty::Union{DecimalInput,Nothing}=nothing,
         newOrderRespType::String="", strategyId::Union{Int,Nothing}=nothing,
         strategyType::Union{Int,Nothing}=nothing, selfTradePreventionMode::String="",
+        quoteNotionalLimit::Union{DecimalInput,Nothing}=nothing,
         kwargs...  # Accept any additional parameters
         )
         # Basic validation only
@@ -1529,6 +1542,10 @@ module WebSocketAPI
         !isnothing(strategyId) && (params["strategyId"] = strategyId)
         !isnothing(strategyType) && (params["strategyType"] = strategyType)
         !isempty(selfTradePreventionMode) && (params["selfTradePreventionMode"] = selfTradePreventionMode)
+        if !isnothing(quoteNotionalLimit)
+            RESTAPI.validate_quote_notional_limit(side; quote_order_qty=quoteOrderQty)
+            params["quoteNotionalLimit"] = to_decimal_string(quoteNotionalLimit)
+        end
 
         # Add any additional kwargs
         for (key, value) in kwargs
@@ -1544,6 +1561,10 @@ module WebSocketAPI
         order_test(client, symbol, side, type; kwargs...)
 
     Test order placement without sending to matching engine.
+
+    Order parameters are passed through `kwargs` under their API names (for example
+    `quoteNotionalLimit="250"` on a BUY order). `quoteNotionalLimit` is validated
+    but never echoed in the `order.test` response.
     """
     function test_order(client::WebSocketClient, symbol::String, side::String, type::String;
         computeCommissionRates::Bool=false,
@@ -1619,6 +1640,10 @@ module WebSocketAPI
         order_cancel_replace(client, symbol, cancelReplaceMode, side, type; kwargs...)
 
     Cancel an existing order and place a new order.
+
+    `quoteNotionalLimit` (BUY replacement orders only, Binance 2026-11-11) caps the
+    quote asset the replacement order may consume; it cannot be combined with
+    `quoteOrderQty`.
     """
     function cancel_replace_order(
         client::WebSocketClient, symbol::String, cancelReplaceMode::String, side::String, type::String;
@@ -1630,7 +1655,8 @@ module WebSocketAPI
         stopPrice::Union{DecimalInput,Nothing}=nothing, trailingDelta::Union{Int,Nothing}=nothing,
         icebergQty::Union{DecimalInput,Nothing}=nothing, strategyId::Union{Int,Nothing}=nothing,
         strategyType::Union{Int,Nothing}=nothing, selfTradePreventionMode::String="",
-        pegPriceType::String="", pegOffsetValue::Union{Int,Nothing}=nothing, pegOffsetType::String=""
+        pegPriceType::String="", pegOffsetValue::Union{Int,Nothing}=nothing, pegOffsetType::String="",
+        quoteNotionalLimit::Union{DecimalInput,Nothing}=nothing
         )
         # Validate cancelReplaceMode
         if !(cancelReplaceMode in ("STOP_ON_FAILURE", "ALLOW_FAILURE"))
@@ -1683,6 +1709,10 @@ module WebSocketAPI
         !isempty(pegPriceType) && (params["pegPriceType"] = pegPriceType)
         !isnothing(pegOffsetValue) && (params["pegOffsetValue"] = pegOffsetValue)
         !isempty(pegOffsetType) && (params["pegOffsetType"] = pegOffsetType)
+        if !isnothing(quoteNotionalLimit)
+            RESTAPI.validate_quote_notional_limit(side; quote_order_qty=quoteOrderQty)
+            params["quoteNotionalLimit"] = to_decimal_string(quoteNotionalLimit)
+        end
 
         return send_signed_request(client, "order.cancelReplace", params)
     end
@@ -1738,6 +1768,9 @@ module WebSocketAPI
         order_list_place_oco(client, symbol, side, quantity, aboveType, belowType; kwargs...)
 
     Place a new OCO (One-Cancels-the-Other) order list.
+
+    `aboveQuoteNotionalLimit` / `belowQuoteNotionalLimit` (BUY lists only, Binance
+    2026-11-11) cap the quote asset the respective leg may consume.
     """
     function place_oco_order(
         client::WebSocketClient, symbol::String, side::String, quantity::Float64, aboveType::String, belowType::String;
@@ -1748,8 +1781,13 @@ module WebSocketAPI
         belowIcebergQty::Union{Float64,Nothing}=nothing, belowPrice::Union{Float64,Nothing}=nothing, belowStopPrice::Union{Float64,Nothing}=nothing,
         belowTrailingDelta::Union{Int,Nothing}=nothing, belowTimeInForce::String="", belowStrategyId::Union{Int,Nothing}=nothing,
         belowStrategyType::Union{Int,Nothing}=nothing, belowPegPriceType::String="", belowPegOffsetType::String="",
-        belowPegOffsetValue::Union{Int,Nothing}=nothing, newOrderRespType::String="FULL", selfTradePreventionMode::String=""
+        belowPegOffsetValue::Union{Int,Nothing}=nothing, newOrderRespType::String="FULL", selfTradePreventionMode::String="",
+        aboveQuoteNotionalLimit::Union{DecimalInput,Nothing}=nothing,
+        belowQuoteNotionalLimit::Union{DecimalInput,Nothing}=nothing
         )
+        if !isnothing(aboveQuoteNotionalLimit) || !isnothing(belowQuoteNotionalLimit)
+            RESTAPI.validate_quote_notional_limit(side)
+        end
 
         params = Dict{String,Any}(
             "symbol" => symbol,
@@ -1776,6 +1814,7 @@ module WebSocketAPI
         !isempty(abovePegPriceType) && (params["abovePegPriceType"] = abovePegPriceType)
         !isempty(abovePegOffsetType) && (params["abovePegOffsetType"] = abovePegOffsetType)
         !isnothing(abovePegOffsetValue) && (params["abovePegOffsetValue"] = abovePegOffsetValue)
+        !isnothing(aboveQuoteNotionalLimit) && (params["aboveQuoteNotionalLimit"] = to_decimal_string(aboveQuoteNotionalLimit))
 
         # Below order parameters
         !isempty(belowClientOrderId) && (params["belowClientOrderId"] = belowClientOrderId)
@@ -1789,6 +1828,7 @@ module WebSocketAPI
         !isempty(belowPegPriceType) && (params["belowPegPriceType"] = belowPegPriceType)
         !isempty(belowPegOffsetType) && (params["belowPegOffsetType"] = belowPegOffsetType)
         !isnothing(belowPegOffsetValue) && (params["belowPegOffsetValue"] = belowPegOffsetValue)
+        !isnothing(belowQuoteNotionalLimit) && (params["belowQuoteNotionalLimit"] = to_decimal_string(belowQuoteNotionalLimit))
 
         return send_signed_request(client, "orderList.place.oco", params)
     end
@@ -1797,6 +1837,10 @@ module WebSocketAPI
         order_list_place_oto(client, symbol, workingType, workingSide, workingPrice, workingQuantity, pendingType, pendingSide, pendingQuantity; kwargs...)
 
     Place a new OTO (One-Triggers-the-Other) order list.
+
+    `workingQuoteNotionalLimit` / `pendingQuoteNotionalLimit` (Binance 2026-11-11)
+    cap the quote asset the respective order may consume; each is accepted only
+    when that order is on the BUY side.
     """
     function place_oto_order(
         client::WebSocketClient, symbol::String, workingType::String, workingSide::String, workingPrice::Float64,
@@ -1807,8 +1851,12 @@ module WebSocketAPI
         workingPegOffsetValue::Union{Int,Nothing}=nothing, pendingClientOrderId::String="", pendingPrice::Union{Float64,Nothing}=nothing,
         pendingStopPrice::Union{Float64,Nothing}=nothing, pendingTrailingDelta::Union{Int,Nothing}=nothing,
         pendingIcebergQty::Union{Float64,Nothing}=nothing, pendingTimeInForce::String="", pendingStrategyId::Union{Int,Nothing}=nothing,
-        pendingStrategyType::Union{Int,Nothing}=nothing, pendingPegPriceType::String="", pendingPegOffsetType::String="", pendingPegOffsetValue::Union{Int,Nothing}=nothing
+        pendingStrategyType::Union{Int,Nothing}=nothing, pendingPegPriceType::String="", pendingPegOffsetType::String="", pendingPegOffsetValue::Union{Int,Nothing}=nothing,
+        workingQuoteNotionalLimit::Union{DecimalInput,Nothing}=nothing,
+        pendingQuoteNotionalLimit::Union{DecimalInput,Nothing}=nothing
         )
+        isnothing(workingQuoteNotionalLimit) || RESTAPI.validate_quote_notional_limit(workingSide)
+        isnothing(pendingQuoteNotionalLimit) || RESTAPI.validate_quote_notional_limit(pendingSide)
 
         params = Dict{String,Any}(
             "symbol" => symbol,
@@ -1835,6 +1883,7 @@ module WebSocketAPI
         !isempty(workingPegPriceType) && (params["workingPegPriceType"] = workingPegPriceType)
         !isempty(workingPegOffsetType) && (params["workingPegOffsetType"] = workingPegOffsetType)
         !isnothing(workingPegOffsetValue) && (params["workingPegOffsetValue"] = workingPegOffsetValue)
+        !isnothing(workingQuoteNotionalLimit) && (params["workingQuoteNotionalLimit"] = to_decimal_string(workingQuoteNotionalLimit))
 
         # Pending order parameters
         !isempty(pendingClientOrderId) && (params["pendingClientOrderId"] = pendingClientOrderId)
@@ -1848,6 +1897,7 @@ module WebSocketAPI
         !isempty(pendingPegPriceType) && (params["pendingPegPriceType"] = pendingPegPriceType)
         !isempty(pendingPegOffsetType) && (params["pendingPegOffsetType"] = pendingPegOffsetType)
         !isnothing(pendingPegOffsetValue) && (params["pendingPegOffsetValue"] = pendingPegOffsetValue)
+        !isnothing(pendingQuoteNotionalLimit) && (params["pendingQuoteNotionalLimit"] = to_decimal_string(pendingQuoteNotionalLimit))
 
         return send_signed_request(client, "orderList.place.oto", params)
     end
@@ -1856,6 +1906,11 @@ module WebSocketAPI
         order_list_place_otoco(client, symbol, workingType, workingSide, workingPrice, workingQuantity, pendingSide, pendingQuantity, pendingAboveType, pendingBelowType; kwargs...)
 
     Place a new OTOCO (One-Triggers-One-Cancels-the-Other) order list.
+
+    Optional parameters are passed through `kwargs` under their API names, including
+    the quote notional limits added on 2026-11-11 (BUY orders only):
+    `workingQuoteNotionalLimit`, `pendingAboveQuoteNotionalLimit`,
+    `pendingBelowQuoteNotionalLimit`.
     """
     function place_otoco_order(
         client::WebSocketClient, symbol::String, workingType::String, workingSide::String, workingPrice::Float64,
@@ -1905,6 +1960,7 @@ module WebSocketAPI
     - `workingTimeInForce`: Time in force for working order
     - `workingIcebergQty`: Iceberg quantity for working order
     - `workingSelfTradePreventionMode`: STP mode for working order
+    - `workingQuoteNotionalLimit`: Quote notional limit for the working BUY order
     - `pendingType`: Type of pending order
     - `pendingSide`: Side of pending order
     - `pendingQuantity`: Quantity for pending order
@@ -1969,6 +2025,7 @@ module WebSocketAPI
     - `workingTimeInForce`: Time in force for working order
     - `workingIcebergQty`: Iceberg quantity for working order
     - `workingSelfTradePreventionMode`: STP mode for working order
+    - `workingQuoteNotionalLimit`: Quote notional limit for the working BUY order
     - `pendingAboveClientOrderId`: Unique id for pending above order
     - `pendingAbovePrice`: Price for pending above order
     - `pendingAboveStopPrice`: Stop price for pending above order
@@ -2421,24 +2478,138 @@ module WebSocketAPI
         return send_signed_request(client, "userDataStream.stop", params)
     end
 
+    # Filter keys accepted by `userDataStream.subscribe[.signature]`, sorted.
+    const USER_DATA_FILTER_KEYS = ("a", "e", "s", "x")
+
     """
-        userdata_stream_subscribe(client)
+        userdata_stream_filter(filter) -> Vector{Pair{String,Vector{String}}}
+
+    Validate and canonicalize a User Data Stream subscription filter (Binance
+    2026-11-11). `filter` is a `NamedTuple`, a dictionary or a vector of pairs keyed
+    by the short event field names; each value is one string or a collection of
+    strings:
+
+    | Key | Field          | Applies to                                   |
+    |-----|----------------|----------------------------------------------|
+    | `e` | Event type     | all events (`executionReport`, `balanceUpdate`, `outboundAccountPosition`, `listStatus`, `externalLockUpdate`) |
+    | `s` | Symbol         | events that carry a symbol                   |
+    | `a` | Asset          | events that carry an asset                   |
+    | `x` | Execution type | `executionReport` only (`NEW`, `TRADE`, `CANCELED`, `REPLACED`, `REJECTED`, `EXPIRED`, `TRADE_PREVENTION`) |
+
+    Values under one key are ORed, keys are ANDed, and a key that does not apply
+    to an event type lets that event through. `listenKeyExpired` and
+    `eventStreamTerminated` are always delivered.
+
+    The structural rules the exchange enforces are checked here so a bad filter
+    fails before a request is spent: at least one key, only the four known keys,
+    no empty value list, no duplicate value. Unknown symbols, assets and event
+    types are left to the exchange (`-1121`, `-1108`).
+
+    The result lists the keys in alphabetical order, which is the order the
+    signed payload of `userDataStream.subscribe.signature` requires.
+    """
+    function userdata_stream_filter(filter)
+        entries = if filter isa NamedTuple
+            pairs(filter)
+        elseif filter isa AbstractDict || filter isa AbstractVector{<:Pair}
+            filter
+        else
+            throw(ArgumentError("filter must be a NamedTuple, a dictionary or a vector of pairs, got $(typeof(filter))"))
+        end
+
+        normalized = Pair{String,Vector{String}}[]
+        for (key, value) in entries
+            name = string(key)
+            name in USER_DATA_FILTER_KEYS || throw(ArgumentError(
+                "Unknown user data stream filter key '$name'. Valid keys: " *
+                "e (event type), s (symbol), a (asset), x (execution type)."))
+            values = value isa Union{AbstractString,Symbol} ? [string(value)] : String[string(v) for v in value]
+            isempty(values) && throw(ArgumentError("filter key '$name' has an empty value list"))
+            allunique(values) || throw(ArgumentError("filter key '$name' contains duplicate values"))
+            push!(normalized, name => values)
+        end
+        isempty(normalized) && throw(ArgumentError("filter must contain at least one key"))
+        allunique(first.(normalized)) || throw(ArgumentError("filter contains a duplicate key"))
+        return sort!(normalized; by=first)
+    end
+
+    """
+        userdata_stream_filter_json(filter) -> String
+
+    Canonical JSON text of a subscription filter: keys sorted alphabetically and no
+    whitespace between elements. This is the exact text that must appear in the
+    payload signed for `userDataStream.subscribe.signature`:
+
+        apiKey=...&filter={"e":["executionReport"],"s":["BTCUSDT"],"x":["TRADE"]}&timestamp=...
+    """
+    function userdata_stream_filter_json(filter)
+        io = IOBuffer()
+        print(io, '{')
+        for (index, (key, values)) in enumerate(userdata_stream_filter(filter))
+            index > 1 && print(io, ',')
+            print(io, JSON.json(key), ':', JSON.json(values))
+        end
+        print(io, '}')
+        return String(take!(io))
+    end
+
+    """
+        userdata_stream_signature_payload(apiKey, timestamp; filter=nothing) -> String
+
+    The exact text to sign for `userDataStream.subscribe.signature`: the request
+    parameters sorted by name and joined as `name=value` with `&`, WITHOUT percent
+    encoding (WebSocket API signature rule), with the filter in its canonical JSON
+    form. Sign it with the key that belongs to `apiKey` and pass the result as
+    `signature` together with the same `timestamp` and `filter`.
+    """
+    function userdata_stream_signature_payload(apiKey::AbstractString, timestamp::Integer; filter=nothing)
+        isnothing(filter) && return "apiKey=$apiKey&timestamp=$timestamp"
+        return "apiKey=$apiKey&filter=$(userdata_stream_filter_json(filter))&timestamp=$timestamp"
+    end
+
+    # Request-parameter form of a filter. A `Dict` does not preserve key order, but
+    # the order inside the request object is irrelevant: only the signed payload
+    # (see `userdata_stream_filter_json`) is order-sensitive.
+    filter_param(filter::Vector{Pair{String,Vector{String}}}) = Dict{String,Any}(filter)
+
+    """
+        userdata_stream_subscribe(client; filter=nothing)
 
     Subscribe to the User Data Stream in the current WebSocket connection.
 
     This method requires an authenticated WebSocket connection using Ed25519 keys.
     User Data Stream events are available in both JSON and SBE sessions.
 
+    `filter` (optional, Binance 2026-11-11, rolled out gradually) restricts which
+    events are delivered, e.g. `filter=(e=["executionReport"], x=["TRADE"])` for
+    fills only. See [`userdata_stream_filter`](@ref). Without it every event of the
+    account is delivered.
+
+    If the session already has a subscription it is returned as is and a supplied
+    `filter` is NOT applied; unsubscribe first to change the filter.
+
+    The filter of the last successful subscription is remembered on the client and
+    reused by the automatic re-subscribe after a reconnect.
+
     Weight: 2
 
     Returns a result with subscriptionId field.
     """
-    function userdata_stream_subscribe(client::WebSocketClient)
+    function userdata_stream_subscribe(client::WebSocketClient; filter=nothing)
+        # Validate before any request is sent.
+        canonical_filter = isnothing(filter) ? nothing : userdata_stream_filter(filter)
+        params = Dict{String,Any}()
+        isnothing(canonical_filter) || (params["filter"] = filter_param(canonical_filter))
+
         # Check if there's already an active user data stream subscription
         try
             subs_response = session_subscriptions(client)
             if !isnothing(subs_response) && !isempty(subs_response)
-                @info "User data stream already has $(length(subs_response)) active subscription(s). Skipping new subscription."
+                if isnothing(filter)
+                    @info "User data stream already has $(length(subs_response)) active subscription(s). Skipping new subscription."
+                else
+                    @warn "User data stream already has $(length(subs_response)) active subscription(s); the requested filter was NOT applied. Unsubscribe first to change the filter."
+                end
                 return subs_response[1]  # Return the existing subscription
             end
         catch e
@@ -2446,7 +2617,9 @@ module WebSocketAPI
             @debug "Could not check existing subscriptions: $e"
         end
 
-        return send_request(client, "userDataStream.subscribe", Dict{String,Any}())
+        result = send_request(client, "userDataStream.subscribe", params)
+        client.user_data_filter = canonical_filter
+        return result
     end
 
     """
@@ -2494,7 +2667,7 @@ module WebSocketAPI
     end
 
     """
-        userdata_stream_subscribe_signature(client, apiKey, timestamp, signature)
+        userdata_stream_subscribe_signature(client, apiKey, timestamp, signature; filter=nothing)
 
     Subscribe to User Data Stream using signature subscription for a specific API key.
     This allows subscribing to User Data Stream for any account with valid API key and signature.
@@ -2506,15 +2679,22 @@ module WebSocketAPI
     - `apiKey`: API key for the account
     - `timestamp`: Request timestamp
     - `signature`: Request signature
+    - `filter`: Optional event filter (Binance 2026-11-11), see
+      [`userdata_stream_filter`](@ref). `signature` is computed by the caller, so
+      the filter must already be part of the signed payload in its canonical form:
+      `apiKey=...&filter={"e":["executionReport"]}&timestamp=...`.
+      [`userdata_stream_signature_payload`](@ref) builds that text.
+      Re-subscribing with a new request replaces the active filter.
     
     Returns a result with subscriptionId field.
     """
-    function userdata_stream_subscribe_signature(client::WebSocketClient, apiKey::String, timestamp::Int, signature::String)
+    function userdata_stream_subscribe_signature(client::WebSocketClient, apiKey::String, timestamp::Int, signature::String; filter=nothing)
         params = Dict{String,Any}(
             "apiKey" => apiKey,
             "timestamp" => timestamp,
             "signature" => signature
         )
+        isnothing(filter) || (params["filter"] = filter_param(userdata_stream_filter(filter)))
         return send_request(client, "userDataStream.subscribe.signature", params)
     end
 

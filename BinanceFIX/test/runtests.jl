@@ -1,4 +1,5 @@
 using Test
+using Dates
 using Binance
 using BinanceFIX
 using BinanceFIX.FIXConstants
@@ -27,6 +28,9 @@ end
     include("test_list_status.jl")
     include("test_order_amend_reject.jl")
     include("test_sbe_schema11.jl")
+    include("test_changelog_20261111.jl")
+    include("test_transport.jl")
+    include("test_sbe_decoders.jl")
 
     @testset "Session and SBE optimization regressions" begin
         @test isempty(Symbol[

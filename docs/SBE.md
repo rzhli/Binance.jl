@@ -508,6 +508,10 @@ events in WebSocket text frames. The SDK handles `serverShutdown` by closing the
 current socket so the reconnect loop can open a new connection and resubscribe.
 Treat the event as an immediate reconnect signal.
 
+Since 2026-11-11 the event also carries `T`, the time at which the session will
+be shut down (`{"e":"serverShutdown","E":...,"T":...}`). The SDK logs it as
+`shutdown_time`; servers not yet upgraded omit it.
+
 ### Schema Versions
 
 This client tracks Binance's dedicated Spot data-stream schema from
@@ -525,7 +529,30 @@ and template IDs 10000–10003. Schema versions belong to separate API families:
 | REST API | `RESTClient` | JSON |
 | WebSocket API | `WebSocketClient` | JSON |
 | Dedicated SBE market data streams | `SBEStreamClient` | `stream_1_0.xml`, schema `1:0` |
-| FIX SBE | `BinanceFIX` | FIX schema `1:1` |
+| FIX SBE | `BinanceFIX` | FIX schema `1:1` by default, `1:2` opt-in per session |
+
+#### REST/WebSocket API SBE schema 3:6 — 2026-11-11 notice
+
+Binance published **`3:6`** (`spot_3_6.xml`) and deprecated `3:5`, which will
+be retired six months later under the schema deprecation policy. Check the
+[production lifecycle](https://github.com/binance/binance-spot-api-docs/blob/master/sbe/schemas/sbe_schema_lifecycle_prod.json)
+for the effective dates: the change is rolled out gradually, and on 2026-11-13
+that file still listed `3:5` as the latest production schema.
+
+Schema `3:6` adds, among others: `expiryReason` values `Exhausted (9)` and
+`InsufficientQuoteNotionalLimit (10)`; `ServerShutdownEvent.shutdownTime`;
+`marketQuoteNotionalLimitAllowed`, `limitQuoteNotionalLimitAllowed` and
+`opoAllowed` in `ExchangeInfoResponse`; `quoteNotionalLimit` in the order
+responses and `ExecutionReportEvent`; and `effectiveSelfTradePreventionMode`
+in `ExecutionReportEvent` and the `preventedMatches` groups. In SBE sessions
+the shutdown time is only present from `3:6` on.
+
+`RESTClient` and `WebSocketClient` decode JSON and expose the same data through
+`Order.quoteNotionalLimit`, `SymbolInfo.marketQuoteNotionalLimitAllowed`,
+`ExecutionReport.Qq` / `eV` and `ServerShutdown.T`, so they need no change.
+Custom SBE clients should move to `X-MBX-SBE: 3:6` /
+`sbeSchemaId=3&sbeSchemaVersion=6` once the schema is live. The dedicated SBE
+market data streams stay on `1:0`.
 
 #### REST/WebSocket API SBE retirement — 2026-10-30 notice
 

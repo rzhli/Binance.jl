@@ -12,6 +12,51 @@ BinanceFIX.jl provides complete FIX protocol support for Binance Spot trading:
 
 ## Recent Updates
 
+### v0.7.0 - Changelog Sync 2026-11-11 (2026-11-18)
+
+- **`QuoteNotionalLimit (25057)`** — `new_order_single` and
+  `order_cancel_and_new_order` take `quote_notional_limit`; `new_order_list`
+  orders take `:quote_notional_limit`. BUY orders only; combining it with
+  `CashOrderQty`, `SOR` or `ExecInst=6` is rejected before sending.
+  `ExecutionReportMsg.quote_notional_limit` returns it. Binance enables the
+  feature some time after 2026-11-20 07:00 UTC.
+- **`EffectiveSelfTradePreventionMode (25058)`** —
+  `ExecutionReportMsg.effective_self_trade_prevention`, and
+  `get_stp_info(msg).effective_self_trade_prevention_mode`, which falls back to
+  the order's own mode because the tag is only sent when the two differ.
+- **`ExpiryReason`** gains `EXPIRY_EXHAUSTED` (`9`) and
+  `EXPIRY_INSUFFICIENT_QUOTE_NOTIONAL_LIMIT` (`10`).
+- **FIX SBE schema `1:2`, opt-in** — `SBESession(...; schema_version=SBE_SCHEMA_VERSION_FIX_V2)`.
+  Sessions default to `1:1`, see [schema versions](#fix-sbe-schema-versions).
+- `SBEExecutionReport.expiry_reason` is now read at its schema offset; it was
+  previously read from the wrong position in the block.
+- **Direct TLS; stunnel support removed** — sessions connect straight to
+  `fix-*.binance.com`, and `stunnel.conf` / `stunnel-binance.service` are gone.
+  A `[fix]` section pointing at `127.0.0.1` must be changed or removed. See
+  [Connecting](#connecting).
+- **FIX SBE decoders rewritten per schema (breaking)** — every response decoder
+  now follows `spot-fixsbe-1_2.xml` and is tested against messages captured
+  from the testnet gateway. Enum fields hold the wire value (`UInt8('1')` =
+  BUY), IDs are `Int64`, and null fields are `nothing`. See
+  [decoded values](#sbe-decoded-values).
+- **Session helpers** — `with_fix_session`, `pump_messages`,
+  `new_sender_comp_id` and the SBE equivalents `with_sbe_session`,
+  `pump_sbe_messages`. See [Session Helpers](#session-helpers).
+- **Decimal formatting** — order prices and quantities are written as plain
+  decimals; small values used to be sent in exponent form (`1.0e-5`).
+- **Ctrl-C** — the receive loops no longer swallow `InterruptException`.
+- **FIX SBE requests fixed** — char enums are sent as characters, absent fields
+  use the SBE null values, and Heartbeat / TestRequest / Logout / LimitQuery
+  declare `blockLength` 0 (the gateway answered `-1221` and dropped the
+  session before).
+- **Receiving works** — incoming data is now read by a background task. The
+  previous loop polled `bytesavailable`, which never reports data on an idle
+  Julia socket, so `logon` could only time out.
+- **FIX SBE logon fixes** — the signature now uses the same instant as the
+  header `SendingTime`, with microsecond precision (the gateway answered
+  `-1022` otherwise), and `LogonAck` / `Reject` are decoded per schema, so a
+  refused logon reports its reason.
+
 ### v0.6.1 - ExpiryReason documentation sync (2026-10-30)
 
 Binance added the previously announced `ExpiryReason (25056)` field to its
@@ -141,23 +186,61 @@ logout(session)
 close_fix(session)
 ```
 
+### Session Helpers
+
+For scripts and strategies, three helpers cover the connect / logon / receive /
+logout cycle:
+
+```julia
+import Binance
+using BinanceFIX
+
+config = Binance.from_toml("config.toml"; testnet=true)
+
+# Connect + logon, run the block, then logout + close (also on errors)
+with_fix_session(config, MarketData) do session
+    subscribe_book_ticker(session, ["BTCUSDT"])
+    # Receive for 5 seconds; answers TestRequests and sends Heartbeats itself
+    pump_messages(session, 5) do type, data
+        type == :market_data_incremental && println(data.entries)
+    end
+end
+```
+
+- `new_sender_comp_id()` — random 8-character SenderCompID (the default of
+  `with_fix_session`).
+- `with_fix_session(f, config, session_type=OrderEntry; ...)` — returns what `f`
+  returns; extra keywords go to `logon`.
+- `pump_messages(handle, session, seconds)` — calls `handle(type, data)` with
+  what `process_message` returns. Call it in a loop to keep a session alive;
+  do not also run `start_monitor` on that session, both would read the same
+  messages.
+- FIX SBE equivalents: `with_sbe_session`, `pump_sbe_messages`.
+
+Use `import Binance`, not `using Binance`, next to `using BinanceFIX`: both
+packages export names such as `subscribe_book_ticker`, and with two `using`s
+those names become ambiguous.
+
+Prices and quantities are sent as plain decimals with at most 8 places
+(`fix_decimal`); Julia's `string(0.00001)` would give `1.0e-5`.
+
 ## Session Types
 
-### Order Entry (Port 9000)
+### Order Entry
 For placing, canceling, and amending orders:
 
 ```julia
 session = FIXSession(config, sender_comp_id; session_type=OrderEntry)
 ```
 
-### Drop Copy (Port 9000)
+### Drop Copy
 Read-only execution reports for monitoring:
 
 ```julia
 session = FIXSession(config, sender_comp_id; session_type=DropCopy)
 ```
 
-### Market Data (Port 9000)
+### Market Data
 FIX-based market data streams:
 
 ```julia
@@ -202,14 +285,14 @@ logon_sbe(session)
 # Start connection monitor
 start_sbe_monitor(session)
 
-# Place a limit order (using UInt8 enum values)
-cl_ord_id = new_order_single_sbe(session, "BTCUSDT", UInt8(1);  # 1=BUY
-    quantity=0.001, price=50000.0, order_type=UInt8(2))  # 2=LIMIT
+# Place a limit order. Enums are the FIX characters: '1' = BUY, '2' = LIMIT, '1' = GTC
+cl_ord_id = new_order_single_sbe(session, "BTCUSDT", UInt8('1');
+    quantity=0.001, price=50000.0, order_type=UInt8('2'), time_in_force=UInt8('1'))
 
-# Atomic cancel-replace
-order_cancel_request_and_new_sbe(session, "BTCUSDT", UInt8(1), UInt8(2), UInt8(1);
+# Atomic cancel-replace (mode 1 = STOP_ON_FAILURE)
+order_cancel_request_and_new_sbe(session, "BTCUSDT", UInt8('1'), UInt8('2'), UInt8(1);
     orig_cl_ord_id=cl_ord_id, quantity=0.001, price=50100.0,
-    time_in_force=UInt8(1))
+    time_in_force=UInt8('1'))
 
 # Cancel order
 order_cancel_request_sbe(session, "BTCUSDT"; orig_cl_ord_id=cl_ord_id)
@@ -224,7 +307,8 @@ limit_query_sbe(session)
 messages = process_sbe_messages(session)
 for (msg_type, decoded) in messages
     if msg_type == :execution_report
-        println("Order: $(decoded.cl_ord_id) Status: $(decoded.ord_status)")
+        println("Order: $(decoded.cl_ord_id) Status: $(Char(decoded.ord_status))")
+        decoded.exec_type == UInt8('F') && println("  filled $(decoded.last_qty) @ $(decoded.last_px)")
     elseif msg_type == :execution_report_ack
         println("Ack: $(decoded.cl_ord_id)")
     end
@@ -250,7 +334,7 @@ session = SBESession(config, sender_comp_id; session_type=SBEMarketData)
 
 # Subscribe to market data
 market_data_request_sbe(session, ["BTCUSDT", "ETHUSDT"];
-    entry_types=[UInt8(0), UInt8(1)])  # 0=Bid, 1=Offer
+    entry_types=[UInt8('0'), UInt8('1')])  # '0' = Bid, '1' = Offer
 
 # Get instrument list
 instrument_list_request_sbe(session)
@@ -259,38 +343,62 @@ instrument_list_request_sbe(session)
 ### SBE Order Lists
 
 ```julia
+# OCO SELL: stop-loss-limit below the market, limit-maker above it.
+# The limit-maker leg must not carry TimeInForce (the gateway answers -1106).
 orders = [
-    OrderListEntry(cl_ord_id="oco-limit", symbol="BTCUSDT", side=UInt8(2),
-        ord_type=UInt8(2), quantity=0.001, price=52000.0,
-        time_in_force=UInt8(1)),
-    OrderListEntry(cl_ord_id="oco-stop", symbol="BTCUSDT", side=UInt8(2),
-        ord_type=UInt8(4), quantity=0.001, price=47900.0,
-        trigger_price=48000.0, time_in_force=UInt8(1))
+    OrderListEntry(cl_ord_id="oco-stop", symbol="BTCUSDT", side=UInt8('2'),
+        ord_type=UInt8('4'), quantity=0.001, price=47900.0, trigger_price=48000.0,
+        trigger_type=UInt8('4'), trigger_action=UInt8('1'), trigger_price_type=UInt8('2'),
+        trigger_price_direction=UInt8('D'), time_in_force=UInt8('1'),
+        list_triggering_instructions=[(UInt8('2'), UInt8(1), UInt8('2'))]),
+    OrderListEntry(cl_ord_id="oco-limit", symbol="BTCUSDT", side=UInt8('2'),
+        ord_type=UInt8('2'), quantity=0.001, price=52000.0, exec_inst=UInt8('6'),
+        list_triggering_instructions=[(UInt8('1'), UInt8(0), UInt8('2'))]),
 ]
 
-new_order_list_sbe(session, "list-1", UInt8(1), orders)
+new_order_list_sbe(session, "list-1", UInt8(1), orders)   # 1 = OCO
 ```
 
-### FIX SBE Decoder (for Hybrid Mode)
+<a id="sbe-decoded-values"></a>
+### SBE Decoded Values
 
-When using standard FIX text requests with SBE responses (port 9001):
+Decoded messages follow the schema (`spot-fixsbe-1_1.xml` / `1_2.xml`):
+
+- **Enums keep their wire value as `UInt8`.** Most are ASCII characters, the
+  same ones text FIX uses: `side == UInt8('1')` (BUY), `ord_type == UInt8('2')`
+  (LIMIT), `exec_type == UInt8('F')` (TRADE), `ord_status == UInt8('2')`
+  (FILLED). A few are small integers: `ord_rej_reason`, `expiry_reason`,
+  `working_floor`, `peg_move_type`, list status fields, and the booleans
+  (`0`/`1`).
+- **Optional fields are `nothing`** when the gateway sent no value.
+- **IDs are `Int64`**, timestamps are microseconds since the Unix epoch.
+- **Decimals** are converted with the exponent carried in the message.
+- **Market data** entries have `entry_type` `SBE_MD_ENTRY_BID`,
+  `SBE_MD_ENTRY_OFFER` or `SBE_MD_ENTRY_TRADE`; a depth entry with
+  `size === nothing` carries no size.
+
+Request functions accept either the character (`UInt8('1')`) or the bare digit
+(`UInt8(1)`) for char enums; `char_enum` converts.
+
+### Decoding Raw FIX SBE Messages
+
+`process_sbe_messages` decodes for you. To work with the raw bytes instead
+(`receive_sbe_message` returns one complete message per element):
 
 ```julia
-using BinanceFIX
-
-# Decode FIX SBE message from raw bytes
-data = receive_raw_data(session)
-msg_type, decoded = decode_sbe_message(data)
-
-if msg_type == :execution_report
-    println("Order ID: ", decoded.order_id)
-    println("ClOrdId: ", decoded.cl_ord_id)
-    println("Status: ", decoded.ord_status)
-    println("CumQty: ", decoded.cum_qty)
-elseif msg_type == :logon_ack
-    println("Logged in, UUID: ", decoded.uuid)
+for data in receive_sbe_message(session; timeout_ms=500)
+    msg_type, decoded = decode_sbe_message(data)
+    if msg_type == :execution_report
+        println("Order ID: ", decoded.order_id)
+        println("ClOrdId: ", decoded.cl_ord_id)
+        println("Status: ", Char(decoded.ord_status))
+        println("CumQty: ", decoded.cum_qty)
+    end
 end
 ```
+
+Hybrid mode (port 9001: FIX text requests, SBE responses) has no session type
+in this package; `FIXSession` reads text responses only.
 
 ### SBE Message Format
 
@@ -305,7 +413,7 @@ Message Header:
 - blockLength: uint16
 - templateId: uint16
 - schemaId: uint16 (1 for FIX SBE)
-- version: uint16 (1 for schema 1:1)
+- version: uint16 (the session's schema version: 1 for schema 1:1, 2 for 1:2)
 - seqNum: uint32
 - sendingTime: int64 (microseconds since epoch)
 ```
@@ -399,13 +507,69 @@ expired orders. Binance documented it on 2026-10-27 after announcing it on
 | `7` | `EXPIRY_INSUFFICIENT_LIQUIDITY` |
 | `8` | `EXPIRY_EXECUTION_RULE_PRICE_RANGE_EXCEEDED` |
 
+| `9` | `EXPIRY_EXHAUSTED` (since 2026-11-11: amended down to the filled quantity or less) |
+| `10` | `EXPIRY_INSUFFICIENT_QUOTE_NOTIONAL_LIMIT` (since 2026-11-11) |
+
 - Text FIX: `ExecutionReportMsg.expiry_reason` preserves the wire value as a
-  `String` (`"1"`–`"8"`), or `""` when tag 25056 is absent. The `EXPIRY_*`
+  `String` (`"1"`–`"10"`), or `""` when tag 25056 is absent. The `EXPIRY_*`
   constants are strings, so they can be compared directly with this field.
-- FIX SBE schema `1:1`: `SBEExecutionReport.expiry_reason` is
-  `Union{UInt8,Nothing}` (`UInt8(1)`–`UInt8(8)`, or `nothing` for an absent/null
-  value). For example, compare with `UInt8(8)` for
-  `EXECUTION_RULE_PRICE_RANGE_EXCEEDED`.
+- FIX SBE: `SBEExecutionReport.expiry_reason` is `Union{UInt8,Nothing}`
+  (`UInt8(1)`–`UInt8(10)`, or `nothing` for an absent/null value). For example,
+  compare with `UInt8(8)` for `EXECUTION_RULE_PRICE_RANGE_EXCEEDED`. Values `9`
+  and `10` are only defined from schema `1:2` on.
+
+### Quote Notional Limit and Effective STP Mode
+
+Added by Binance on 2026-11-11, effective after 2026-11-20 07:00 UTC.
+
+`QuoteNotionalLimit (25057)` caps the quote asset a BUY order may consume while
+keeping its quantity. See Binance's
+[quoteNotionalLimit FAQ](https://developers.binance.com/docs/binance-spot-api-docs/faqs/quoteNotionalLimit).
+
+```julia
+# Buy up to 1 BTC, spending at most 60000 USDT
+new_order_single(session, "BTCUSDT", SIDE_BUY;
+    order_type=ORD_TYPE_MARKET, quantity=1.0, time_in_force="",
+    quote_notional_limit=60000.0)
+
+# In an order list the limit belongs to one order
+orders[1][:quote_notional_limit] = 250.0
+```
+
+Rules checked before the message is sent: BUY side only; not together with
+`CashOrderQty (152)`, `SOR (25032)` or `ExecInst (18) = 6`. The exchange
+additionally rejects the tag on OPO/OPOCO pending orders and on symbols without
+`marketQuoteNotionalLimitAllowed` / `limitQuoteNotionalLimitAllowed`.
+
+`ExecutionReport <8>` echoes the limit in `quote_notional_limit` (only if the
+order was placed with one). On prevented-match reports it may also carry
+`EffectiveSelfTradePreventionMode (25058)` — `3` EXPIRE_MAKER, `4` EXPIRE_BOTH
+or `5` DECREMENT — when the mode the engine applied differs from the order's
+`SelfTradePreventionMode (25001)`.
+
+<a id="fix-sbe-schema-versions"></a>
+### FIX SBE Schema Versions
+
+| Schema | Status | Selected with |
+|--------|--------|---------------|
+| `1:1` (`spot-fixsbe-1_1.xml`) | Deprecated by the 2026-11-11 notice, retired six months later; still the session default | `SBESession(config, id)` |
+| `1:2` (`spot-fixsbe-1_2.xml`) | Published 2026-11-11, rolled out gradually | `SBESession(config, id; schema_version=SBE_SCHEMA_VERSION_FIX_V2)` |
+
+The version is fixed per session and written to every request header. `1:1`
+stays the default because the rollout takes about two weeks and the
+[production lifecycle file](https://github.com/binance/binance-spot-api-docs/blob/master/sbe/schemas/sbe_fix_schema_lifecycle_prod.json)
+still listed `1:1` as latest on 2026-11-13; a gateway that does not know `1:2`
+rejects it with `-1153`. Switch once that file lists `1:2`, and before `1:1`
+is retired.
+
+Schema `1:2` appends `QuoteNotionalLimit` to `NewOrderSingle`,
+`OrderCancelRequestAndNewOrderSingle` and the `NewOrderList` orders
+(`quote_notional_limit` on `new_order_single_sbe`,
+`order_cancel_request_and_new_sbe` and `OrderListEntry`), and
+`QuoteNotionalLimit` / `EffectiveSelfTradePreventionMode` to `ExecutionReport`
+(`SBEExecutionReport.quote_notional_limit`,
+`.effective_self_trade_prevention_mode`). Requesting a quote notional limit on
+a `1:1` session throws instead of dropping the field.
 
 ## Constants
 
@@ -446,105 +610,71 @@ BinanceFIX/
 │   └── FIXSBESession.jl    # FIX SBE session management
 ├── test/                   # Test suite
 ├── examples/               # Usage examples
-├── stunnel.conf            # Stunnel configuration
 └── README.md               # This file
 ```
 
-## Stunnel Setup (Required)
+## Connecting
 
-Binance FIX API requires TLS connections. This SDK uses stunnel for TLS termination.
+Binance FIX requires TLS with SNI. BinanceFIX does the handshake itself and
+verifies the certificate. The `[fix]` section defaults to the hosts and ports
+below, so it only needs to be written out to change them:
 
-### Quick Setup
-
-```bash
-# Install stunnel
-sudo apt install stunnel4   # Ubuntu/Debian
-# or
-brew install stunnel        # macOS
-
-# Copy configuration
-sudo cp stunnel.conf /etc/stunnel/binance-fix.conf
-
-# Start stunnel
-sudo systemctl start stunnel4
-# or run directly
-stunnel stunnel.conf
+```toml
+[fix]
+order_entry_host = "fix-oe.binance.com"
+drop_copy_host = "fix-dc.binance.com"
+market_data_host = "fix-md.binance.com"
+order_entry_port = 9000              # FIX text
+order_entry_sbe_hybrid_port = 9001   # FIX text requests, SBE responses
+order_entry_sbe_full_port = 9002     # SBE both ways
+# ...the same three ports for drop_copy_* and market_data_*
 ```
 
-### Cloud VM Deployment (Google Cloud, AWS, etc.)
+`config_example.toml` has the full section, including `[fix_testnet]`
+(`fix-*.testnet.binance.vision`, same ports).
 
-1. **Create VM** in a region close to Binance servers (Asia recommended for lower latency)
+To check reachability from your network:
 
-2. **Install dependencies**:
 ```bash
-sudo apt update && sudo apt install -y stunnel4
-curl -fsSL https://install.julialang.org | sh
+openssl s_client -connect fix-oe.binance.com:9000 -servername fix-oe.binance.com -verify_return_error -brief </dev/null
 ```
 
-3. **Clone and setup**:
-```bash
-git clone https://github.com/rzhli/Binance.jl.git
-cd Binance.jl/BinanceFIX
-sudo cp stunnel.conf /etc/stunnel/binance-fix.conf
-sudo cp stunnel-binance.service /etc/systemd/system/
-sudo systemctl enable stunnel-binance
-sudo systemctl start stunnel-binance
-```
+### Endpoints
 
-4. **Generate Ed25519 key** (if not already done):
+| Service | Host | FIX text | SBE hybrid | SBE full |
+|---------|------|----------|------------|----------|
+| Order Entry | `fix-oe.binance.com` | 9000 | 9001 | 9002 |
+| Drop Copy | `fix-dc.binance.com` | 9000 | 9001 | 9002 |
+| Market Data | `fix-md.binance.com` | 9000 | 9001 | 9002 |
+
+Testnet uses `fix-oe` / `fix-dc` / `fix-md.testnet.binance.vision` with the
+same ports. `FIXSession` uses the FIX text port and `SBESession` the SBE full
+port of its service.
+
+### API Key Setup
+
+FIX needs an Ed25519 API key with the `FIX_API` permission:
+
 ```bash
 mkdir -p key
 openssl genpkey -algorithm ED25519 -out key/ed25519-private.pem
 openssl pkey -in key/ed25519-private.pem -pubout -out key/ed25519-public.pem
 ```
 
-5. **Configure Binance API**:
-   - Upload `key/ed25519-public.pem` to Binance API Management
-   - Enable FIX_API permission
-   - Add VM's public IP to whitelist
+Upload `key/ed25519-public.pem` in Binance API Management, enable `FIX_API`,
+and whitelist the public IP you connect from. Then copy `config_example.toml`
+to `config.toml` and set the API key and key path.
 
-6. **Create config.toml**:
-```bash
-cp config_example.toml config.toml
-# Edit config.toml with your API key and key path
-```
-
-### Port Mapping
-
-#### Production
-
-| Local Port | Remote Server | Description |
-|------------|---------------|-------------|
-| 9000 | fix-oe.binance.com:9000 | Order Entry (Standard FIX) |
-| 9001 | fix-dc.binance.com:9000 | Drop Copy (Standard FIX) |
-| 9002 | fix-md.binance.com:9000 | Market Data (Standard FIX) |
-| 9010 | fix-oe.binance.com:9001 | Order Entry (SBE Hybrid) |
-| 9011 | fix-dc.binance.com:9001 | Drop Copy (SBE Hybrid) |
-| 9012 | fix-md.binance.com:9001 | Market Data (SBE Hybrid) |
-| 9020 | fix-oe.binance.com:9002 | Order Entry (SBE Full) |
-| 9021 | fix-dc.binance.com:9002 | Drop Copy (SBE Full) |
-| 9022 | fix-md.binance.com:9002 | Market Data (SBE Full) |
-
-#### Testnet
-
-| Local Port | Remote Server | Description |
-|------------|---------------|-------------|
-| 19000 | fix-oe.testnet.binance.vision:9000 | Order Entry (Standard FIX) |
-| 19001 | fix-dc.testnet.binance.vision:9000 | Drop Copy (Standard FIX) |
-| 19002 | fix-md.testnet.binance.vision:9000 | Market Data (Standard FIX) |
-| 19010 | fix-oe.testnet.binance.vision:9001 | Order Entry (SBE Hybrid) |
-| 19011 | fix-dc.testnet.binance.vision:9001 | Drop Copy (SBE Hybrid) |
-| 19012 | fix-md.testnet.binance.vision:9001 | Market Data (SBE Hybrid) |
-| 19020 | fix-oe.testnet.binance.vision:9002 | Order Entry (SBE Full) |
-| 19021 | fix-dc.testnet.binance.vision:9002 | Drop Copy (SBE Full) |
-| 19022 | fix-md.testnet.binance.vision:9002 | Market Data (SBE Full) |
+Binance refuses service from restricted locations: a FIX logon from such an IP
+is answered with "You are not authorized to execute this request", and REST
+with HTTP 451.
 
 ## Requirements
 
 - Julia 1.11+
 - Binance.jl (parent package)
 - Ed25519 API key with FIX_API permission
-- stunnel for TLS connection (Binance FIX requires TLS)
+- Network access to `fix-*.binance.com` on ports 9000–9002 (TLS is handled by the SDK)
 
 ## License
 

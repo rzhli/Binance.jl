@@ -139,7 +139,9 @@ module MarketDataStreams
                 raw = JSON.parse(msg; dicttype = Dict{Symbol,Any})
                 if isa(raw, AbstractDict) && get(raw, :e, nothing) == "serverShutdown"
                     event_time = haskey(raw, :E) ? unix2datetime(raw[:E] / 1000) : nothing
-                    @warn "⚠️  serverShutdown received on stream '$stream_name'. Closing connection for reconnect." event_time
+                    # `T` (announced shutdown time) is being rolled out; absent on older servers.
+                    shutdown_time = haskey(raw, :T) ? unix2datetime(raw[:T] / 1000) : nothing
+                    @warn "⚠️  serverShutdown received on stream '$stream_name'. Closing connection for reconnect." event_time shutdown_time
                     try
                         close(ws)
                     catch close_error

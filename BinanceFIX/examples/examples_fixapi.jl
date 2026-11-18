@@ -14,7 +14,7 @@ using BinanceFIX
 # REQUIREMENTS:
 # - Ed25519 API key with FIX_API permission
 # - config.toml with API credentials
-# - stunnel configured for TLS connection (default: localhost:14000)
+# - [fix] hosts in config.toml set to fix-*.binance.com (TLS is handled by the SDK)
 #
 # =============================================================================
 
@@ -41,7 +41,7 @@ The Order Entry session is used for placing, canceling, and amending orders.
 
 Connection Flow:
 1. Create FIXSession with OrderEntry type
-2. Connect to server (via stunnel)
+2. Connect to server (direct TLS)
 3. Send Logon message with signature
 4. Start heartbeat monitor
 5. Trade!
@@ -54,7 +54,7 @@ order_entry_example = """
 # Create session
 session = FIXSession(config, sender_comp_id; session_type=OrderEntry)
 
-# Connect (default: localhost:14000 via stunnel)
+# Connect (direct TLS to the host from the [fix] config section)
 connect_fix(session)
 
 # Logon with Ed25519 signature

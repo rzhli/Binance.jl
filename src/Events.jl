@@ -110,12 +110,22 @@ struct ExecutionReport
     gOV::Union{Int, Nothing}   # Pegged Offset Value
     gp::Union{String, Nothing} # Pegged Price
     eR::Union{String, Nothing} # Expiry Reason
+    # Added 2026-11-11 (effective after 2026-11-20 07:00 UTC). Kept last so the
+    # positional field order of the earlier fields is unchanged.
+    Qq::Union{String, Nothing} # Quote Notional Limit (only if the order was placed with one)
+    eV::Union{String, Nothing} # Effective STP mode (prevented-match reports where it differs from `V`)
 end
 
 struct ServerShutdown
     e::String           # Event Type ("serverShutdown")
     E::Int64            # Event Time (ms)
+    # Upcoming shutdown time (ms). Added 2026-11-11 and rolled out gradually, so
+    # it is `nothing` on servers that do not send it yet.
+    T::Union{Int64, Nothing}
 end
+
+# Two-argument form kept for code written before the `T` field existed.
+ServerShutdown(e::AbstractString, E::Integer) = ServerShutdown(e, E, nothing)
 
 # Same shape as `Types.OrderBook`: the nested `PriceLevel` elements convert
 # through their own lift/lower, so nothing needs declaring here.

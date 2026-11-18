@@ -17,6 +17,7 @@ using Sockets
 using Dates
 using Binance: BinanceConfig, Signature
 using ..FIXConstants
+using ..FIXAPI: FIXConnection, open_connection, take_bytes!, new_sender_comp_id
 using ..FIXSBEEncoder
 using ..FIXSBEDecoder
 
@@ -28,6 +29,7 @@ export new_order_list_sbe, order_cancel_request_and_new_sbe
 export order_amend_keep_priority_sbe, limit_query_sbe
 export market_data_request_sbe, instrument_list_request_sbe
 export receive_sbe_message, process_sbe_messages
+export with_sbe_session, pump_sbe_messages
 export start_sbe_monitor, stop_sbe_monitor, reconnect_sbe
 export SBE_SESSION_LIMITS, get_sbe_session_limits
 
@@ -75,7 +77,7 @@ wrap_sbe_session_callback(callback) = SBESessionCallback(callback)
 mutable struct SBESession
     host::String
     port::Int
-    socket::Union{TCPSocket,Nothing}
+    socket::Union{FIXConnection,Nothing}
     seq_num::UInt32
     sender_comp_id::String
     target_comp_id::String
@@ -84,6 +86,8 @@ mutable struct SBESession
     session_type::SBESessionType
     is_logged_in::Bool
     recv_buffer::Vector{UInt8}
+    # FIX SBE schema version written to every request header of this session.
+    schema_version::UInt16
 
     # Connection lifecycle fields
     heartbeat_interval::UInt32
@@ -105,9 +109,13 @@ mutable struct SBESession
     function SBESession(host::String, port::Int, sender_comp_id::String,
         target_comp_id::String, config::BinanceConfig;
         session_type::SBESessionType=SBEOrderEntry,
+        schema_version::Integer=SBE_SCHEMA_VERSION_FIX,
         on_maintenance=nothing,
         on_disconnect=nothing,
         on_message=nothing)
+
+        schema_version in SBE_SUPPORTED_SCHEMA_VERSIONS_FIX || throw(ArgumentError(
+            "Unsupported FIX SBE schema version $schema_version; supported: $(Int.(SBE_SUPPORTED_SCHEMA_VERSIONS_FIX))"))
 
         # Validate CompIDs (1-8 chars, alphanumeric + hyphen + underscore)
         if isempty(sender_comp_id) || length(sender_comp_id) > 8
@@ -117,7 +125,7 @@ mutable struct SBESession
         signer = Signature.create_signer(config)
         now_time = now(Dates.UTC)
         new(host, port, nothing, UInt32(1), sender_comp_id, target_comp_id, config, signer,
-            session_type, false, UInt8[],
+            session_type, false, UInt8[], UInt16(schema_version),
             UInt32(30), now_time, now_time, "", nothing, false, nothing,
             Threads.Atomic{Bool}(false), ReentrantLock(), ReentrantLock(),
             wrap_sbe_session_callback(on_maintenance),
@@ -129,6 +137,7 @@ end
 # Convenience constructor using config defaults
 function SBESession(config::BinanceConfig, sender_comp_id::String;
     session_type::SBESessionType=SBEOrderEntry,
+    schema_version::Integer=SBE_SCHEMA_VERSION_FIX,
     on_maintenance=nothing,
     on_disconnect=nothing,
     on_message=nothing)
@@ -146,6 +155,7 @@ function SBESession(config::BinanceConfig, sender_comp_id::String;
 
     return SBESession(host, port, sender_comp_id, target_comp_id, config;
         session_type=session_type,
+        schema_version=schema_version,
         on_maintenance=on_maintenance,
         on_disconnect=on_disconnect,
         on_message=on_message)
@@ -166,12 +176,10 @@ end
 
 function connect_sbe(session::SBESession)
     try
-        # TCP connection to local stunnel proxy
-        # stunnel handles TLS termination to Binance FIX servers
-        @debug "Connecting to FIX SBE stunnel proxy" host=session.host port=session.port
-        tcp_socket = connect(session.host, session.port)
-        session.socket = tcp_socket
-        @info "Connected to FIX SBE server via stunnel" host=session.host port=session.port
+        # Direct TLS to Binance (SNI + certificate check)
+        @debug "Connecting to FIX SBE server" host=session.host port=session.port
+        session.socket = open_connection(session.host, session.port)
+        @info "Connected to FIX SBE server" host=session.host port=session.port
 
         # Reset timestamps on new connection
         now_time = now(Dates.UTC)
@@ -183,8 +191,8 @@ function connect_sbe(session::SBESession)
 
         return session.socket
     catch e
-        error("Failed to connect to FIX SBE server: $e\n" *
-              "Make sure stunnel is running with SBE port configuration.")
+        error("Failed to connect to FIX SBE server $(session.host):$(session.port): $(sprint(showerror, e))\n" *
+              "Check that the [fix] hosts in the config are fix-oe/fix-dc/fix-md.binance.com.")
     end
 end
 
@@ -257,7 +265,12 @@ function logon_sbe(session::SBESession;
 
     # Construct payload for signature (same as text FIX)
     # For SBE, signature is computed over: MsgType + SenderCompId + TargetCompId + MsgSeqNum + SendingTime
-    timestamp = Dates.format(now(Dates.UTC), "yyyymmdd-HH:MM:SS.sss")
+    # One instant for both the signed text and the binary header SendingTime.
+    # The header carries microseconds, and the server rebuilds the signed text
+    # from it with six fractional digits (verified against testnet 2026-11-13:
+    # a millisecond timestamp is rejected with -1022).
+    logon_time = now(Dates.UTC)
+    timestamp = Dates.format(logon_time, "yyyymmdd-HH:MM:SS.sss") * "000"
     seq_num = string(session.seq_num)
 
     payload = join(["A", session.sender_comp_id, session.target_comp_id, seq_num, timestamp], "\x01")
@@ -268,7 +281,7 @@ function logon_sbe(session::SBESession;
 
     # Encode Logon message
     msg = encode_logon(
-        sender_comp_id=session.sender_comp_id,
+        schema_version=session.schema_version, sender_comp_id=session.sender_comp_id,
         target_comp_id=session.target_comp_id,
         seq_num=session.seq_num,
         heartbeat_interval=heartbeat_interval,
@@ -278,7 +291,8 @@ function logon_sbe(session::SBESession;
         response_mode=response_mode,
         execution_report_type=execution_report_type,
         drop_copy_flag=drop_copy_flag,
-        recv_window=recv_window
+        recv_window=recv_window,
+        sending_time=unix_micros(logon_time)
     )
 
     @info "Sending SBE Logon"
@@ -294,12 +308,13 @@ function logon_sbe(session::SBESession;
             error("SBE Logon timeout: no response from server within $(timeout_sec) seconds")
         end
 
-        if !isopen(session.socket)
+        # Read first: a Reject/Logout explaining a refusal arrives right before
+        # the server closes the connection.
+        closed = !isopen(session.socket)
+        messages = receive_sbe_message(session; timeout_ms=500)
+        if closed && isempty(messages)
             error("Connection closed by server while waiting for SBE Logon response")
         end
-
-        # Receive and process messages
-        messages = receive_sbe_message(session; timeout_ms=500)
         for raw_msg in messages
             msg_type, decoded = decode_sbe_message(raw_msg)
 
@@ -323,14 +338,14 @@ function logon_sbe(session::SBESession;
 end
 
 function logout_sbe(session::SBESession; text::String="")
-    msg = encode_logout(seq_num=session.seq_num, text=text)
+    msg = encode_logout(schema_version=session.schema_version, seq_num=session.seq_num, text=text)
     @info "Sending SBE Logout"
     send_sbe_message(session, msg)
     session.is_logged_in = false
 end
 
 function heartbeat_sbe(session::SBESession; test_req_id::String="")
-    msg = encode_heartbeat(seq_num=session.seq_num, test_req_id=test_req_id)
+    msg = encode_heartbeat(schema_version=session.schema_version, seq_num=session.seq_num, test_req_id=test_req_id)
     send_sbe_message(session, msg)
 end
 
@@ -338,7 +353,7 @@ function test_request_sbe(session::SBESession; test_req_id::String="")
     if isempty(test_req_id)
         test_req_id = string(rand(UInt32))
     end
-    msg = encode_test_request(seq_num=session.seq_num, test_req_id=test_req_id)
+    msg = encode_test_request(schema_version=session.schema_version, seq_num=session.seq_num, test_req_id=test_req_id)
     send_sbe_message(session, msg)
     return test_req_id
 end
@@ -372,7 +387,7 @@ function new_order_single_sbe(session::SBESession, symbol::String, side::UInt8;
     end
 
     msg = encode_new_order_single(
-        seq_num=session.seq_num,
+        schema_version=session.schema_version, seq_num=session.seq_num,
         symbol=symbol,
         side=side,
         ord_type=order_type,
@@ -404,7 +419,7 @@ function order_cancel_request_sbe(session::SBESession, symbol::String;
     end
 
     msg = encode_order_cancel_request(
-        seq_num=session.seq_num,
+        schema_version=session.schema_version, seq_num=session.seq_num,
         symbol=symbol,
         cl_ord_id=cl_ord_id,
         orig_cl_ord_id=orig_cl_ord_id,
@@ -430,7 +445,7 @@ function order_mass_cancel_request_sbe(session::SBESession, symbol::String;
     end
 
     msg = encode_order_mass_cancel_request(
-        seq_num=session.seq_num,
+        schema_version=session.schema_version, seq_num=session.seq_num,
         symbol=symbol,
         cl_ord_id=cl_ord_id
     )
@@ -454,7 +469,7 @@ function order_amend_keep_priority_sbe(session::SBESession, symbol::String, orde
     end
 
     msg = encode_order_amend_keep_priority(
-        seq_num=session.seq_num,
+        schema_version=session.schema_version, seq_num=session.seq_num,
         symbol=symbol,
         cl_ord_id=cl_ord_id,
         order_qty=order_qty,
@@ -482,7 +497,7 @@ function new_order_list_sbe(session::SBESession, cl_list_id::String,
     end
 
     msg = encode_new_order_list(
-        seq_num=session.seq_num,
+        schema_version=session.schema_version, seq_num=session.seq_num,
         cl_list_id=cl_list_id,
         contingency_type=contingency_type,
         orders=orders,
@@ -518,7 +533,7 @@ function order_cancel_request_and_new_sbe(session::SBESession, symbol::String,
     end
 
     msg = encode_order_cancel_request_and_new(
-        seq_num=session.seq_num,
+        schema_version=session.schema_version, seq_num=session.seq_num,
         symbol=symbol,
         cl_ord_id=cl_ord_id,
         side=side,
@@ -543,7 +558,7 @@ function limit_query_sbe(session::SBESession; req_id::String="")
         req_id = "LMQ-" * string(rand(UInt32), base=16)
     end
 
-    msg = encode_limit_query(seq_num=session.seq_num, req_id=req_id)
+    msg = encode_limit_query(schema_version=session.schema_version, seq_num=session.seq_num, req_id=req_id)
     send_sbe_message(session, msg)
     return req_id
 end
@@ -568,7 +583,7 @@ function market_data_request_sbe(session::SBESession, symbols::Vector{String};
     end
 
     msg = encode_market_data_request(
-        seq_num=session.seq_num,
+        schema_version=session.schema_version, seq_num=session.seq_num,
         md_req_id=md_req_id,
         subscription_request_type=subscription_type,
         symbols=symbols,
@@ -599,7 +614,7 @@ function instrument_list_request_sbe(session::SBESession;
     end
 
     msg = encode_instrument_list_request(
-        seq_num=session.seq_num,
+        schema_version=session.schema_version, seq_num=session.seq_num,
         instrument_req_id=instrument_req_id,
         request_type=request_type,
         symbol=symbol
@@ -623,17 +638,19 @@ function receive_sbe_message(session::SBESession; timeout_ms::Int=0)
     timeout_ms >= 0 || throw(ArgumentError("timeout_ms must be non-negative"))
     return lock(session.read_lock) do
         socket = session.socket
-        if isnothing(socket) || !isopen(socket)
+        if isnothing(socket)
             return Vector{UInt8}[]
         end
         try
             max_wait_sec = timeout_ms > 0 ? timeout_ms / 1000 : 0.1
             deadline = time() + max_wait_sec
             buf = Vector{UInt8}()
-            while isopen(socket) && time() < deadline
-                available = bytesavailable(socket)
-                if available > 0
-                    append!(buf, read(socket, available))
+            while true
+                chunk = take_bytes!(socket)
+                if !isempty(chunk)
+                    append!(buf, chunk)
+                elseif !isopen(socket) || time() >= deadline
+                    break
                 else
                     sleep(min(0.001, max(deadline - time(), 0.0)))
                 end
@@ -642,6 +659,8 @@ function receive_sbe_message(session::SBESession; timeout_ms::Int=0)
                 append!(session.recv_buffer, buf)
             end
         catch e
+            # Ctrl-C must reach the caller, not be logged and swallowed here.
+            e isa InterruptException && rethrow()
             if !(e isa EOFError || e isa Base.IOError)
                 @warn "Error reading from SBE socket" exception=(e, catch_backtrace())
             end
@@ -698,10 +717,8 @@ function process_sbe_messages(session::SBESession)
                 # seconds. Please reconnect." and "Your connection is about
                 # to be closed. Please reconnect."
                 headline_lower = lowercase(decoded.headline)
-                text_lower = lowercase(decoded.text)
-                if contains(headline_lower, "maintenance") || contains(text_lower, "maintenance") ||
-                   contains(headline_lower, "disconnect") || contains(text_lower, "disconnect") ||
-                   contains(headline_lower, "reconnect") || contains(text_lower, "reconnect")
+                if contains(headline_lower, "maintenance") || contains(headline_lower, "disconnect") ||
+                   contains(headline_lower, "reconnect")
                     session.maintenance_warning = true
                     if !isnothing(session.on_maintenance)
                         session.on_maintenance(session, decoded)
@@ -854,6 +871,69 @@ function reconnect_sbe(session::SBESession; heartbeat_interval::UInt32=session.h
         @error "SBE Reconnection failed"
         return false
     end
+end
+
+
+# =============================================================================
+# Session helpers
+# =============================================================================
+
+"""
+    with_sbe_session(f, config, session_type=SBEOrderEntry; kwargs...)
+
+Connect, log on, run `f(session)`, then log out and close the connection,
+also when `f` throws. Returns what `f` returns.
+
+# Keyword Arguments
+- `sender_comp_id=new_sender_comp_id()`
+- `schema_version=SBE_SCHEMA_VERSION_FIX`
+- any other keyword is passed to [`logon_sbe`](@ref)
+"""
+function with_sbe_session(f, config::BinanceConfig, session_type::SBESessionType=SBEOrderEntry;
+    sender_comp_id::String=new_sender_comp_id(), schema_version::Integer=SBE_SCHEMA_VERSION_FIX,
+    logon_kwargs...)
+    session = SBESession(config, sender_comp_id; session_type=session_type, schema_version=schema_version)
+    connect_sbe(session)
+    try
+        logon_sbe(session; logon_kwargs...)
+        return f(session)
+    finally
+        try
+            if session.is_logged_in && !isnothing(session.socket) && isopen(session.socket)
+                logout_sbe(session)
+                sleep(0.3)
+            end
+        catch e
+            @warn "FIX SBE logout failed" exception=e
+        end
+        close_sbe(session)
+    end
+end
+
+"""
+    pump_sbe_messages(handle, session, seconds) -> Int
+
+Receive for `seconds`, calling `handle(type, message)` for every decoded
+message (see [`process_sbe_messages`](@ref)). TestRequests are answered and a
+Heartbeat is sent when the session has been silent for a heartbeat interval.
+Do not combine with `start_sbe_monitor` on one session. Returns the number of
+messages handled.
+"""
+function pump_sbe_messages(handle, session::SBESession, seconds::Real)
+    deadline = time() + seconds
+    handled = 0
+    while true
+        for (type, message) in process_sbe_messages(session)
+            handle(type, message)
+            handled += 1
+        end
+        if session.is_logged_in && !isnothing(session.socket) && isopen(session.socket)
+            idle_ms = Dates.value(now(Dates.UTC) - session.last_sent_time)
+            idle_ms > Int(session.heartbeat_interval) * 1000 && heartbeat_sbe(session)
+        end
+        time() >= deadline && break
+    end
+    return handled
 end
 
 end # module FIXSBESession

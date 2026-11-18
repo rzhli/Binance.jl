@@ -61,11 +61,13 @@ export # Binance Custom Tags
     TAG_MESSAGE_HANDLING, TAG_RESPONSE_MODE, TAG_UUID,
     TAG_ORDER_RATE_LIMIT_EXCEEDED_MODE, TAG_OPO,
     TAG_SBE_SCHEMA_ID, TAG_SBE_SCHEMA_VERSION,
-    TAG_EXPIRY_REASON
+    TAG_EXPIRY_REASON, TAG_QUOTE_NOTIONAL_LIMIT,
+    TAG_EFFECTIVE_SELF_TRADE_PREVENTION
 
 export # FIX SBE Constants
     SBE_SCHEMA_ID_FIX, SBE_SCHEMA_VERSION_FIX,
-    SBE_SCHEMA_VERSION_FIX_V1, SBE_SCHEMA_VERSION_FIX_DEPRECATED,
+    SBE_SCHEMA_VERSION_FIX_V1, SBE_SCHEMA_VERSION_FIX_V2, SBE_SCHEMA_VERSION_FIX_DEPRECATED,
+    SBE_SUPPORTED_SCHEMA_VERSIONS_FIX, SBE_CHAR_NULL,
     SBE_ENCODING_TYPE_LE,
     SBE_SOFH_SIZE, SBE_MESSAGE_HEADER_SIZE,
     SBE_INT8_NULL, SBE_INT16_NULL, SBE_INT32_NULL, SBE_INT64_NULL,
@@ -187,7 +189,8 @@ export # ExpiryReason Values (TAG 25056)
     EXPIRY_REJECTED, EXPIRY_EXCHANGE_CANCELED, EXPIRY_OCO_TRIGGER,
     EXPIRY_OTO_PHASE_ONE_EXPIRED, EXPIRY_UNFILLED_IOC_QUANTITY_EXPIRED,
     EXPIRY_UNFILLED_FOK_ORDER_EXPIRED, EXPIRY_INSUFFICIENT_LIQUIDITY,
-    EXPIRY_EXECUTION_RULE_PRICE_RANGE_EXCEEDED
+    EXPIRY_EXECUTION_RULE_PRICE_RANGE_EXCEEDED,
+    EXPIRY_EXHAUSTED, EXPIRY_INSUFFICIENT_QUOTE_NOTIONAL_LIMIT
 
 export # Session Reject Reason Values
     REJECT_INVALID_TAG_NUMBER, REJECT_REQUIRED_TAG_MISSING,
@@ -391,6 +394,8 @@ const TAG_OPO = 25046                        # One Party Only flag for order lis
 const TAG_SBE_SCHEMA_ID = 25050              # SBE Schema ID for Logon
 const TAG_SBE_SCHEMA_VERSION = 25051         # SBE Schema Version for Logon
 const TAG_EXPIRY_REASON = 25056              # Expiry Reason in ExecutionReport
+const TAG_QUOTE_NOTIONAL_LIMIT = 25057       # Quote notional limit of a BUY order (2026-11-11)
+const TAG_EFFECTIVE_SELF_TRADE_PREVENTION = 25058  # STP mode the engine applied, on prevented-match reports (2026-11-11)
 
 # =============================================================================
 # Field Value Enums
@@ -555,6 +560,8 @@ const EXPIRY_UNFILLED_IOC_QUANTITY_EXPIRED = "5"
 const EXPIRY_UNFILLED_FOK_ORDER_EXPIRED = "6"
 const EXPIRY_INSUFFICIENT_LIQUIDITY = "7"
 const EXPIRY_EXECUTION_RULE_PRICE_RANGE_EXCEEDED = "8"
+const EXPIRY_EXHAUSTED = "9"                             # Amended down to the filled quantity or less (2026-11-11)
+const EXPIRY_INSUFFICIENT_QUOTE_NOTIONAL_LIMIT = "10"    # QuoteNotionalLimit stopped the remaining quantity (2026-11-11)
 
 # SessionRejectReason (373)
 const REJECT_INVALID_TAG_NUMBER = "0"
@@ -573,16 +580,22 @@ const REJECT_INCORRECT_NUMINGROUP = "16"
 const REJECT_OTHER = "99"
 
 # =============================================================================
-# FIX SBE Constants (spot-fixsbe-1_0.xml / spot-fixsbe-1_1.xml)
+# FIX SBE Constants (spot-fixsbe-1_1.xml / spot-fixsbe-1_2.xml)
 # =============================================================================
-# Schema ID: 1, Version: 0 (deprecated), 1 (current)
+# Schema ID: 1, Version: 0 (retired 2026-09-25), 1 (session default), 2 (published 2026-11-11)
 # Wire Format: <SOFH (6 bytes)> <message header (16 bytes)> <message (N bytes)>
 
 # Schema Information
 const SBE_SCHEMA_ID_FIX = UInt16(1)           # FIX SBE schema ID
-const SBE_SCHEMA_VERSION_FIX = UInt16(1)      # FIX SBE schema version 1:1 (current)
+# Default version a session speaks. Schema 1:2 was published on 2026-11-11 and
+# deprecates 1:1 (retirement six months later), but it is rolled out gradually
+# and the production lifecycle file still listed 1:1 as latest on 2026-11-13,
+# so 1:2 is opt-in per session: `SBESession(...; schema_version=SBE_SCHEMA_VERSION_FIX_V2)`.
+const SBE_SCHEMA_VERSION_FIX = UInt16(1)      # FIX SBE schema version 1:1 (session default)
 const SBE_SCHEMA_VERSION_FIX_DEPRECATED = UInt16(0)   # FIX SBE schema version 1:0 (deprecated 2026-03-09)
 const SBE_SCHEMA_VERSION_FIX_V1 = UInt16(1)   # Alias for SBE_SCHEMA_VERSION_FIX kept for back-compat
+const SBE_SCHEMA_VERSION_FIX_V2 = UInt16(2)   # FIX SBE schema version 1:2 (QuoteNotionalLimit, EffectiveSelfTradePreventionMode)
+const SBE_SUPPORTED_SCHEMA_VERSIONS_FIX = (SBE_SCHEMA_VERSION_FIX_V1, SBE_SCHEMA_VERSION_FIX_V2)
 const SBE_ENCODING_TYPE_LE = UInt16(0xEB50)   # Little-endian encoding
 
 # Header Sizes
@@ -590,10 +603,14 @@ const SBE_SOFH_SIZE = 6                        # Simple Open Framing Header (mes
 const SBE_MESSAGE_HEADER_SIZE = 20             # FIX SBE message header (blockLength:2 + templateId:2 + schemaId:2 + version:2 + seqNum:4 + sendingTime:8)
 
 # SBE Null Values (for optional fields)
-const SBE_INT8_NULL = typemax(Int8)
-const SBE_INT16_NULL = typemax(Int16)
-const SBE_INT32_NULL = typemax(Int32)
-const SBE_INT64_NULL = typemax(Int64)
+# The FIX SBE schemas declare no `nullValue` overrides, so the SBE specification
+# defaults apply: the minimum value for signed integers, the maximum for
+# unsigned integers, and 0 for `char` (most enums are char-encoded).
+const SBE_INT8_NULL = typemin(Int8)
+const SBE_INT16_NULL = typemin(Int16)
+const SBE_INT32_NULL = typemin(Int32)
+const SBE_INT64_NULL = typemin(Int64)
+const SBE_CHAR_NULL = UInt8(0)
 const SBE_UINT8_NULL = typemax(UInt8)
 const SBE_UINT16_NULL = typemax(UInt16)
 const SBE_UINT32_NULL = typemax(UInt32)

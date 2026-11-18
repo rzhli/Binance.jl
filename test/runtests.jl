@@ -498,7 +498,7 @@ end
             @test book.asks == [T.PriceLevel(95001.00, 0.8)]
         end
 
-        # ExecutionReport has 33 required fields and 23 conditional ones. A fill
+        # ExecutionReport has 33 required fields and 25 conditional ones. A fill
         # report that omits the conditional block must leave them `nothing`
         # rather than error, and a report that carries them must not drop values.
         minimal = """{"e":"executionReport","E":1704067200000,"s":"BTCUSDT","c":"cid","S":"BUY",
@@ -515,6 +515,8 @@ end
         @test report.W === nothing        # key absent entirely
         @test report.eR === nothing
         @test report.uS === nothing
+        @test report.Qq === nothing       # 2026-11-11 fields, absent on ordinary reports
+        @test report.eV === nothing
 
         # Ordered so the fragment ends on a bare `true`: a triple-quoted string
         # cannot end with a quote character.
@@ -527,6 +529,17 @@ end
         @test report.eR == "PRICE_RANGE"
         @test report.uS === true
         @test report.Cs == "ETHUSDT"
+
+        # 2026-11-11: quote notional limit and the STP mode the engine applied.
+        prevented = replace(minimal, "\"V\":\"NONE\"" =>
+            "\"V\":\"EXPIRE_TAKER\",\"Qq\":\"90.00000000\",\"eV\":\"DECREMENT\",\"eR\":\"INSUFFICIENT_QUOTE_NOTIONAL_LIMIT\",\"v\":3")
+        report = JSON.parse(prevented, E.ExecutionReport)
+        @test report == T.to_struct(E.ExecutionReport, JSON.parse(prevented))
+        @test report.V == "EXPIRE_TAKER"
+        @test report.Qq == "90.00000000"
+        @test report.eV == "DECREMENT"
+        @test report.eR == "INSUFFICIENT_QUOTE_NOTIONAL_LIMIT"
+        @test report.v == 3
     end
 
     @testset "Account balances parse decimal strings into Float64" begin
@@ -1430,6 +1443,46 @@ end
         @test Binance.load_config(config_path).testnet
     end
 
+    @testset "FIX endpoints default to Binance hosts for direct TLS" begin
+        tmpdir = mktempdir()
+        write_config(name, extra) = (path = joinpath(tmpdir, name); write(path, """
+            [api]
+            api_key = "k"
+            secret_key = "s"
+            testnet_api_key = "tk"
+            testnet_secret_key = "ts"
+            signature_method = "HMAC_SHA256"
+            $extra
+            """); path)
+
+        # No [fix] section at all: production hosts, the three documented ports.
+        fix = Binance.from_toml(write_config("default.toml", "")).fix
+        @test (fix.order_entry.host, fix.drop_copy.host, fix.market_data.host) ==
+              ("fix-oe.binance.com", "fix-dc.binance.com", "fix-md.binance.com")
+        for endpoint in (fix.order_entry, fix.drop_copy, fix.market_data)
+            @test (endpoint.standard_port, endpoint.sbe_hybrid_port, endpoint.sbe_full_port) == (9000, 9001, 9002)
+        end
+
+        # Testnet uses the testnet hosts and the same ports.
+        fix = Binance.from_toml(write_config("default.toml", ""); testnet=true).fix
+        @test (fix.order_entry.host, fix.drop_copy.host, fix.market_data.host) ==
+              ("fix-oe.testnet.binance.vision", "fix-dc.testnet.binance.vision", "fix-md.testnet.binance.vision")
+        @test fix.order_entry.sbe_full_port == 9002
+
+        # Explicit settings win: per-service host over `host`, explicit ports over defaults.
+        fix = Binance.from_toml(write_config("custom.toml", """
+            [fix]
+            host = "fix.example.net"
+            market_data_host = "md.example.net"
+            order_entry_port = 19000
+            """)).fix
+        @test fix.order_entry.host == "fix.example.net"
+        @test fix.drop_copy.host == "fix.example.net"
+        @test fix.market_data.host == "md.example.net"
+        @test fix.order_entry.standard_port == 19000
+        @test fix.market_data.standard_port == 9000
+    end
+
     @testset "NONE configuration creates an explicit no-op signer" begin
         signer = Binance.create_signer(test_binance_config(
             signature_method="NONE", api_secret="",
@@ -1494,6 +1547,149 @@ end
         @test event.trades[1].price ≈ 60_000.0
         @test event.trades[1].qty ≈ 0.001
         @test event.trades[1].isBuyerMaker
+    end
+
+    @testset "Binance changelog 2026-11-11" begin
+        E = Binance.Events
+        T = Binance.Types
+        W = Binance.WebSocketAPI
+
+        @testset "Error codes: PARAM_OVERFLOW is -1018, -1108 is BAD_ASSET" begin
+            codes = Binance.Errors.ERROR_CODES
+            @test startswith(codes[-1018], "PARAM_OVERFLOW")
+            @test codes[-1108] == "BAD_ASSET: Invalid asset."
+            @test startswith(codes[-1015], "TOO_MANY_ORDERS")
+            @test occursin("without trading", codes[-1015])
+        end
+
+        @testset "serverShutdown carries the optional shutdown time T" begin
+            with_t = """{"e":"serverShutdown","E":1770123456789,"T":1770124000000}"""
+            for event in (JSON.parse(with_t, E.ServerShutdown),
+                          T.to_struct(E.ServerShutdown, JSON.parse(with_t)))
+                @test event.E == 1770123456789
+                @test event.T == 1770124000000
+            end
+            # Servers not upgraded yet omit T.
+            without_t = """{"e":"serverShutdown","E":1770123456789}"""
+            @test JSON.parse(without_t, E.ServerShutdown).T === nothing
+            @test T.to_struct(E.ServerShutdown, JSON.parse(without_t)).T === nothing
+            # Pre-existing two-argument construction keeps working.
+            @test E.ServerShutdown("serverShutdown", 1).T === nothing
+        end
+
+        @testset "Order and SymbolInfo expose quote notional limit fields" begin
+            order_json = """{"symbol":"BTCUSDT","orderId":42,"orderListId":-1,"clientOrderId":"c",
+                "price":"30.00000000","origQty":"10.00000000","executedQty":"5.00000000",
+                "cummulativeQuoteQty":"100.00000000","status":"PARTIALLY_FILLED","timeInForce":"GTC",
+                "type":"LIMIT","side":"BUY","stopPrice":"0.00000000","icebergQty":"0.00000000",
+                "time":1750313780050,"updateTime":1750313780050,"isWorking":true,
+                "origQuoteOrderQty":"0.00000000","quoteNotionalLimit":"250.00000000"}"""
+            order = JSON.parse(order_json, T.Order)
+            @test order.quoteNotionalLimit == "250.00000000"
+            @test order.expiryReason === nothing
+            @test order == T.to_struct(T.Order, JSON.parse(order_json))
+            # Orders placed without the parameter omit the key.
+            plain = replace(order_json, ",\"quoteNotionalLimit\":\"250.00000000\"" => "")
+            @test JSON.parse(plain, T.Order).quoteNotionalLimit === nothing
+            # New expiryReason values pass through as strings.
+            expired = replace(plain, "\"isWorking\":true" => "\"isWorking\":false,\"expiryReason\":\"EXHAUSTED\"")
+            @test JSON.parse(expired, T.Order).expiryReason == "EXHAUSTED"
+
+            blank = T.SymbolInfo()
+            @test blank.marketQuoteNotionalLimitAllowed === false
+            @test blank.limitQuoteNotionalLimitAllowed === false
+            symbol_json = """{"symbol":"BTCUSDT","status":"TRADING","baseAsset":"BTC","baseAssetPrecision":8,
+                "quoteAsset":"USDT","quoteAssetPrecision":8,"baseCommissionPrecision":8,
+                "quoteCommissionPrecision":8,"orderTypes":["LIMIT","MARKET"],"icebergAllowed":true,
+                "ocoAllowed":true,"otoAllowed":true,"opoAllowed":true,
+                "marketQuoteNotionalLimitAllowed":true,"limitQuoteNotionalLimitAllowed":false,
+                "quoteOrderQtyMarketAllowed":true,"isSpotTradingAllowed":true,
+                "isMarginTradingAllowed":false,"filters":[],"permissions":["SPOT"],
+                "defaultSelfTradePreventionMode":"NONE","allowedSelfTradePreventionModes":["NONE"]}"""
+            for sym in (JSON.parse(symbol_json, T.SymbolInfo),
+                        T.to_struct(T.SymbolInfo, JSON.parse(symbol_json)))
+                @test sym.marketQuoteNotionalLimitAllowed === true
+                @test sym.limitQuoteNotionalLimitAllowed === false
+                @test sym.opoAllowed === true
+            end
+        end
+
+        @testset "quoteNotionalLimit client-side rules" begin
+            check = Binance.RESTAPI.validate_quote_notional_limit
+            @test check("BUY") === nothing
+            @test check("buy") === nothing
+            @test_throws ArgumentError check("SELL")
+            @test_throws ArgumentError check("BUY"; quote_order_qty="100")
+        end
+
+        @testset "User data stream subscription filter" begin
+            # Canonical form: keys sorted alphabetically, scalar values wrapped.
+            canonical = userdata_stream_filter((x=["TRADE"], e="executionReport", s=[:BTCUSDT, "ETHUSDT"]))
+            @test canonical == ["e" => ["executionReport"], "s" => ["BTCUSDT", "ETHUSDT"], "x" => ["TRADE"]]
+            @test userdata_stream_filter(Dict("a" => ["BTC"], "e" => ["balanceUpdate"])) ==
+                  ["a" => ["BTC"], "e" => ["balanceUpdate"]]
+            @test userdata_stream_filter(canonical) == canonical   # idempotent
+
+            # The exact text Binance documents for the signed payload.
+            documented = Dict("s" => ["BAZUSD"], "x" => ["TRADE"], "e" => ["executionReport"])
+            @test userdata_stream_filter_json(documented) ==
+                  """{"e":["executionReport"],"s":["BAZUSD"],"x":["TRADE"]}"""
+            @test !occursin(' ', userdata_stream_filter_json(documented))
+
+            # The request parameter is a JSON object of string arrays.
+            param = W.filter_param(userdata_stream_filter((e=["executionReport", "balanceUpdate"],)))
+            @test JSON.parse(JSON.json(param)) == JSON.parse("""{"e":["executionReport","balanceUpdate"]}""")
+
+            # Structural errors the exchange would reject are caught locally.
+            @test_throws ArgumentError userdata_stream_filter((;))
+            @test_throws ArgumentError userdata_stream_filter(Dict{String,Any}())
+            @test_throws ArgumentError userdata_stream_filter((e=String[],))
+            @test_throws ArgumentError userdata_stream_filter((e=["executionReport", "executionReport"],))
+            @test_throws ArgumentError userdata_stream_filter((z=["x"],))
+            @test_throws ArgumentError userdata_stream_filter("executionReport")
+            @test_throws ArgumentError userdata_stream_filter(["e" => ["a"], "e" => ["b"]])
+
+            # The text to sign: sorted parameters, canonical filter, no percent encoding.
+            @test userdata_stream_signature_payload("k", 1; filter=documented) ==
+                  """apiKey=k&filter={"e":["executionReport"],"s":["BAZUSD"],"x":["TRADE"]}&timestamp=1"""
+            @test userdata_stream_signature_payload("k", 1) == "apiKey=k&timestamp=1"
+        end
+
+        @testset "WebSocket API rejects invalid requests before any network use" begin
+            # No connection exists: each call must fail on its own validation,
+            # not on a connection attempt.
+            tmpdir = mktempdir()
+            config_path = joinpath(tmpdir, "config.toml")
+            write(config_path, """
+            [api]
+            api_key = "test-api-key"
+            secret_key = "test-secret"
+            signature_method = "HMAC_SHA256"
+
+            [connection]
+            proxy = ""
+            """)
+            client = W.WebSocketClient(config_path)
+            @test client.ws_connection === nothing
+            @test client.user_data_filter === nothing
+
+            @test_throws ArgumentError W.place_order(client, "BTCUSDT", "SELL", "LIMIT";
+                price="30", quantity="10", quoteNotionalLimit="250")
+            @test_throws ArgumentError W.place_order(client, "BTCUSDT", "BUY", "MARKET";
+                quoteOrderQty="100", quoteNotionalLimit="250")
+            @test_throws ArgumentError W.cancel_replace_order(client, "BTCUSDT", "STOP_ON_FAILURE",
+                "SELL", "LIMIT"; cancelOrderId=1, price="30", quantity="10", quoteNotionalLimit="250")
+            @test_throws ArgumentError W.place_oco_order(client, "BTCUSDT", "SELL", 1.0,
+                "LIMIT_MAKER", "STOP_LOSS"; abovePrice=40.0, belowStopPrice=20.0,
+                aboveQuoteNotionalLimit="30")
+            @test_throws ArgumentError W.place_oto_order(client, "BTCUSDT", "LIMIT", "BUY", 30.0, 1.0,
+                "LIMIT", "SELL", 1.0; pendingPrice=40.0, pendingQuoteNotionalLimit="30")
+            @test_throws ArgumentError userdata_stream_subscribe(client; filter=(z=["x"],))
+            @test_throws ArgumentError userdata_stream_subscribe_signature(client, "k", 1, "sig";
+                filter=(e=String[],))
+            @test client.ws_connection === nothing      # nothing above dialed out
+            @test client.user_data_filter === nothing
+        end
     end
 
     @testset "SBE decoder rejects impossible group sizes before allocation" begin

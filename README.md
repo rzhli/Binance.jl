@@ -24,6 +24,39 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.19.0 - Binance API changelog 2026-11-11 (2026-11-18)
+
+Includes BinanceFIX 0.7.0. All additions are optional; see the
+[changelog](CHANGELOG.md) for rollout dates.
+
+- **Filtered user data streams** — subscribe to just the events you need:
+
+  ```julia
+  # Fills on BTCUSDT only; the filter survives automatic reconnects.
+  userdata_stream_subscribe(ws_client; filter=(e=["executionReport"], s=["BTCUSDT"], x=["TRADE"]))
+  ```
+
+  Keys are `e` (event type), `s` (symbol), `a` (asset) and `x` (execution type).
+  For `userdata_stream_subscribe_signature`, sign the text returned by
+  `userdata_stream_signature_payload(apiKey, timestamp; filter=...)`.
+- **Quote notional limit on BUY orders** — cap the quote asset an order may
+  spend while keeping its quantity: `place_order(rest, "BTCUSDT", "BUY", "MARKET";
+  quantity=1, quote_notional_limit=60000)` (REST) or `quoteNotionalLimit=` on
+  the WebSocket API. Check `marketQuoteNotionalLimitAllowed` /
+  `limitQuoteNotionalLimitAllowed` on `SymbolInfo`. Binance enables the feature
+  some time after 2026-11-20 07:00 UTC.
+- **New response fields** — `Order.quoteNotionalLimit`, `ExecutionReport.Qq`,
+  `ExecutionReport.eV` (STP mode the engine actually applied), and
+  `ServerShutdown.T` (announced shutdown time).
+- **Error codes corrected** — `PARAM_OVERFLOW` is `-1018`; `-1108` is now
+  `BAD_ASSET`.
+- **BinanceFIX 0.7.0 (breaking)** — sessions connect to `fix-*.binance.com`
+  over TLS directly; stunnel support is removed, so a `[fix]` host of
+  `127.0.0.1` must be changed or the section dropped. FIX SBE responses are
+  decoded per schema (`Int64` ids, `nothing` for nulls, char enums as wire
+  values), and logon now works for both text FIX and FIX SBE. See
+  [BinanceFIX/README.md](BinanceFIX/README.md).
+
 ### v0.18.2 - Binance API documentation sync (2026-10-30)
 
 Documentation-only release covering the Binance API notices dated 2026-10-27

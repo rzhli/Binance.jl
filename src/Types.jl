@@ -453,6 +453,11 @@ end
     # Not sent by every endpoint, hence the defaults.
     otoAllowed::Bool = false
     opoAllowed::Bool = false
+    # Whether BUY orders on this symbol accept `quoteNotionalLimit`: the first
+    # flag covers MARKET / STOP_LOSS / TAKE_PROFIT, the second LIMIT /
+    # STOP_LOSS_LIMIT / TAKE_PROFIT_LIMIT. Added to exchangeInfo on 2026-11-11.
+    marketQuoteNotionalLimitAllowed::Bool = false
+    limitQuoteNotionalLimitAllowed::Bool = false
     quoteOrderQtyMarketAllowed::Bool
     isSpotTradingAllowed::Bool
     isMarginTradingAllowed::Bool
@@ -583,7 +588,12 @@ end
     # Conditional: present only for expired orders, including those expired by the
     # price-range execution rule. Added in REST/WS API on 2026-05-08.
     # Absent (not null) in every other response, so the Union default applies.
+    # 2026-11-11 adds the values `EXHAUSTED` (amended down to the filled quantity
+    # or less) and `INSUFFICIENT_QUOTE_NOTIONAL_LIMIT`.
     expiryReason::Union{String, Nothing}
+    # Conditional: present only if the order was placed with a quote notional
+    # limit (BUY orders, effective after 2026-11-20 07:00 UTC).
+    quoteNotionalLimit::Union{String, Nothing}
 end
 
 @binance_struct struct Trade

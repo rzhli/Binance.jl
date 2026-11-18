@@ -9,14 +9,14 @@ export BinanceConfig, FIXConfig, FIXEndpoint, from_toml, load_config
 """FIX 端点配置（一个服务的三种编码模式端口）"""
 struct FIXEndpoint
     host::String
-    standard_port::Int    # 标准 FIX 编码 (远程端口 9000)
-    sbe_hybrid_port::Int  # SBE Hybrid: FIX请求 → SBE响应 (远程端口 9001)
-    sbe_full_port::Int    # SBE Full: SBE请求 → SBE响应 (远程端口 9002)
+    standard_port::Int    # 标准 FIX 编码 (9000)
+    sbe_hybrid_port::Int  # SBE Hybrid: FIX请求 → SBE响应 (9001)
+    sbe_full_port::Int    # SBE Full: SBE请求 → SBE响应 (9002)
 end
 
 """FIX API 完整配置"""
 struct FIXConfig
-    legacy_host::String   # 兼容旧版的默认 host
+    legacy_host::String   # 兼容旧版字段（等于 order entry host）
     order_entry::FIXEndpoint
     drop_copy::FIXEndpoint
     market_data::FIXEndpoint
@@ -108,34 +108,40 @@ function from_toml(config_path::String="config.toml"; testnet::Union{Bool,Nothin
         if isempty(fix_data) && use_testnet
             fix_data = get(config_data, "fix", Dict())
         end
-        fix_host = get(fix_data, "host", "127.0.0.1")
+        # BinanceFIX connects to these hosts directly over TLS. A `host` key, if
+        # present, overrides all three; per-service `*_host` keys override it.
+        fix_domain = use_testnet ? "testnet.binance.vision" : "binance.com"
+        fix_host = get(fix_data, "host", "")
+        oe_host = isempty(fix_host) ? "fix-oe.$fix_domain" : fix_host
+        dc_host = isempty(fix_host) ? "fix-dc.$fix_domain" : fix_host
+        md_host = isempty(fix_host) ? "fix-md.$fix_domain" : fix_host
         # Allow FIX section to override proxy (for testnet which may not need proxy)
         if haskey(fix_data, "proxy")
             proxy = fix_data["proxy"]
         end
 
-        # 定义默认端口（testnet 使用 19xxx 系列）
-        base_oe, base_dc, base_md = use_testnet ? (19000, 19001, 19002) : (9000, 9001, 9002)
-        hybrid_oe, hybrid_dc, hybrid_md = use_testnet ? (19010, 19011, 19012) : (9010, 9011, 9012)
-        full_oe, full_dc, full_md = use_testnet ? (19020, 19021, 19022) : (9020, 9021, 9022)
+        # 默认端口：9000 文本 FIX，9001 SBE Hybrid，9002 SBE Full（三个服务相同）
+        base_oe = base_dc = base_md = 9000
+        hybrid_oe = hybrid_dc = hybrid_md = 9001
+        full_oe = full_dc = full_md = 9002
 
         # 构建 FIX 端点配置
         fix_config = FIXConfig(
-            fix_host,
+            oe_host,
             FIXEndpoint(
-                get(fix_data, "order_entry_host", fix_host),
+                get(fix_data, "order_entry_host", oe_host),
                 get(fix_data, "order_entry_port", base_oe),
                 get(fix_data, "order_entry_sbe_hybrid_port", hybrid_oe),
                 get(fix_data, "order_entry_sbe_full_port", full_oe)
             ),
             FIXEndpoint(
-                get(fix_data, "drop_copy_host", fix_host),
+                get(fix_data, "drop_copy_host", dc_host),
                 get(fix_data, "drop_copy_port", base_dc),
                 get(fix_data, "drop_copy_sbe_hybrid_port", hybrid_dc),
                 get(fix_data, "drop_copy_sbe_full_port", full_dc)
             ),
             FIXEndpoint(
-                get(fix_data, "market_data_host", fix_host),
+                get(fix_data, "market_data_host", md_host),
                 get(fix_data, "market_data_port", base_md),
                 get(fix_data, "market_data_sbe_hybrid_port", hybrid_md),
                 get(fix_data, "market_data_sbe_full_port", full_md)

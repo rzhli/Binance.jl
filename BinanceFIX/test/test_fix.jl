@@ -5,13 +5,13 @@ using BinanceFIX
 config = Binance.from_toml("/home/rzhli/文档/投资/Binance/config.toml")
 sender_comp_id = "liruzhen"
 
-# Create Order Entry session via stunnel (defaults to 127.0.0.1:9000)
+# Create Order Entry session (direct TLS to the [fix] order entry host)
 session = FIXSession(config, sender_comp_id; session_type=OrderEntry)
 
 try
-    # Connect through stunnel -> Binance
+    # Connect to Binance (TLS handled by the SDK)
     connect_fix(session)
-    println("Connected to FIX server via stunnel")
+    println("Connected to FIX server")
 
     # Logon
     logon(session)
