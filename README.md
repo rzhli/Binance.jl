@@ -24,6 +24,14 @@ Binance.jl provides complete access to Binance's trading infrastructure:
 
 ## Recent Updates
 
+### v0.19.1 - Binance API changelog 2026-11-24 (2026-11-24)
+
+- **Expanded order-book depth** — REST and WebSocket API depth requests accept
+  up to 7500 levels, with the documented 5001–7500 request-weight tier.
+- **Deeper local order books** — `OrderBookManager` and FIX depth streams now
+  support the new depth range. Convert strategy examples use 5000 analysis
+  levels with a 7500-level order-book snapshot.
+
 ### v0.19.0 - Binance API changelog 2026-11-11 (2026-11-18)
 
 Includes BinanceFIX 0.7.0. All additions are optional; see the

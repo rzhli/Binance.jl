@@ -1158,8 +1158,8 @@ module RESTAPI
 
     function get_orderbook(client::RESTClient, symbol::String; limit::Int=100, symbolStatus::String="")
         symbol = validate_symbol(symbol)
-        if !(limit in (5, 10, 20, 50, 100, 500, 1000, 5000))
-            throw(ArgumentError("Invalid limit. Valid limits: 5, 10, 20, 50, 100, 500, 1000, 5000"))
+        if limit < 1 || limit > 7500
+            throw(ArgumentError("Limit must be between 1 and 7500"))
         end
 
         params = Dict{String,Any}(

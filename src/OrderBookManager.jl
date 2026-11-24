@@ -164,7 +164,7 @@ Create a new OrderBookManager.
 - `ws_client::W`: WebSocket market data client
 
 # Keyword Arguments
-- `max_depth::Int=5000`: Maximum depth for snapshot (5, 10, 20, 50, 100, 500, 1000, 5000).
+- `max_depth::Int=5000`: Maximum depth for snapshot (1-7500).
   Ignored when `use_snapshot_stream=true` (forced to 20).
 - `update_speed::String="100ms"`: Update frequency ("100ms" or "1000ms")
 - `on_update::Union{Function,Nothing}=nothing`: Callback function called on each update
@@ -186,9 +186,8 @@ function OrderBookManager(
     use_snapshot_stream::Bool=false
 ) where {R,W,F}
     # Validate parameters
-    valid_depths = (5, 10, 20, 50, 100, 500, 1000, 5000)
-    if !(max_depth in valid_depths)
-        error("max_depth must be one of: $(join(valid_depths, ", "))")
+    if max_depth < 1 || max_depth > 7500
+        error("max_depth must be between 1 and 7500")
     end
 
     if !(update_speed in ("100ms", "1000ms"))

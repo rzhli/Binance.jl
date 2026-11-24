@@ -2829,9 +2829,9 @@ Request market data subscription or unsubscription.
 - Update speed: Real-time
 
 **Diff. Depth Stream** - Order book depth updates for local order book management
-- Set `market_depth=2-5000` and `entry_types=[MD_ENTRY_BID, MD_ENTRY_OFFER]`
+- Set `market_depth=2-7500` and `entry_types=[MD_ENTRY_BID, MD_ENTRY_OFFER]`
 - Update speed: 100ms
-- Note: Initial snapshot limited to 5000 levels per side
+- Note: Initial snapshot limited to 7500 levels per side
 
 # Arguments
 - `symbols::Vector{String}`: List of symbols to subscribe to (can be empty for unsubscribe)
@@ -2839,7 +2839,7 @@ Request market data subscription or unsubscription.
 # Keyword Arguments
 - `md_req_id::String=""`: Request ID (auto-generated if empty). Use same ID to unsubscribe.
 - `subscription_type::String=MD_SUBSCRIBE`: `MD_SUBSCRIBE` or `MD_UNSUBSCRIBE`
-- `market_depth::Int=0`: 1=Book Ticker, 2-5000=Depth Stream levels
+- `market_depth::Int=0`: 1=Book Ticker, 2-7500=Depth Stream levels
 - `entry_types::Vector{String}=[MD_ENTRY_BID, MD_ENTRY_OFFER]`: Entry types to subscribe
 - `aggregated_book::Bool=true`: One book entry per side per price (Y)
 
@@ -2983,12 +2983,12 @@ subscribe_book_ticker(session::FIXSession, symbol::String; md_req_id::String="")
 Subscribe to Diff. Depth stream for order book updates (100ms update speed).
 
 Use this to maintain a local order book. The initial snapshot is limited to
-`depth` levels per side (max 5000).
+`depth` levels per side (max 7500).
 
 # Arguments
 - `symbols::Vector{String}`: Symbols to subscribe to (can also pass single String)
 - `md_req_id::String=""`: Request ID (auto-generated if empty)
-- `depth::Int=100`: Initial snapshot depth (2-5000)
+- `depth::Int=100`: Initial snapshot depth (2-7500)
 
 # Example
 ```julia
@@ -2999,8 +2999,8 @@ Returns the MDReqID used.
 """
 function subscribe_depth_stream(session::FIXSession, symbols::Vector{String};
     md_req_id::String="", depth::Int=100)
-    if depth < 2 || depth > 5000
-        error("Depth must be between 2 and 5000")
+    if depth < 2 || depth > 7500
+        error("Depth must be between 2 and 7500")
     end
     if isempty(md_req_id)
         md_req_id = generate_client_order_id("DEP-")

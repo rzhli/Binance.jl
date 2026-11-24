@@ -9,7 +9,7 @@ Complete guide for using OrderBookManager to maintain a high-performance local o
 - **High-frequency trading**: Access order book in < 1ms (vs 20-100ms API calls)
 - **Market making**: Monitor depth without API rate limits
 - **Arbitrage**: Compare prices across markets with minimal latency
-- **Deep analysis**: Access up to 5000 price levels in real-time
+- **Deep analysis**: Access up to 7500 price levels in real-time
 
 ## Performance Comparison
 
@@ -17,7 +17,7 @@ Complete guide for using OrderBookManager to maintain a high-performance local o
 |--------|------|---------|-----------|----------|
 | Ticker stream | Latest price | ~10-50ms | None | Simple price triggers |
 | Depth stream | 5-20 levels | ~20-100ms | None | Basic order book |
-| **OrderBookManager** | **Up to 5000 levels** | **< 1ms** | **None** | **HFT, deep analysis** |
+| **OrderBookManager** | **Up to 7500 levels** | **< 1ms** | **None** | **HFT, deep analysis** |
 
 ## Quick Start
 
@@ -30,7 +30,7 @@ stream_client = MarketDataStreamClient("config.toml")
 
 # Create OrderBookManager
 orderbook = OrderBookManager("BTCUSDT", rest_client, stream_client;
-                              max_depth=5000,        # Up to 5000 levels
+                              max_depth=7500,        # Up to 7500 levels
                               update_speed="100ms")  # Fast updates
 
 # Start synchronization
@@ -62,14 +62,14 @@ Create a new order book manager.
 - `symbol::String` - Trading pair (e.g., "BTCUSDT")
 - `rest_client::RESTClient` - REST API client for snapshots
 - `stream_client::MarketDataStreamClient` - WebSocket client for updates
-- `max_depth::Int=5000` - Maximum depth to maintain (100-5000)
+- `max_depth::Int=5000` - Maximum depth to maintain (1-7500)
 - `update_speed::String="100ms"` - Update frequency ("100ms" or "1000ms")
 - `on_update::Function=nothing` - Callback for each update
 
 **Example:**
 ```julia
 orderbook = OrderBookManager("BTCUSDT", rest_client, stream_client;
-                              max_depth=1000,
+                              max_depth=7500,
                               update_speed="100ms",
                               on_update=my_callback)
 ```
@@ -300,7 +300,7 @@ end
 
 # Create manager with callback
 orderbook = OrderBookManager("BTCUSDT", rest_client, stream_client;
-                              max_depth=5000,
+                              max_depth=7500,
                               on_update=trading_strategy)
 
 start!(orderbook)
@@ -420,7 +420,7 @@ orderbook = OrderBookManager("BTCUSDT", rest_client, stream_client;
 3. **Use appropriate `max_depth` for your needs**
    - HFT: 100-500 levels
    - Market making: 500-1000 levels
-   - Deep analysis: 1000-5000 levels
+   - Deep analysis: 1000-7500 levels
 
 4. **Always cleanup with `stop!()`**
    ```julia

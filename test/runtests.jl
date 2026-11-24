@@ -693,6 +693,12 @@ end
         pq = Binance.OrderBookManagers.PriceQuantity(100.0, 1.0)
         @test pq.price == 100.0
         @test pq.quantity == 1.0
+
+        manager = Binance.OrderBookManager("BTCUSDT", nothing, nothing; max_depth=7500)
+        @test manager.max_depth == 7500
+        @test_throws ErrorException Binance.OrderBookManager(
+            "BTCUSDT", nothing, nothing; max_depth=7501,
+        )
     end
 
     @testset "OrderBookManager best price cache follows updates" begin
@@ -1001,13 +1007,16 @@ end
         w(method, endpoint, params=Dict{String,Any}()) =
             Binance.endpoint_cost(method, endpoint, params).weight
 
-        # depth: 1-100 => 5, 101-500 => 25, 501-1000 => 50, 1001-5000 => 250
+        # depth: 1-100 => 5, 101-500 => 25, 501-1000 => 50, 1001-5000 => 250,
+        # 5001-7500 => 500
         @test w("GET", "/api/v3/depth", Dict{String,Any}("limit" => 100)) == 5
         @test w("GET", "/api/v3/depth", Dict{String,Any}("limit" => 500)) == 25
         @test w("GET", "/api/v3/depth", Dict{String,Any}("limit" => 1000)) == 50
         @test w("GET", "/api/v3/depth", Dict{String,Any}("limit" => 5000)) == 250
+        @test w("GET", "/api/v3/depth", Dict{String,Any}("limit" => 7500)) == 500
         # Params reach the limiter already stringified in some call paths.
         @test w("GET", "/api/v3/depth", Dict{String,Any}("limit" => "5000")) == 250
+        @test w("GET", "/api/v3/depth", Dict{String,Any}("limit" => "7500")) == 500
 
         # ticker/24hr: 1 symbol => 2, omitted => 80, 21-100 symbols => 40
         @test w("GET", "/api/v3/ticker/24hr", Dict{String,Any}("symbol" => "BTCUSDT")) == 2
@@ -1040,6 +1049,7 @@ end
         @test Binance.ws_method_cost("exchangeInfo").weight == 20
         @test Binance.ws_method_cost("myFilters").weight == 40
         @test Binance.ws_method_cost("depth", Dict{String,Any}("limit" => 5000)).weight == 250
+        @test Binance.ws_method_cost("depth", Dict{String,Any}("limit" => 7500)).weight == 500
         oc = Binance.ws_method_cost("orderList.place.otoco")
         @test (oc.orders, oc.zero_on_success) == (3, true)
         @test Binance.ws_method_cost("order.status").orders == 0

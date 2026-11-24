@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-11-24
+
+Updated Spot order-book depth support to match Binance's 2026-11-24 API
+changelog.
+
+- REST and WebSocket API depth requests accept 1–7500 levels.
+- The 5001–7500 request-weight tier costs 500 IP weight.
+- OrderBookManager snapshots support up to 7500 levels.
+- FIX depth streams support 2–7500 initial levels.
+- Convert strategy examples use the incremental depth stream with 5000
+  analysis levels and a 7500-level order-book snapshot.
+
 ## [0.19.0] - 2026-11-18
 
 Sync with the Binance Spot API changelog dated 2026-11-11. Includes BinanceFIX 0.7.0.

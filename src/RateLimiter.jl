@@ -787,7 +787,7 @@ module RateLimiter
                                 params::AbstractDict)
         if endpoint == "/api/v3/depth"
             limit = _int_param(params, "limit", 100)
-            w = limit <= 100 ? 5 : limit <= 500 ? 25 : limit <= 1000 ? 50 : 250
+            w = limit <= 100 ? 5 : limit <= 500 ? 25 : limit <= 1000 ? 50 : limit <= 5000 ? 250 : 500
             return EndpointCost(w, base.orders, base.zero_on_success)
 
         elseif endpoint == "/api/v3/ticker/24hr"

@@ -993,8 +993,8 @@ module WebSocketAPI
 
     function depth(client::WebSocketClient, symbol::String; limit::Int=100, symbolStatus::String="")
         # Validate limit values
-        if !(limit in (5, 10, 20, 50, 100, 500, 1000, 5000))
-            throw(ArgumentError("Invalid limit for depth. Valid values: 5, 10, 20, 50, 100, 500, 1000, 5000"))
+        if limit < 1 || limit > 7500
+            throw(ArgumentError("Limit for depth must be between 1 and 7500"))
         end
 
         params = Dict{String,Any}("symbol" => symbol)

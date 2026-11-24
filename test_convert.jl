@@ -56,7 +56,7 @@ const CONFIG_FILE = "config.toml"
 
 run_convert_strategy(;
     symbol = "BTCUSDT",
-    buy_prices = [60000.0, 50000.0, 40000.0],
+    buy_prices = [50000.0, 40000.0, 30000.0],
     buy_quantities = [1.0, 1.0, 1.0],       # USDT 金额（is_quote_qty=true）
     sell_prices = [88000.0, 99000.0, 110000.0],
     sell_quote_amounts= [1.0, 1.0, 1.0],
@@ -141,7 +141,9 @@ try
             support_levels = supports,
             resistance_levels = resistances,
             enable_wyckoff = true,
-            depth_levels = 20,
+            max_depth = 7500,
+            use_snapshot_stream = false,
+            depth_levels = 5000,
             config_file = config_file,
         )
     end
@@ -183,7 +185,8 @@ convert_multi_config = [
 
 # run_multi_convert_strategy(convert_multi_config;
 #     is_quote_qty = true,
-#     max_depth = 1000,                       # 多币种用较小深度节省内存
+#     max_depth = 7500,                       # Binance 现货深度上限
+#     depth_levels = 5000,                    # 计算不平衡时使用的档位
 #     update_speed = "100ms",
 #     monitor_interval = 30.0,                # 摘要打印间隔（秒）
 #     risk_manager = create_risk_manager(
